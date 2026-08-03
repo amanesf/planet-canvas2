@@ -48,10 +48,14 @@ const yieldToBrowser = () =>
 
 const RADIUS = 2;
 const BUMP_HEIGHT = 0.36; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
-// A real wood pedestal reads as the dominant, grounded object; the globe
-// should hover just slightly above it (a hint of the magnetic-levitation
-// idea), not float high overhead like a sci-fi prop.
-const GLOBE_FLOAT_Y = 0.95;
+// The globe *sits on* the pedestal. It used to hover above it with a
+// visible gap, as a nod to a magnetic-levitation idea — and that gap was
+// one of the strongest anti-physical cues left in the frame: a thing that
+// floats is unmistakably not a thing standing on a workbench, however well
+// it is lit or painted. In the reference the sphere nests into a brass
+// collar on the wood, which is what this height and the cradle ring below
+// are set up to reproduce.
+const GLOBE_SEAT_Y = 0.6;
 
 // ---------- renderer / scene / camera ----------
 
@@ -83,7 +87,13 @@ function cameraDistanceForViewport() {
 // "a miniature sitting on my desk" is camera angle, not material tweaks —
 // real diorama/miniature photography looks down at roughly 25-35° above
 // the horizon, not near eye level. Aim the default view that way.
-const CAMERA_POLAR_ANGLE = Math.PI * 0.36; // ~65° from vertical = ~25° above horizon
+// The reference is shot from only a little above the globe's equator, not
+// steeply down onto it. The steeper angle here was chosen to sell
+// "miniature", but it also put the lens so high that nothing standing on
+// the bench between camera and subject could enter the frame at all — and
+// a defocused object in the near foreground is the single clearest signal
+// that a photograph was taken of something small and real.
+const CAMERA_POLAR_ANGLE = Math.PI * 0.43; // ~77° from vertical = ~13° above horizon
 const TARGET_Y = 1.0;
 function cameraStartPosition() {
   const dist = cameraDistanceForViewport();
@@ -119,7 +129,7 @@ renderer.shadowMap.type = THREE.PCFShadowMap;
 // roll off smoothly toward white like a real photo, not clip to a flat
 // disc the way plain linear output does
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.25;
+renderer.toneMappingExposure = 1.4;
 app.appendChild(renderer.domElement);
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
@@ -198,8 +208,8 @@ controls.maxDistance = 14 * viewportScale;
 // keep the user inside "looking down at a diorama" territory — never let
 // them drop to a flat eye-level view (which reads as "planet in space"
 // again) or flip to looking sharply up from underneath the stand
-controls.minPolarAngle = Math.PI * 0.22;
-controls.maxPolarAngle = Math.PI * 0.55;
+controls.minPolarAngle = Math.PI * 0.24;
+controls.maxPolarAngle = Math.PI * 0.5;
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.target.set(0, TARGET_Y, 0);
@@ -258,7 +268,7 @@ scene.add(rimLight);
 // desk, the bottles and the foreground clutter sitting in near-black. A
 // warm falloff light above the bench lights the room without touching the
 // key-to-fill ratio the globe is lit by.
-const benchLamp = new THREE.PointLight(0xffcf95, 90, 40, 2);
+const benchLamp = new THREE.PointLight(0xffcf95, 150, 40, 2);
 benchLamp.position.set(-3, 7, 4);
 scene.add(benchLamp);
 
@@ -267,7 +277,7 @@ scene.add(benchLamp);
 scene.add(buildWorkshop());
 
 const globeGroup = new THREE.Group();
-globeGroup.position.set(0, GLOBE_FLOAT_Y, 0);
+globeGroup.position.set(0, GLOBE_SEAT_Y, 0);
 scene.add(globeGroup);
 
 // terrain color is painted once onto a texture (crisp, cheap to sample)
@@ -384,9 +394,8 @@ globeGroup.add(hazeMesh);
 // "evaporation + rain shadow" sky layer with an actual visible presence
 await yieldToBrowser();
 const clouds = buildClouds(RADIUS);
-clouds.traverse((child) => {
-  if ((child as THREE.Mesh).isMesh) child.castShadow = true;
-});
+// (castShadow is decided per layer inside buildClouds: the opaque core
+// casts, the translucent fringe does not.)
 globeGroup.add(clouds);
 
 // ---------- stand: real wood pedestal + nameplate, globe hovers just
@@ -509,19 +518,18 @@ const trimRing = new THREE.Mesh(
 trimRing.position.y = -1.75;
 standGroup.add(trimRing);
 
-// A thin, understated glow ring — just a hint of the magnetic-levitation
-// idea now that the wood pedestal itself is the dominant grounded object,
-// not the sci-fi centerpiece it was before
-const glowRingGeometry = new THREE.TorusGeometry(1.05, 0.028, 16, 64);
-const glowRingMaterial = new THREE.MeshBasicMaterial({
-  color: 0xffe5b8,
-  transparent: true,
-  opacity: 0.3,
-});
-const glowRing = new THREE.Mesh(glowRingGeometry, glowRingMaterial);
-glowRing.rotation.x = Math.PI / 2;
-glowRing.position.y = -1.45;
-standGroup.add(glowRing);
+// The brass collar the sphere rests in. A pulsing glow ring used to sit
+// here; a glowing ring belongs to a sci-fi prop, not to something
+// photographed on a workbench next to a jar of paint.
+const cradleRing = new THREE.Mesh(
+  new THREE.TorusGeometry(1.2, 0.055, 16, 72),
+  plaqueMaterial,
+);
+cradleRing.rotation.x = Math.PI / 2;
+cradleRing.position.y = -1.47;
+cradleRing.castShadow = true;
+cradleRing.receiveShadow = true;
+standGroup.add(cradleRing);
 
 // (the globe's shadow on the stand is a real cast shadow now — the blob
 // decal that used to stand in for it would only double up on top of it)
@@ -576,17 +584,15 @@ function animate() {
     globeGroup.rotation.y += 0.0025 * 60 * (1 / 60);
   }
 
-  // gentle magnetic-levitation bob + a touch of tilt — subtler now that
-  // the wood pedestal (not the floating effect) is the visual anchor
-  globeGroup.position.y = GLOBE_FLOAT_Y + Math.sin(t * 1.1) * 0.035;
-  globeGroup.rotation.z = Math.sin(t * 0.6) * 0.02;
+  // A display globe sits still in its collar; the bob that used to be here
+  // was the levitation idea, and it survived the sphere being seated only
+  // as a slow wobble that read as the whole model being loose.
+  globeGroup.rotation.z = 0.04;
 
   hazeMesh.rotation.y += 0.0006;
   waveTexture.offset.x = t * 0.006;
   waveTexture.offset.y = Math.sin(t * 0.15) * 0.01;
 
-  const ringPulse = 0.45 + Math.sin(t * 2.2) * 0.1;
-  glowRingMaterial.opacity = ringPulse;
 
   // keep the focal plane pinned to the front face of the globe as the
   // viewer orbits or zooms, the way a photographer refocuses on the

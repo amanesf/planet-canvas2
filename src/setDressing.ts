@@ -129,12 +129,47 @@ function buildCottonWad(rand: () => number): THREE.Mesh {
   );
 }
 
+/** A jar of brushes — tall enough to reach into the frame from the bench. */
+function buildBrushJar(rand: () => number): THREE.Group {
+  const group = new THREE.Group();
+  const jar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.34, 0.3, 0.95, 20),
+    new THREE.MeshPhysicalMaterial({
+      color: '#cfd8d6',
+      roughness: 0.12,
+      metalness: 0,
+      transmission: 0.5,
+      thickness: 0.3,
+      transparent: true,
+      opacity: 0.55,
+    }),
+  );
+  jar.position.y = 0.475;
+  group.add(jar);
+
+  for (let i = 0; i < 7; i++) {
+    const len = 1.5 + rand() * 0.9;
+    const handle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.025, 0.035, len, 6),
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color().setHSL(0.07 + rand() * 0.05, 0.4, 0.18 + rand() * 0.2, THREE.SRGBColorSpace),
+        roughness: 0.5,
+      }),
+    );
+    handle.position.set((rand() - 0.5) * 0.34, 0.6 + len / 2, (rand() - 0.5) * 0.34);
+    handle.rotation.z = (rand() - 0.5) * 0.5;
+    handle.rotation.x = (rand() - 0.5) * 0.5;
+    group.add(handle);
+  }
+  return group;
+}
+
 /** A spare model conifer, the kind that gets glued onto layouts. */
 function buildSpareTree(rand: () => number): THREE.Group {
   const group = new THREE.Group();
   const trunk = new THREE.Mesh(
     new THREE.CylinderGeometry(0.03, 0.05, 0.35, 6),
-    new THREE.MeshStandardMaterial({ color: '#4a3324', roughness: 0.95 }),
+    new THREE.MeshStandardMaterial({ color: '#6b4a33', roughness: 0.95 }),
   );
   trunk.position.y = 0.175;
   group.add(trunk);
@@ -144,7 +179,7 @@ function buildSpareTree(rand: () => number): THREE.Group {
     const tier = new THREE.Mesh(
       new THREE.ConeGeometry(0.34 * (1 - t * 0.62), 0.42, 9),
       new THREE.MeshStandardMaterial({
-        color: new THREE.Color().setHSL(0.29, 0.34, 0.13 + rand() * 0.05, THREE.SRGBColorSpace),
+        color: new THREE.Color().setHSL(0.27, 0.38, 0.24 + rand() * 0.08, THREE.SRGBColorSpace),
         roughness: 0.95,
         flatShading: true,
       }),
@@ -203,22 +238,30 @@ export function buildWorkshop(): THREE.Group {
     group.add(bottle);
   });
 
-  // foreground clutter, close enough to the lens to be pure soft shape —
-  // the strongest single cue that this is a photograph of something small
-  const wad = buildCottonWad(rand);
-  wad.position.set(3.1, -1.35, 6.1);
-  wad.scale.setScalar(2.1);
-  group.add(wad);
-
-  const wad2 = buildCottonWad(rand);
-  wad2.position.set(-3.6, -1.5, 5.9);
-  wad2.scale.setScalar(1.6);
-  group.add(wad2);
-
+  // Foreground clutter, close enough to the lens to be pure soft shape —
+  // the strongest single cue that this is a photograph of something small.
+  //
+  // These have to be *tall*. The lens sits about six units above the bench
+  // and looks slightly down, so anything standing on the bench between it
+  // and the subject projects well below the bottom of the frame — measured
+  // at roughly y = -2.4 in clip space, where the frame ends at -1. Only
+  // objects that reach up toward the globe's own height get into shot at a
+  // distance short enough to be properly out of focus.
   const tree = buildSpareTree(rand);
-  tree.position.set(-4.4, -2.08, 5.6);
-  tree.scale.setScalar(1.9);
+  tree.position.set(-1.95, -2.08, 6.3);
+  tree.scale.setScalar(3.1);
   group.add(tree);
+
+  const jar = buildBrushJar(rand);
+  jar.position.set(2.35, -2.08, 5.6);
+  jar.scale.setScalar(1.7);
+  group.add(jar);
+
+  // a wad of the cloud cotton left on the bench beside the stand
+  const wad = buildCottonWad(rand);
+  wad.position.set(2.9, -1.85, 2.4);
+  wad.scale.setScalar(1.6);
+  group.add(wad);
 
   return group;
 }

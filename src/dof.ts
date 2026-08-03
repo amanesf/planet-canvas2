@@ -27,9 +27,9 @@ export const DepthOfFieldShader = {
     /** distance from the camera, in world units, that is perfectly sharp */
     uFocusDistance: { value: 8 },
     /** how far from that plane a point can be before it blurs at all */
-    uFocusRange: { value: 1.1 },
+    uFocusRange: { value: 1.9 },
     /** world distance over which blur ramps from zero to maximum */
-    uFalloff: { value: 5.5 },
+    uFalloff: { value: 4.0 },
     /** maximum circle of confusion, in UV units */
     uMaxBlur: { value: 0.011 },
   },
