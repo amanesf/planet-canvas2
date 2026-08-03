@@ -49,15 +49,12 @@ function scatterPoints(candidateCount: number, minSpacing: number, rand: () => n
     let kind: Kind;
     if (terracedElevation(height) < 0.15) {
       const aridity = aridityAt(dir);
-      if (aridity > DESERT_ARIDITY_THRESHOLD) {
-        kind = rand() < 0.55 ? 'dune' : 'desertRock';
-      } else if (aridity > FOREST_ARIDITY_MAX) {
-        kind = 'tree'; // savanna: sparse, individually-visible trees
-      } else {
-        continue; // lush forest zone — covered by the dense canopy pass instead
-      }
+      if (aridity > DESERT_ARIDITY_THRESHOLD) continue; // handled by the denser scatterDesert pass
+      if (aridity <= FOREST_ARIDITY_MAX) continue; // lush forest zone — covered by the canopy pass instead
+      kind = 'tree'; // savanna: sparse, individually-visible trees
     } else {
-      // climbing into rugged/mountain elevation — trees don't cling to cliffs
+      // climbing into rugged/mountain elevation — big accent boulders here;
+      // ground-covering scree/rubble is handled by the denser scatterScree pass
       kind = 'rock';
     }
 
@@ -146,6 +143,75 @@ function scatterForest(candidateCount: number, minSpacing: number, rand: () => n
   return placed;
 }
 
+// Dense dune-field coverage — a real desert is a sea of sand shapes, not
+// a few sparse mounds scattered on empty painted ground.
+interface DesertPoint {
+  dir: THREE.Vector3;
+  height: number;
+  kind: 'dune' | 'desertRock';
+}
+
+function scatterDesert(candidateCount: number, minSpacing: number, rand: () => number): DesertPoint[] {
+  const placed: DesertPoint[] = [];
+  const hash = new SpatialHash(minSpacing);
+  const minSpacingSq = minSpacing * minSpacing;
+  const dir = new THREE.Vector3();
+
+  for (let i = 0; i < candidateCount; i++) {
+    const z = rand() * 2 - 1;
+    const t = rand() * Math.PI * 2;
+    const r = Math.sqrt(1 - z * z);
+    dir.set(r * Math.cos(t), z, r * Math.sin(t));
+
+    const height = heightAt(dir);
+    if (height < SEA_LEVEL + 0.015) continue;
+    if (terracedElevation(height) > 0.15) continue;
+    if (aridityAt(dir) <= DESERT_ARIDITY_THRESHOLD) continue;
+
+    if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
+
+    const point = dir.clone();
+    hash.add(point);
+    placed.push({ dir: point, height, kind: rand() < 0.7 ? 'dune' : 'desertRock' });
+  }
+
+  return placed;
+}
+
+// Dense loose scree/rubble covering rocky mountain slopes, on top of the
+// sparser big accent boulders — a bare-painted rock terrace looks like a
+// video-game collision mesh; a slope covered in broken rock fragments
+// looks like an actual mountain.
+interface ScreePoint {
+  dir: THREE.Vector3;
+  height: number;
+}
+
+function scatterScree(candidateCount: number, minSpacing: number, rand: () => number): ScreePoint[] {
+  const placed: ScreePoint[] = [];
+  const hash = new SpatialHash(minSpacing);
+  const minSpacingSq = minSpacing * minSpacing;
+  const dir = new THREE.Vector3();
+
+  for (let i = 0; i < candidateCount; i++) {
+    const z = rand() * 2 - 1;
+    const t = rand() * Math.PI * 2;
+    const r = Math.sqrt(1 - z * z);
+    dir.set(r * Math.cos(t), z, r * Math.sin(t));
+
+    const height = heightAt(dir);
+    if (terracedElevation(height) < 0.15) continue; // rocky slopes only
+
+    if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
+
+    const point = dir.clone();
+    hash.add(point);
+    placed.push({ dir: point, height });
+  }
+
+  return placed;
+}
+
 const dummy = new THREE.Object3D();
 const up = new THREE.Vector3(0, 1, 0);
 
@@ -174,8 +240,13 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const points = scatterPoints(60000, 0.09, rand);
   const trees = points.filter((p) => p.kind === 'tree');
   const rocks = points.filter((p) => p.kind === 'rock');
-  const dunes = points.filter((p) => p.kind === 'dune');
-  const desertRocks = points.filter((p) => p.kind === 'desertRock');
+
+  // dense dedicated passes — a sparse handful of dunes/rocks read as
+  // "a few objects on empty ground", not "a desert" or "a mountainside"
+  const desertPoints = scatterDesert(70000, 0.045, rand);
+  const dunes = desertPoints.filter((p) => p.kind === 'dune');
+  const desertRocks = desertPoints.filter((p) => p.kind === 'desertRock');
+  const screePoints = scatterScree(70000, 0.03, rand);
 
   // ---------- trees: 3 archetypes mixed by pseudo-climate + chance ----------
   // (a tall pointy cone looked fine from directly above, but at the
@@ -258,7 +329,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       foliageMesh.setMatrixAt(i, dummy.matrix);
       // a little per-tree color variance so a forest doesn't look like one
       // flat-shaded cutout repeated hundreds of times
-      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.45 + rand() * 0.15, 0.34 + rand() * 0.14);
+      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.32 + rand() * 0.13, 0.3 + rand() * 0.13);
       foliageMesh.setColorAt(i, foliageColor);
     });
     foliageMesh.instanceMatrix.needsUpdate = true;
@@ -353,6 +424,31 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   if (desertRockMesh.instanceColor) desertRockMesh.instanceColor.needsUpdate = true;
   group.add(desertRockMesh);
 
+  // ---------- scree: dense loose rubble covering rocky/mountain slopes ----------
+
+  const screeGeometry = new THREE.IcosahedronGeometry(0.016, 0);
+  const screeMaterial = new THREE.MeshStandardMaterial({
+    color: '#847a6c',
+    roughness: 0.97,
+    flatShading: true,
+    envMapIntensity: 0.08,
+  });
+  const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
+  const screeColor = new THREE.Color();
+  screePoints.forEach((p, i) => {
+    const surfaceRadius = radius + displayHeight(p.height) * bumpHeight;
+    const position = p.dir.clone().multiplyScalar(surfaceRadius);
+    orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.5, rand() * Math.PI * 2);
+    dummy.scale.set(0.6 + rand() * 1.0, 0.5 + rand() * 0.7, 0.6 + rand() * 1.0);
+    dummy.updateMatrix();
+    screeMesh.setMatrixAt(i, dummy.matrix);
+    screeColor.setHSL(0.08 + rand() * 0.03, 0.14 + rand() * 0.08, 0.42 + rand() * 0.18);
+    screeMesh.setColorAt(i, screeColor);
+  });
+  screeMesh.instanceMatrix.needsUpdate = true;
+  if (screeMesh.instanceColor) screeMesh.instanceColor.needsUpdate = true;
+  group.add(screeMesh);
+
   // ---------- forest: a continuous, overlapping canopy mass ----------
   // Real forest reads as one bumpy green blanket, not a field of evenly
   // spaced individual trees. Each clump is several overlapping poofy
@@ -384,7 +480,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
-      canopyColor.setHSL(0.3 + rand() * 0.08, 0.5 + rand() * 0.2, 0.3 + rand() * 0.14);
+      canopyColor.setHSL(0.3 + rand() * 0.08, 0.36 + rand() * 0.15, 0.28 + rand() * 0.13);
       mesh.setColorAt(i, canopyColor);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -411,7 +507,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);
     dummy.updateMatrix();
     grassMesh.setMatrixAt(i, dummy.matrix);
-    grassColor.setHSL(0.28 + rand() * 0.08, 0.5 + rand() * 0.2, 0.32 + rand() * 0.16);
+    grassColor.setHSL(0.28 + rand() * 0.08, 0.38 + rand() * 0.16, 0.3 + rand() * 0.15);
     grassMesh.setColorAt(i, grassColor);
   });
   grassMesh.instanceMatrix.needsUpdate = true;
@@ -431,10 +527,11 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     opacity: 0.5,
     depthWrite: false,
   });
-  const shadowMesh = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, points.length);
+  const shadowPoints: (ScatterPoint | DesertPoint)[] = [...points, ...desertPoints];
+  const shadowMesh = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, shadowPoints.length);
   const planeNormal = new THREE.Vector3(0, 0, 1);
 
-  points.forEach((p, i) => {
+  shadowPoints.forEach((p, i) => {
     const surfaceRadius = radius + displayHeight(p.height) * bumpHeight + 0.0015;
     dummy.position.copy(p.dir).multiplyScalar(surfaceRadius);
     const align = new THREE.Quaternion().setFromUnitVectors(planeNormal, p.dir);

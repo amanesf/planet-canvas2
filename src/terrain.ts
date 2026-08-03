@@ -6,19 +6,23 @@ import { fbm3 } from './noise';
 export const SEA_LEVEL = 0.095;
 const COAST_WIDTH = 0.012;
 
-const shoreColor = new THREE.Color('#f0d98a');
+// Toned down across the board — high-saturation primary colors are what
+// made this read as "cheap mobile game" regardless of how much detail
+// sat on top of them. Real terrain photography has much narrower,
+// muddier, more correlated color ranges than a clean color wheel.
+const shoreColor = new THREE.Color('#d9c58a');
 // muted/soil-toned on purpose — the vivid green now comes from actually
 // covering the ground in grass/tree instances, not from painting the
 // terrain itself bright green underneath them
-const landColor = new THREE.Color('#7a9257');
-const desertColor = new THREE.Color('#d2b06e');
-const rockColor = new THREE.Color('#8f8272');
-const snowColor = new THREE.Color('#f4f8fb');
-const riverColor = new THREE.Color('#3fa9c9');
+const landColor = new THREE.Color('#6d7f4c');
+const desertColor = new THREE.Color('#bd9a5f');
+const rockColor = new THREE.Color('#7d7264');
+const snowColor = new THREE.Color('#e9eef0');
+const riverColor = new THREE.Color('#3184a0');
 
-const deepOceanColor = new THREE.Color('#0f7a82');
-const midOceanColor = new THREE.Color('#22aaae');
-const shallowOceanColor = new THREE.Color('#63e0d1');
+const deepOceanColor = new THREE.Color('#0c4a5e');
+const midOceanColor = new THREE.Color('#1c6f7f');
+const shallowOceanColor = new THREE.Color('#4fa8ad');
 
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
@@ -365,6 +369,44 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+// A directional-ish wave pattern (not just isotropic noise) baked as a
+// bumpMap and scrolled slowly in the animation loop — the ocean sphere is
+// geometrically almost still (one static ripple pass), but a moving bump
+// texture makes its specular highlights shimmer and drift like real
+// wind-driven water instead of a fixed pattern on a billiard ball.
+export function buildWaveTexture(width = 1024, height = 512): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  const image = ctx.createImageData(width, height);
+  const dir = new THREE.Vector3();
+
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      dirForPixel(px, py, width, height, dir);
+
+      const ridge = Math.sin(dir.x * 42 + dir.z * 17 + dir.y * 9) * 0.5 + 0.5;
+      const chop = fbm3(dir.x * 30 + 8, dir.y * 30 + 8, dir.z * 30 + 8, 3);
+      const v = 0.5 + (ridge - 0.5) * 0.5 + chop * 0.18;
+
+      const gray = Math.round(Math.min(Math.max(v, 0), 1) * 255);
+      const idx = (py * width + px) * 4;
+      image.data[idx] = gray;
+      image.data[idx + 1] = gray;
+      image.data[idx + 2] = gray;
+      image.data[idx + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.needsUpdate = true;
   return texture;
 }

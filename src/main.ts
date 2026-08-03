@@ -6,6 +6,7 @@ import {
   buildBumpTexture,
   buildOceanTexture,
   buildTerrainTexture,
+  buildWaveTexture,
   displaceSphere,
   rippleSphere,
   seaLevelRadius,
@@ -165,8 +166,13 @@ globeGroup.add(globeMesh);
 // read as a soft gummy-candy jelly instead of a solid miniature material.
 const oceanGeometry = new THREE.SphereGeometry(seaLevelRadius(RADIUS, BUMP_HEIGHT), 96, 56);
 rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
+const waveTexture = buildWaveTexture();
 const oceanMaterial = new THREE.MeshPhysicalMaterial({
   map: buildOceanTexture(),
+  // a directional wave pattern, slowly scrolled in the animation loop —
+  // gives moving, shimmering highlights instead of a fixed pattern
+  bumpMap: waveTexture,
+  bumpScale: 0.006,
   transparent: true,
   opacity: 0.95,
   roughness: 0.35,
@@ -301,6 +307,8 @@ function animate() {
   globeGroup.rotation.z = Math.sin(t * 0.6) * 0.02;
 
   hazeMesh.rotation.y += 0.0006;
+  waveTexture.offset.x = t * 0.006;
+  waveTexture.offset.y = Math.sin(t * 0.15) * 0.01;
 
   const ringPulse = 0.45 + Math.sin(t * 2.2) * 0.1;
   glowRingMaterial.opacity = ringPulse;
