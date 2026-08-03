@@ -232,12 +232,49 @@ function climateBiasAt(dir: THREE.Vector3): number {
 // edges. Where the belt and the continent's own bias both agree it's dry,
 // local noise is mostly ignored so the whole region reads as one
 // unbroken desert instead of a speckled mix.
-export function aridityAt(dir: THREE.Vector3): number {
+function rawAridityAt(dir: THREE.Vector3): number {
   const belt = desertBeltAt(dir);
   const bias = climateBiasAt(dir);
   const local = fbm3(dir.x * 2.6 + 51.3, dir.y * 2.6 + 51.3, dir.z * 2.6 + 51.3, 3);
   const commitment = belt * smoothstep(bias, 0, 0.5);
   return belt * 0.55 + bias * 0.4 + local * (0.4 - commitment * 0.28);
+}
+
+// Aridity, badlands and the climate wobble are all *low-frequency* fields —
+// nothing in them turns faster than about three cycles across the sphere —
+// and all three were being evaluated from scratch for every one of the
+// million-odd texels the terrain paint covers, at seven, two and two noise
+// lookups apiece. Baking them onto coarse grids costs a few hundred
+// kilobytes and removes eleven noise evaluations from the hot path, the
+// same trick the orogeny belt above already uses for the same reason.
+function bakeField(width: number, height: number, f: (dir: THREE.Vector3) => number): Float32Array {
+  const grid = new Float32Array(width * height);
+  const dir = new THREE.Vector3();
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      dirForPixel(px, py, width, height, dir);
+      grid[py * width + px] = f(dir);
+    }
+  }
+  return grid;
+}
+
+const FIELD_W = 384;
+const FIELD_H = 192;
+
+function sampleField(grid: Float32Array, dir: THREE.Vector3): number {
+  const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
+  let phi = Math.atan2(dir.z, -dir.x);
+  if (phi < 0) phi += Math.PI * 2;
+  const px = Math.min(FIELD_W - 1, Math.floor((phi / (Math.PI * 2)) * FIELD_W));
+  const py = Math.min(FIELD_H - 1, Math.floor((theta / Math.PI) * FIELD_H));
+  return grid[py * FIELD_W + px];
+}
+
+let aridityGrid: Float32Array | null = null;
+export function aridityAt(dir: THREE.Vector3): number {
+  aridityGrid ??= bakeField(FIELD_W, FIELD_H, rawAridityAt);
+  return sampleField(aridityGrid, dir);
 }
 
 // same threshold biomeColor uses to start blending toward desert — shared
@@ -251,8 +288,12 @@ export const DESERT_ARIDITY_THRESHOLD = 0.52;
 // Grand Canyon. Reuses the terracing language already established
 // elsewhere (a hand-cut layered model) but as color banding instead of
 // geometric steps.
+let badlandsGrid: Float32Array | null = null;
 function badlandsAt(dir: THREE.Vector3): number {
-  return fbm3(dir.x * 0.9 + 555, dir.y * 0.9 + 555, dir.z * 0.9 + 555, 2);
+  badlandsGrid ??= bakeField(FIELD_W, FIELD_H, (d) =>
+    fbm3(d.x * 0.9 + 555, d.y * 0.9 + 555, d.z * 0.9 + 555, 2),
+  );
+  return sampleField(badlandsGrid, dir);
 }
 export const BADLANDS_THRESHOLD = 0.28;
 
@@ -261,11 +302,16 @@ export const BADLANDS_THRESHOLD = 0.28;
 // colder again with elevation — with a little noise so the ice line isn't
 // a perfect circle. dir.y stands in for latitude, matching how the rest
 // of the terrain already uses it.
+let climateWobbleGrid: Float32Array | null = null;
 export function temperatureAt(dir: THREE.Vector3, elevation: number): number {
+  climateWobbleGrid ??= bakeField(
+    FIELD_W,
+    FIELD_H,
+    (d) => fbm3(d.x * 1.1 + 700, d.y * 1.1 + 700, d.z * 1.1 + 700, 2) * 0.085,
+  );
   const latitude = 1 - Math.abs(dir.y);
-  const wobble = fbm3(dir.x * 1.1 + 700, dir.y * 1.1 + 700, dir.z * 1.1 + 700, 2) * 0.085;
   const elevationCooling = Math.max(elevation, 0) * 1.6;
-  return latitude + wobble - elevationCooling;
+  return latitude + sampleField(climateWobbleGrid, dir) - elevationCooling;
 }
 
 export const ICE_TEMPERATURE = -0.04;
@@ -553,6 +599,34 @@ interface SharedHeightField {
 }
 
 let sharedHeightCache: SharedHeightField | null = null;
+
+/**
+ * Terrain height sampled from the shared grid instead of evaluated.
+ *
+ * heightAt costs somewhere around fifteen 3D noise lookups. The scatter
+ * passes call it for every candidate position — hundreds of thousands of
+ * them, the great majority only to discover the point is underwater and
+ * throw it away — and the ocean and bump textures call it per texel for a
+ * second and third time over ground the terrain paint has already covered.
+ * The grid is finer than a third of a degree, far below anything placement
+ * or a bump map can resolve, so reading from it is free accuracy.
+ *
+ * Falls back to evaluating directly if the field has not been built yet.
+ */
+export function sampledHeight(dir: THREE.Vector3): { raw: number; display: number } {
+  const field = sharedHeightCache;
+  if (!field) {
+    const raw = heightAt(dir);
+    return { raw, display: displayHeight(raw, dir) };
+  }
+  const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
+  let phi = Math.atan2(dir.z, -dir.x);
+  if (phi < 0) phi += Math.PI * 2;
+  const px = Math.min(field.width - 1, Math.floor((phi / (Math.PI * 2)) * field.width));
+  const py = Math.min(field.height - 1, Math.floor((theta / Math.PI) * field.height));
+  const idx = py * field.width + px;
+  return { raw: field.raw[idx], display: field.display[idx] };
+}
 
 function sharedHeightField(width: number, height: number): SharedHeightField {
   if (sharedHeightCache && sharedHeightCache.width === width && sharedHeightCache.height === height) {
@@ -874,12 +948,11 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
   const ctx = canvas.getContext('2d')!;
   const image = ctx.createImageData(width, height);
   const dir = new THREE.Vector3();
-  const heights = sharedHeightField(width, height).raw;
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       dirForPixel(px, py, width, height, dir);
-      const h = heights[py * width + px];
+      const h = sampledHeight(dir).raw;
       const c = oceanColor(dir, h);
 
       const idx = (py * width + px) * 4;
@@ -982,13 +1055,12 @@ export function buildBumpTexture(width = 1536, height = 768): THREE.CanvasTextur
   const ctx = canvas.getContext('2d')!;
   const image = ctx.createImageData(width, height);
   const dir = new THREE.Vector3();
-  const heights = sharedHeightField(width, height).raw;
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       dirForPixel(px, py, width, height, dir);
 
-      const h = heights[py * width + px];
+      const h = sampledHeight(dir).raw;
       let v: number;
       if (h < SEA_LEVEL) {
         // fine ripple texture on the (mostly hidden) seabed — cheap

@@ -138,10 +138,12 @@ canvas {
 /* Shown while the model is being built. The build yields between steps (see
    main.ts), so this actually paints instead of sitting behind a frozen tab. */
 .loading {
+  /* along the bottom, not over the middle: the scene is visible and filling
+     in behind this now, so the caption must not sit on top of the subject */
   position: fixed;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  bottom: 4.5rem;
+  transform: translateX(-50%);
   color: #cbab7e;
   font-size: 0.85rem;
   letter-spacing: 0.16em;

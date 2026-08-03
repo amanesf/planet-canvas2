@@ -16,8 +16,8 @@ import { mulberry32 } from './spatialHash';
 // something the globe can be *in*.
 
 function buildDeskTexture(): THREE.CanvasTexture {
-  const w = 1024;
-  const h = 1024;
+  const w = 512;
+  const h = 512;
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
@@ -43,7 +43,7 @@ function buildDeskTexture(): THREE.CanvasTexture {
     ctx.lineTo(w, y);
     ctx.stroke();
   }
-  for (let i = 0; i < 220; i++) {
+  for (let i = 0; i < 70; i++) {
     const y = rand() * h;
     ctx.strokeStyle = `rgba(${rand() < 0.5 ? '18, 10, 6' : '92, 66, 44'}, ${0.05 + rand() * 0.12})`;
     ctx.lineWidth = 1 + rand() * 3;
@@ -52,7 +52,7 @@ function buildDeskTexture(): THREE.CanvasTexture {
     let yy = y;
     ctx.moveTo(x, yy);
     while (x < w) {
-      x += 40 + rand() * 90;
+      x += 60 + rand() * 120;
       yy += (rand() - 0.5) * 10;
       ctx.lineTo(x, yy);
     }
@@ -134,14 +134,12 @@ function buildBrushJar(rand: () => number): THREE.Group {
   const group = new THREE.Group();
   const jar = new THREE.Mesh(
     new THREE.CylinderGeometry(0.34, 0.3, 0.95, 20),
-    new THREE.MeshPhysicalMaterial({
+    new THREE.MeshStandardMaterial({
       color: '#cfd8d6',
-      roughness: 0.12,
+      roughness: 0.15,
       metalness: 0,
-      transmission: 0.5,
-      thickness: 0.3,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.5,
     }),
   );
   jar.position.y = 0.475;

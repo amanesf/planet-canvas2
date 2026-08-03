@@ -5,8 +5,7 @@ import {
   badlandsAt,
   BADLANDS_THRESHOLD,
   DESERT_ARIDITY_THRESHOLD,
-  displayHeight,
-  heightAt,
+  sampledHeight,
   SEA_LEVEL,
   temperatureAt,
   terracedElevation,
@@ -50,7 +49,7 @@ function scatterPoints(candidateCount: number, minSpacing: number, rand: () => n
     const r = Math.sqrt(1 - z * z);
     dir.set(r * Math.cos(t), z, r * Math.sin(t));
 
-    const height = heightAt(dir);
+    const height = sampledHeight(dir).raw;
     if (height < SEA_LEVEL + 0.015) continue; // keep a clear sandy shoreline
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
@@ -101,7 +100,7 @@ function scatterGrass(candidateCount: number, minSpacing: number, rand: () => nu
     const r = Math.sqrt(1 - z * z);
     dir.set(r * Math.cos(t), z, r * Math.sin(t));
 
-    const height = heightAt(dir);
+    const height = sampledHeight(dir).raw;
     if (height < SEA_LEVEL + 0.012) continue; // keep the shoreline clear
     const elevation = terracedElevation(height);
     if (elevation > 0.16) continue; // grass, not alpine scrub
@@ -143,7 +142,7 @@ function scatterForest(candidateCount: number, minSpacing: number, rand: () => n
     const r = Math.sqrt(1 - z * z);
     dir.set(r * Math.cos(t), z, r * Math.sin(t));
 
-    const height = heightAt(dir);
+    const height = sampledHeight(dir).raw;
     if (height < SEA_LEVEL + 0.02) continue; // clear shoreline
     const elevation = terracedElevation(height);
     if (elevation > 0.15) continue; // canopy stays off the rocky slopes
@@ -193,7 +192,7 @@ function scatterScree(candidateCount: number, minSpacing: number, rand: () => nu
     const r = Math.sqrt(1 - z * z);
     dir.set(r * Math.cos(t), z, r * Math.sin(t));
 
-    const height = heightAt(dir);
+    const height = sampledHeight(dir).raw;
     if (terracedElevation(height) < 0.15) continue; // rocky slopes only
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
@@ -335,7 +334,7 @@ export function buildVegetation(
     if (pts.length === 0) return;
     const foliageMesh = new THREE.InstancedMesh(variant.geometry, foliageMaterial, pts.length);
     pts.forEach((p, i) => {
-      const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
+      const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       const scale = 0.42 + rand() * 0.45;
       orient(position, p.dir, rand() * Math.PI * 2);
@@ -388,7 +387,7 @@ export function buildVegetation(
       // look like chocolate chips, and then like almonds once they were
       // lightened. Real outcrops emerge from the ground, so bury most of
       // each one and let only its crown break the surface.
-      const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight - 0.016;
+      const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight - 0.016;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.7, rand() * Math.PI * 2);
       dummy.scale.set(0.5 + rand() * 1.0, 0.4 + rand() * 0.5, 0.5 + rand() * 1.0);
@@ -428,7 +427,7 @@ export function buildVegetation(
   const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
   const screeColor = new THREE.Color();
   screePoints.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight - 0.007;
+    const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight - 0.007;
     const position = p.dir.clone().multiplyScalar(surfaceRadius);
     orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.5, rand() * Math.PI * 2);
     dummy.scale.set(0.6 + rand() * 1.0, 0.5 + rand() * 0.7, 0.6 + rand() * 1.0);
@@ -468,7 +467,7 @@ export function buildVegetation(
     if (pts.length === 0) return;
     const mesh = new THREE.InstancedMesh(canopyVariants[vi], canopyMaterial, pts.length);
     pts.forEach((p, i) => {
-      const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
+      const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2);
       // squared distribution: a flat random range gives every clump nearly
@@ -503,7 +502,7 @@ export function buildVegetation(
   const grassMesh = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassPoints.length);
   const grassColor = new THREE.Color();
   grassPoints.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
+    const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight;
     const position = p.dir.clone().multiplyScalar(surfaceRadius);
     orient(position, p.dir, rand() * Math.PI * 2);
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);

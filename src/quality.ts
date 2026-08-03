@@ -123,7 +123,7 @@ export function settingsFor(tier: QualityTier): QualitySettings {
         dofRings: 0,
         maxPixelRatio: 1,
         canopyDetail: 0,
-        textureWidth: 768,
+        textureWidth: 512,
         scatterBudget: 0.4,
       };
     case 'medium':
@@ -135,7 +135,7 @@ export function settingsFor(tier: QualityTier): QualitySettings {
         dofRings: 1,
         maxPixelRatio: 1.25,
         canopyDetail: 1,
-        textureWidth: 1024,
+        textureWidth: 768,
         scatterBudget: 0.6,
       };
     default:
@@ -147,7 +147,7 @@ export function settingsFor(tier: QualityTier): QualitySettings {
         dofRings: 2,
         maxPixelRatio: 1.5,
         canopyDetail: 1,
-        textureWidth: 1280,
+        textureWidth: 1024,
         scatterBudget: 1,
       };
   }

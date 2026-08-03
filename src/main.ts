@@ -41,8 +41,18 @@ const QUALITY = settingsFor(TIER);
 //
 // Yielding between steps does not make the work any smaller, but it hands
 // the browser back often enough to stay alive and to show progress.
-const yieldToBrowser = () =>
+// Yielding also gives the loading text a chance to say where it has got
+// to. Twenty seconds of an unchanging "組み立て中…" is indistinguishable
+// from a page that has hung, which is exactly how it was read.
+const BUILD_STEPS = 8;
+let buildStep = 0;
+const yieldToBrowser = (label?: string) =>
   new Promise<void>((resolve) => {
+    if (label) {
+      buildStep++;
+      const el = document.querySelector<HTMLDivElement>('#loading');
+      if (el) el.textContent = `組み立て中… ${label} (${buildStep}/${BUILD_STEPS})`;
+    }
     requestAnimationFrame(() => resolve());
   });
 
@@ -283,125 +293,6 @@ scene.add(globeGroup);
 // terrain color is painted once onto a texture (crisp, cheap to sample)
 // instead of interpolated per-vertex (which read as blurry) — geometry
 // only needs to be smooth enough to carry the displacement + lighting
-const geometry = new THREE.SphereGeometry(RADIUS, QUALITY.globeSegments[0], QUALITY.globeSegments[1]);
-displaceSphere(geometry, RADIUS, BUMP_HEIGHT);
-await yieldToBrowser();
-const TEX_W = QUALITY.textureWidth;
-const TEX_H = TEX_W / 2;
-await yieldToBrowser();
-const terrainTexture = buildTerrainTexture(TEX_W, TEX_H);
-await yieldToBrowser();
-
-const terrainBumpTexture = buildBumpTexture(TEX_W, TEX_H);
-await yieldToBrowser();
-
-const globeMaterial = new THREE.MeshStandardMaterial({
-  map: terrainTexture,
-  // fine surface relief via lighting only (no extra geometry) — the
-  // single biggest lever for "sculpted miniature" vs. "smooth painted
-  // ball" once you actually zoom in on it
-  bumpMap: terrainBumpTexture,
-  bumpScale: 0.005,
-  // pushed to fully matte — the whole point of the glossy ocean resin is
-  // that it's the *only* shiny thing in the scene; any gloss on the rock
-  // undercuts that contrast and makes both materials read as "plastic"
-  roughness: 0.97,
-  metalness: 0,
-  envMapIntensity: 0.06,
-});
-
-const globeMesh = new THREE.Mesh(geometry, globeMaterial);
-globeMesh.castShadow = true;
-globeMesh.receiveShadow = true;
-globeGroup.add(globeMesh);
-
-// glossy resin-like ocean shell sitting right at sea level, covering the
-// flattened seabed below. Mostly opaque with a hard glassy clearcoat reads
-// as poured diorama resin; the earlier more-transparent/liquid version
-// read as a soft gummy-candy jelly instead of a solid miniature material.
-const oceanGeometry = new THREE.SphereGeometry(
-  seaLevelRadius(RADIUS, BUMP_HEIGHT),
-  QUALITY.oceanSegments[0],
-  QUALITY.oceanSegments[1],
-);
-rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
-// a thin raised lip hugging the actual coastline, like poured resin (or
-// real water) climbing slightly against the land instead of meeting it
-// as a flat sheet
-applyCoastalMeniscus(oceanGeometry, 0.006);
-const oceanTexture = buildOceanTexture(TEX_W, TEX_H);
-await yieldToBrowser();
-const waveTexture = buildWaveTexture();
-await yieldToBrowser();
-const oceanMaterial = new THREE.MeshPhysicalMaterial({
-  map: oceanTexture,
-  // a directional wave pattern, slowly scrolled in the animation loop —
-  // gives moving, shimmering highlights instead of a fixed pattern
-  bumpMap: waveTexture,
-  bumpScale: 0.012,
-  transparent: true,
-  // full strength — the per-texel alpha ramp baked into the ocean texture
-  // is what varies the transparency now, so a flat material opacity here
-  // would only fight it
-  opacity: 1,
-  roughness: 0.3,
-  metalness: 0,
-  // poured-epoxy-resin read: a strong, very smooth clearcoat gives the
-  // hard, glassy top layer real resin has, instead of reading as a
-  // painted-flat "lake" surface. Sharper clearcoat highlights (low
-  // clearcoatRoughness) rather than a soft/wide sheen is what actually
-  // sells "smooth cured epoxy" over "wet candy" — that came from the
-  // *base* roughness being too low, not the clearcoat itself.
-  clearcoat: 0.85,
-  clearcoatRoughness: 0.16,
-  ior: 1.5,
-  // enough ambient reflection to keep the resin looking wet/glassy
-  // without washing the saturated blue out to a flat gray-teal
-  envMapIntensity: 0.35,
-});
-const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
-// receives only — a translucent resin sheet casting a hard opaque shadow
-// onto the seabed it covers would read as a lid, not as water
-oceanMesh.receiveShadow = true;
-globeGroup.add(oceanMesh);
-
-// scattered trees and rocks — discrete miniature objects standing on the
-// terrain are what actually reads as "diorama", not just a smooth
-// colored/shiny surface
-await yieldToBrowser();
-const vegetation = buildVegetation(RADIUS, BUMP_HEIGHT, QUALITY.canopyDetail, QUALITY.scatterBudget);
-vegetation.traverse((child) => {
-  if ((child as THREE.Mesh).isMesh) {
-    child.castShadow = true;
-    child.receiveShadow = true;
-  }
-});
-globeGroup.add(vegetation);
-
-// faint atmospheric haze shell, purely decorative
-const hazeGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
-const hazeMaterial = new THREE.MeshStandardMaterial({
-  color: 0xffffff,
-  transparent: true,
-  opacity: 0.05,
-  roughness: 1,
-  depthWrite: false,
-});
-const hazeMesh = new THREE.Mesh(hazeGeometry, hazeMaterial);
-globeGroup.add(hazeMesh);
-
-// real puffy 3D clouds with cast shadows — matches the design memo's
-// "evaporation + rain shadow" sky layer with an actual visible presence
-await yieldToBrowser();
-const clouds = buildClouds(RADIUS);
-// (castShadow is decided per layer inside buildClouds: the opaque core
-// casts, the translucent fringe does not.)
-globeGroup.add(clouds);
-
-// ---------- stand: real wood pedestal + nameplate, globe hovers just
-// slightly above it (a hint of "magnetic levitation" kept, but the wood
-// itself — not a glowing ring — is now the dominant, grounded object) ----------
-
 const standGroup = new THREE.Group();
 scene.add(standGroup);
 
@@ -534,6 +425,194 @@ standGroup.add(cradleRing);
 // (the globe's shadow on the stand is a real cast shadow now — the blob
 // decal that used to stand in for it would only double up on top of it)
 
+// ---------- rotate / stop toggle ----------
+
+let spinning = true;
+const toggleButton = document.querySelector<HTMLButtonElement>('#mode-toggle')!;
+toggleButton.addEventListener('click', () => {
+  spinning = !spinning;
+  toggleButton.textContent = spinning ? '⏸' : '▶';
+  const label = spinning ? '回転を止める' : '回転を再開する';
+  toggleButton.title = label;
+  toggleButton.setAttribute('aria-label', label);
+});
+
+// ---------- animation loop ----------
+
+const clock = new THREE.Clock();
+let rendering = false;
+let globeTick: ((t: number) => void) | null = null;
+
+function startRendering() {
+  if (rendering) return;
+  rendering = true;
+  animate();
+}
+
+function animate() {
+  const t = clock.getElapsedTime();
+
+  if (spinning) {
+    globeGroup.rotation.y += 0.0025 * 60 * (1 / 60);
+  }
+
+  // A display globe sits still in its collar; the bob that used to be here
+  // was the levitation idea, and it survived the sphere being seated only
+  // as a slow wobble that read as the whole model being loose.
+  globeGroup.rotation.z = 0.04;
+
+  // The globe's own per-frame work is registered once it exists. It cannot
+  // be referenced directly from here: rendering starts before those
+  // bindings are initialised, and a `const` read before its declaration
+  // throws rather than yielding undefined, so an optional-chained access
+  // would not have saved it either.
+  globeTick?.(t);
+
+
+  // keep the focal plane pinned to the front face of the globe as the
+  // viewer orbits or zooms, the way a photographer refocuses on the
+  // subject rather than on a fixed distance
+  if (dofPass) {
+    const globeCenter = globeGroup.position;
+    dofPass.uniforms.uFocusDistance.value = Math.max(
+      camera.position.distanceTo(globeCenter) - RADIUS * 0.72,
+      0.5,
+    );
+  }
+
+  controls.update();
+  composer.render();
+  requestAnimationFrame(animate);
+}
+
+
+// The bench, the stand and the lighting are all cheap; the globe is not.
+// Rendering starts here rather than after everything is finished, so the
+// scene appears within a second or so and visibly fills in, instead of
+// showing a caption for the twenty seconds the model takes to assemble on
+// a phone — which is indistinguishable from the page having hung, and was
+// read as exactly that.
+startRendering();
+
+const geometry = new THREE.SphereGeometry(RADIUS, QUALITY.globeSegments[0], QUALITY.globeSegments[1]);
+displaceSphere(geometry, RADIUS, BUMP_HEIGHT);
+await yieldToBrowser('地形');
+const TEX_W = QUALITY.textureWidth;
+const TEX_H = TEX_W / 2;
+await yieldToBrowser('地形');
+const terrainTexture = buildTerrainTexture(TEX_W, TEX_H);
+await yieldToBrowser('起伏');
+
+const terrainBumpTexture = buildBumpTexture(TEX_W, TEX_H);
+await yieldToBrowser('海');
+
+const globeMaterial = new THREE.MeshStandardMaterial({
+  map: terrainTexture,
+  // fine surface relief via lighting only (no extra geometry) — the
+  // single biggest lever for "sculpted miniature" vs. "smooth painted
+  // ball" once you actually zoom in on it
+  bumpMap: terrainBumpTexture,
+  bumpScale: 0.005,
+  // pushed to fully matte — the whole point of the glossy ocean resin is
+  // that it's the *only* shiny thing in the scene; any gloss on the rock
+  // undercuts that contrast and makes both materials read as "plastic"
+  roughness: 0.97,
+  metalness: 0,
+  envMapIntensity: 0.06,
+});
+
+const globeMesh = new THREE.Mesh(geometry, globeMaterial);
+globeMesh.castShadow = true;
+globeMesh.receiveShadow = true;
+globeGroup.add(globeMesh);
+
+// glossy resin-like ocean shell sitting right at sea level, covering the
+// flattened seabed below. Mostly opaque with a hard glassy clearcoat reads
+// as poured diorama resin; the earlier more-transparent/liquid version
+// read as a soft gummy-candy jelly instead of a solid miniature material.
+const oceanGeometry = new THREE.SphereGeometry(
+  seaLevelRadius(RADIUS, BUMP_HEIGHT),
+  QUALITY.oceanSegments[0],
+  QUALITY.oceanSegments[1],
+);
+rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
+// a thin raised lip hugging the actual coastline, like poured resin (or
+// real water) climbing slightly against the land instead of meeting it
+// as a flat sheet
+applyCoastalMeniscus(oceanGeometry, 0.006);
+const oceanTexture = buildOceanTexture(TEX_W, TEX_H);
+await yieldToBrowser('水面');
+const waveTexture = buildWaveTexture();
+await yieldToBrowser('植生');
+const oceanMaterial = new THREE.MeshPhysicalMaterial({
+  map: oceanTexture,
+  // a directional wave pattern, slowly scrolled in the animation loop —
+  // gives moving, shimmering highlights instead of a fixed pattern
+  bumpMap: waveTexture,
+  bumpScale: 0.012,
+  transparent: true,
+  // full strength — the per-texel alpha ramp baked into the ocean texture
+  // is what varies the transparency now, so a flat material opacity here
+  // would only fight it
+  opacity: 1,
+  roughness: 0.3,
+  metalness: 0,
+  // poured-epoxy-resin read: a strong, very smooth clearcoat gives the
+  // hard, glassy top layer real resin has, instead of reading as a
+  // painted-flat "lake" surface. Sharper clearcoat highlights (low
+  // clearcoatRoughness) rather than a soft/wide sheen is what actually
+  // sells "smooth cured epoxy" over "wet candy" — that came from the
+  // *base* roughness being too low, not the clearcoat itself.
+  clearcoat: 0.85,
+  clearcoatRoughness: 0.16,
+  ior: 1.5,
+  // enough ambient reflection to keep the resin looking wet/glassy
+  // without washing the saturated blue out to a flat gray-teal
+  envMapIntensity: 0.35,
+});
+const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
+// receives only — a translucent resin sheet casting a hard opaque shadow
+// onto the seabed it covers would read as a lid, not as water
+oceanMesh.receiveShadow = true;
+globeGroup.add(oceanMesh);
+
+// scattered trees and rocks — discrete miniature objects standing on the
+// terrain are what actually reads as "diorama", not just a smooth
+// colored/shiny surface
+await yieldToBrowser('植生');
+const vegetation = buildVegetation(RADIUS, BUMP_HEIGHT, QUALITY.canopyDetail, QUALITY.scatterBudget);
+vegetation.traverse((child) => {
+  if ((child as THREE.Mesh).isMesh) {
+    child.castShadow = true;
+    child.receiveShadow = true;
+  }
+});
+globeGroup.add(vegetation);
+
+// faint atmospheric haze shell, purely decorative
+const hazeGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
+const hazeMaterial = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  transparent: true,
+  opacity: 0.05,
+  roughness: 1,
+  depthWrite: false,
+});
+const hazeMesh = new THREE.Mesh(hazeGeometry, hazeMaterial);
+globeGroup.add(hazeMesh);
+
+// real puffy 3D clouds with cast shadows — matches the design memo's
+// "evaporation + rain shadow" sky layer with an actual visible presence
+await yieldToBrowser('雲');
+const clouds = buildClouds(RADIUS);
+// (castShadow is decided per layer inside buildClouds: the opaque core
+// casts, the translucent fringe does not.)
+globeGroup.add(clouds);
+
+// ---------- stand: real wood pedestal + nameplate, globe hovers just
+// slightly above it (a hint of "magnetic levitation" kept, but the wood
+// itself — not a glowing ring — is now the dominant, grounded object) ----------
+
 // ---------- resize ----------
 
 window.addEventListener('resize', () => {
@@ -561,55 +640,10 @@ window.addEventListener('resize', () => {
   controls.update();
 });
 
-// ---------- rotate / stop toggle ----------
-
-let spinning = true;
-const toggleButton = document.querySelector<HTMLButtonElement>('#mode-toggle')!;
-toggleButton.addEventListener('click', () => {
-  spinning = !spinning;
-  toggleButton.textContent = spinning ? '⏸' : '▶';
-  const label = spinning ? '回転を止める' : '回転を再開する';
-  toggleButton.title = label;
-  toggleButton.setAttribute('aria-label', label);
-});
-
-// ---------- animation loop ----------
-
-const clock = new THREE.Clock();
-
-function animate() {
-  const t = clock.getElapsedTime();
-
-  if (spinning) {
-    globeGroup.rotation.y += 0.0025 * 60 * (1 / 60);
-  }
-
-  // A display globe sits still in its collar; the bob that used to be here
-  // was the levitation idea, and it survived the sphere being seated only
-  // as a slow wobble that read as the whole model being loose.
-  globeGroup.rotation.z = 0.04;
-
+globeTick = (t) => {
   hazeMesh.rotation.y += 0.0006;
   waveTexture.offset.x = t * 0.006;
   waveTexture.offset.y = Math.sin(t * 0.15) * 0.01;
-
-
-  // keep the focal plane pinned to the front face of the globe as the
-  // viewer orbits or zooms, the way a photographer refocuses on the
-  // subject rather than on a fixed distance
-  if (dofPass) {
-    const globeCenter = globeGroup.position;
-    dofPass.uniforms.uFocusDistance.value = Math.max(
-      camera.position.distanceTo(globeCenter) - RADIUS * 0.72,
-      0.5,
-    );
-  }
-
-  controls.update();
-  composer.render();
-  requestAnimationFrame(animate);
-}
+};
 
 document.querySelector<HTMLDivElement>('#loading')?.remove();
-
-animate();
