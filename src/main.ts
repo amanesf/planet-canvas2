@@ -86,7 +86,7 @@ const camera = new THREE.PerspectiveCamera(
 // leaves a lot of dim, blurred workshop visible above and below the
 // globe; filling the whole frame edge-to-edge with the globe (the old
 // distance) left no room for that surrounding context to read at all.
-const BASE_CAMERA_DISTANCE = 8.0;
+const BASE_CAMERA_DISTANCE = 7.0;
 function cameraDistanceForViewport() {
   const aspect = window.innerWidth / window.innerHeight;
   if (aspect >= 1) return BASE_CAMERA_DISTANCE;
@@ -239,7 +239,7 @@ controls.target.set(0, TARGET_Y, 0);
 // to actually dominate before any of this is visible.
 scene.add(new THREE.AmbientLight(0xffe9c2, 0.16));
 
-const keyLight = new THREE.DirectionalLight(0xffe0b4, 3.4);
+const keyLight = new THREE.DirectionalLight(0xfff1dc, 3.4);
 keyLight.position.set(-3.2, 4.6, 4.2);
 keyLight.castShadow = QUALITY.shadowMapSize > 0;
 keyLight.shadow.mapSize.set(QUALITY.shadowMapSize || 1, QUALITY.shadowMapSize || 1);
@@ -278,7 +278,7 @@ scene.add(rimLight);
 // desk, the bottles and the foreground clutter sitting in near-black. A
 // warm falloff light above the bench lights the room without touching the
 // key-to-fill ratio the globe is lit by.
-const benchLamp = new THREE.PointLight(0xffcf95, 150, 40, 2);
+const benchLamp = new THREE.PointLight(0xffcf95, 210, 44, 2);
 benchLamp.position.set(-3, 7, 4);
 scene.add(benchLamp);
 
@@ -308,16 +308,18 @@ function buildWoodTexture(width = 512, height = 512): THREE.CanvasTexture {
   // dark walnut/espresso, not a light honey oak — a real display pedestal
   // for something like this is a rich, near-black-brown stained hardwood
   const base = ctx.createLinearGradient(0, 0, width, 0);
-  base.addColorStop(0, '#2c1a0f');
-  base.addColorStop(0.5, '#3e2617');
-  base.addColorStop(1, '#2c1a0f');
+  base.addColorStop(0, '#4a2c19');
+  base.addColorStop(0.5, '#6b4023');
+  base.addColorStop(1, '#4a2c19');
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, width, height);
 
-  for (let i = 0; i < 46; i++) {
+  for (let i = 0; i < 70; i++) {
     const y = Math.random() * height;
-    ctx.strokeStyle = `rgba(18, 10, 5, ${0.08 + Math.random() * 0.16})`;
-    ctx.lineWidth = 1 + Math.random() * 2.5;
+    // the grain was mixed so dark against so dark a base that it never
+    // resolved at all — the pedestal read as a flat brown gradient
+    ctx.strokeStyle = `rgba(30, 15, 7, ${0.16 + Math.random() * 0.26})`;
+    ctx.lineWidth = 1 + Math.random() * 3.5;
     ctx.beginPath();
     let x = 0;
     let yy = y;
@@ -333,7 +335,7 @@ function buildWoodTexture(width = 512, height = 512): THREE.CanvasTexture {
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(3, 1);
+  texture.repeat.set(2, 1);
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
@@ -372,7 +374,7 @@ function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = 'rgba(60, 42, 16, 0.65)';
+  ctx.fillStyle = 'rgba(38, 24, 8, 0.92)';
   ctx.font = '600 56px "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -381,11 +383,16 @@ function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
   return texture;
 }
 
+// Polished metal is almost pure reflection, so in a dim room a fully
+// metallic surface renders nearly black — which is what turned the
+// nameplate into a dull brown slab. Backing off the metalness lets some
+// diffuse brass colour through, and a strong environment term gives it the
+// warm sheen the reference's fittings have.
 const plaqueMaterial = new THREE.MeshStandardMaterial({
-  color: 0xcda45e,
-  metalness: 0.85,
-  roughness: 0.32,
-  envMapIntensity: 0.6,
+  color: 0xd8ab5c,
+  metalness: 0.55,
+  roughness: 0.28,
+  envMapIntensity: 1.8,
 });
 const plaqueBacking = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.32, 0.03), plaqueMaterial);
 plaqueBacking.position.set(0, -1.86, 1.78);
@@ -412,12 +419,29 @@ standGroup.add(trimRing);
 // The brass collar the sphere rests in. A pulsing glow ring used to sit
 // here; a glowing ring belongs to a sci-fi prop, not to something
 // photographed on a workbench next to a jar of paint.
+// A ring of radius 1.2 at this height was not cradling anything: the
+// sphere's bottom is only about 1.42 below its centre, so at that height
+// the sphere is already down to a point and the ring was a wide disc
+// around its tip. Sized to the sphere's actual horizontal radius where it
+// meets the collar, and raised onto a turned wooden neck so the brass has
+// something to sit on.
+const collarNeck = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.16, 1.2, 0.48, 44),
+  baseMaterial,
+);
+collarNeck.position.y = -1.29;
+collarNeck.castShadow = true;
+collarNeck.receiveShadow = true;
+standGroup.add(collarNeck);
+
+// Sized to where the sphere actually is at the collar's height, so the
+// brass meets the curve instead of ringing empty air below the south pole.
 const cradleRing = new THREE.Mesh(
-  new THREE.TorusGeometry(1.2, 0.055, 16, 72),
+  new THREE.TorusGeometry(1.16, 0.065, 16, 72),
   plaqueMaterial,
 );
 cradleRing.rotation.x = Math.PI / 2;
-cradleRing.position.y = -1.47;
+cradleRing.position.y = -1.05;
 cradleRing.castShadow = true;
 cradleRing.receiveShadow = true;
 standGroup.add(cradleRing);
@@ -589,17 +613,12 @@ vegetation.traverse((child) => {
 });
 globeGroup.add(vegetation);
 
-// faint atmospheric haze shell, purely decorative
-const hazeGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
-const hazeMaterial = new THREE.MeshStandardMaterial({
-  color: 0xffffff,
-  transparent: true,
-  opacity: 0.05,
-  roughness: 1,
-  depthWrite: false,
-});
-const hazeMesh = new THREE.Mesh(hazeGeometry, hazeMaterial);
-globeGroup.add(hazeMesh);
+// (A faint white "atmosphere" shell used to sit here, wrapping the whole
+// globe at five percent opacity. On a planet render that reads as air; on a
+// photographed object it is a veil of milk over every material at once,
+// flattening the resin's depth, greying the rock and desaturating the
+// flock. Nothing in the reference has an atmosphere — it is a painted ball
+// on a desk — so the shell is gone.)
 
 // real puffy 3D clouds with cast shadows — matches the design memo's
 // "evaporation + rain shadow" sky layer with an actual visible presence
@@ -641,7 +660,6 @@ window.addEventListener('resize', () => {
 });
 
 globeTick = (t) => {
-  hazeMesh.rotation.y += 0.0006;
   waveTexture.offset.x = t * 0.006;
   waveTexture.offset.y = Math.sin(t * 0.15) * 0.01;
 };

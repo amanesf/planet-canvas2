@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   aridityAt,
+  snowinessAt,
   badlandsAt,
   BADLANDS_THRESHOLD,
   DESERT_ARIDITY_THRESHOLD,
@@ -64,6 +65,10 @@ function scatterPoints(candidateCount: number, minSpacing: number, rand: () => n
       if (aridity <= FOREST_ARIDITY_MAX) continue; // lush forest zone — covered by the canopy pass instead
       kind = 'tree'; // savanna: sparse, individually-visible trees
     } else {
+      // Snow buries loose rock; strewing dark boulders across a white field
+      // reads as pepper spilled on it, which is what was happening on the
+      // ice caps and the high summits.
+      if (snowinessAt(dir, height) > 0.35) continue;
       // climbing into rugged/mountain elevation — big accent boulders here;
       // ground-covering scree/rubble is handled by the denser scatterScree pass
       kind = 'rock';
@@ -194,6 +199,7 @@ function scatterScree(candidateCount: number, minSpacing: number, rand: () => nu
 
     const height = sampledHeight(dir).raw;
     if (terracedElevation(height) < 0.15) continue; // rocky slopes only
+    if (snowinessAt(dir, height) > 0.35) continue; // buried under snow
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
 
@@ -344,7 +350,7 @@ export function buildVegetation(
       foliageMesh.setMatrixAt(i, dummy.matrix);
       // a little per-tree color variance so a forest doesn't look like one
       // flat-shaded cutout repeated hundreds of times
-      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.42 + rand() * 0.18, 0.2 + rand() * 0.22, THREE.SRGBColorSpace);
+      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.48 + rand() * 0.14, 0.26 + rand() * 0.12, THREE.SRGBColorSpace);
       foliageMesh.setColorAt(i, foliageColor);
     });
     foliageMesh.instanceMatrix.needsUpdate = true;
@@ -481,7 +487,7 @@ export function buildVegetation(
       // wide lightness spread (not just hue jitter) so neighboring clumps
       // read as light/shadow variation across the canopy, not one flat
       // uniform green — real clump foliage isn't evenly lit all over
-      canopyColor.setHSL(0.2 + rand() * 0.05, 0.42 + rand() * 0.2, 0.24 + rand() * 0.26, THREE.SRGBColorSpace);
+      canopyColor.setHSL(0.205 + rand() * 0.04, 0.5 + rand() * 0.14, 0.3 + rand() * 0.13, THREE.SRGBColorSpace);
       mesh.setColorAt(i, canopyColor);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -508,7 +514,7 @@ export function buildVegetation(
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);
     dummy.updateMatrix();
     grassMesh.setMatrixAt(i, dummy.matrix);
-    grassColor.setHSL(0.21 + rand() * 0.05, 0.4 + rand() * 0.16, 0.24 + rand() * 0.16, THREE.SRGBColorSpace);
+    grassColor.setHSL(0.215 + rand() * 0.04, 0.46 + rand() * 0.14, 0.28 + rand() * 0.1, THREE.SRGBColorSpace);
     grassMesh.setColorAt(i, grassColor);
   });
   grassMesh.instanceMatrix.needsUpdate = true;

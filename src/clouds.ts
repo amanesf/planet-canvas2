@@ -97,9 +97,10 @@ function buildCloudBand(
 
       out.push({
         dir,
-        // hugging the surface: a band that floats visibly clear of the
-        // globe reads as a ring around it rather than as weather on it
-        hover: 0.012 + bulk * 0.055 + rand() * 0.03,
+        // Standing clear of the surface rather than lying on it: pinned
+        // this tightly they read as frost on the shell, and the gap is what
+        // lets their shadows land on the terrain where you can see them.
+        hover: 0.075 + bulk * 0.1 + rand() * 0.05,
         size: (0.036 + bulk * 0.058) * (0.55 + rand() * 0.8),
         spin: rand() * Math.PI * 2,
       });

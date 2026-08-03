@@ -214,9 +214,9 @@ export function buildWorkshop(): THREE.Group {
   // above the bench
   const wall = new THREE.Mesh(
     new THREE.PlaneGeometry(80, 40),
-    new THREE.MeshStandardMaterial({ color: '#42322a', roughness: 1 }),
+    new THREE.MeshStandardMaterial({ color: '#57422f', roughness: 1 }),
   );
-  wall.position.set(0, 9, -16);
+  wall.position.set(0, 6, -13);
   group.add(wall);
 
   // paint bottles in a loose row behind the subject
@@ -234,6 +234,19 @@ export function buildWorkshop(): THREE.Group {
     bottle.rotation.y = rand() * Math.PI * 2;
     bottle.scale.setScalar(1.7);
     group.add(bottle);
+  });
+
+  // A couple of taller items further back. The upper part of a portrait
+  // frame was opening onto flat black; the reference fills the same space
+  // with defocused shelf clutter.
+  [
+    [-2.9, -5.0, 3.4],
+    [3.4, -5.4, 3.0],
+  ].forEach(([x, z, h]) => {
+    const tall = buildBrushJar(rand);
+    tall.position.set(x, -2.08, z);
+    tall.scale.set(1.4, h, 1.4);
+    group.add(tall);
   });
 
   // Foreground clutter, close enough to the lens to be pure soft shape —

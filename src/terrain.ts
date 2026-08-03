@@ -5,35 +5,35 @@ import { mulberry32 } from './spatialHash';
 // Tuned so land covers roughly 30% of the surface, like real Earth's
 // land:sea ≈ 3:7 (verified empirically against heightAt's noise distribution).
 export const SEA_LEVEL = 0.072;
-const COAST_WIDTH = 0.012;
+const COAST_WIDTH = 0.006;
 
 // Toned down across the board — high-saturation primary colors are what
 // made this read as "cheap mobile game" regardless of how much detail
 // sat on top of them. Real terrain photography has much narrower,
 // muddier, more correlated color ranges than a clean color wheel.
-const shoreColor = new THREE.Color('#c2b393');
+const shoreColor = new THREE.Color('#a89b80');
 // muted/soil-toned on purpose — the vivid green now comes from actually
 // covering the ground in grass/tree instances, not from painting the
 // terrain itself bright green underneath them
 const landColor = new THREE.Color('#6a6a50');
-const desertColor = new THREE.Color('#9a7f5c');
-const rockColor = new THREE.Color('#7b6248');
+const desertColor = new THREE.Color('#8d7a5f');
+const rockColor = new THREE.Color('#6f5c4a');
 const snowColor = new THREE.Color('#dde4e6');
 const riverColor = new THREE.Color('#3184a0');
 const tundraColor = new THREE.Color('#8b8a6e');
 const iceColor = new THREE.Color('#d3dee1');
 // exposed sedimentary rock strata — badlands/canyon country
-const badlandsColorA = new THREE.Color('#7f6247');
-const badlandsColorB = new THREE.Color('#a08a6b');
+const badlandsColorA = new THREE.Color('#6f5b47');
+const badlandsColorB = new THREE.Color('#948269');
 const badlandsColorC = new THREE.Color('#5e463a');
 
 // Rich, saturated sapphire blue — darker in the depths but never reading
 // as black; a real poured-resin ocean over blue paint keeps its color
 // even in shadow; only the *highlight* should go near-white, not the
 // whole sea.
-const deepOceanColor = new THREE.Color('#1b5675');
-const midOceanColor = new THREE.Color('#2385ac');
-const shallowOceanColor = new THREE.Color('#57bcc6');
+const deepOceanColor = new THREE.Color('#0e3a5c');
+const midOceanColor = new THREE.Color('#186a95');
+const shallowOceanColor = new THREE.Color('#43b6c9');
 
 // The seabed, which until now was painted one flat blue on the assumption
 // that nothing would ever see it. In the reference photograph the resin is
@@ -42,8 +42,8 @@ const shallowOceanColor = new THREE.Color('#57bcc6');
 // then dark as the shelf drops away. Painting the floor and then letting
 // the water's own opacity vary with depth is what produces that read — a
 // uniformly opaque sheet of blue is a painted ball no matter how glossy.
-const seabedSandColor = new THREE.Color('#bfae8b');
-const seabedSiltColor = new THREE.Color('#587065');
+const seabedSandColor = new THREE.Color('#96917a');
+const seabedSiltColor = new THREE.Color('#4a6357');
 const seabedDeepColor = new THREE.Color('#2b3d47');
 
 function smoothstep(x: number, edge0: number, edge1: number): number {
@@ -188,7 +188,7 @@ export function heightAt(dir: THREE.Vector3): number {
   // landmass by half the amplitude and shrink the continents.)
   const midRelief = fbm3(dir.x * 3.4 + 17.7, dir.y * 3.4 + 17.7, dir.z * 3.4 + 17.7, 3);
   const landMask = smoothstep(macro, SEA_LEVEL - 0.03, SEA_LEVEL + 0.07);
-  n += midRelief * 0.11 * landMask;
+  n += midRelief * 0.145 * landMask;
 
   // Polar ice continents: guarantee a broad ice-sheet landmass right at
   // the poles instead of leaving it to chance whether ordinary continent
@@ -573,7 +573,7 @@ export function snowinessAt(dir: THREE.Vector3, height: number): number {
 // the noise field four extra times per texel, which would have multiplied
 // an already-expensive texture bake by five.
 const washColor = new THREE.Color('#241a11'); // sepia recess pigment, never neutral black
-const drybrushColor = new THREE.Color('#d8cbb2'); // bone highlight caught on raised edges
+const drybrushColor = new THREE.Color('#cdc4b1'); // bone highlight caught on raised edges
 const cliffColor = new THREE.Color('#6a5a49'); // bare stone: paint doesn't hold on a vertical face
 // Snow takes the opposite treatment. Its recesses are lit by skylight
 // bouncing between crystals, so they go cool blue-grey, never sepia — a
@@ -716,7 +716,7 @@ function applyReliefPaint(
   if (convexity < 0) {
     // wash: pigment runs downhill and pools, so recesses darken hard
     const t = Math.min(-convexity, 1) * flatness;
-    color.lerp(washColor, t * 0.42 * (1 - snowiness));
+    color.lerp(washColor, t * 0.33 * (1 - snowiness));
     color.lerp(snowWashColor, t * 0.5 * snowiness);
   } else {
     // drybrush: a much lighter touch, and only on the raised edge itself
@@ -737,7 +737,7 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
   if (h < SEA_LEVEL - COAST_WIDTH) {
     // Real seabed, graded by depth and mottled, because the resin above it
     // is see-through in the shallows (see buildOceanTexture's alpha ramp).
-    const shelf = smoothstep(h, SEA_LEVEL - 0.06, SEA_LEVEL);
+    const shelf = smoothstep(h, SEA_LEVEL - 0.035, SEA_LEVEL);
     const abyss = 1 - smoothstep(h, -0.14, SEA_LEVEL - 0.05);
     color = outColor.copy(seabedSiltColor).lerp(seabedSandColor, shelf);
     color.lerp(seabedDeepColor, abyss);
@@ -968,6 +968,40 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
   }
 
   ctx.putImageData(image, 0, 0);
+
+  // Beads of water standing on the cured resin — the sea's signature detail
+  // in the reference, and the one thing no amount of noise reproduces.
+  // Fractal noise can only ever make a *cloudy* surface; droplets are
+  // discrete round objects with sharp edges and clear space between them,
+  // so they are drawn as literal circles. Sized generously in texels: this
+  // map is about a thousand across for a sphere that fills half the frame,
+  // and anything a couple of texels wide never survives to the screen.
+  const dropRand = mulberry32(31337);
+  const dropDir = new THREE.Vector3();
+  for (let i = 0; i < 900; i++) {
+    const cx = dropRand() * width;
+    // biased away from the poles, where the equirectangular map crowds
+    // texels together and a round bead would be drawn as a long smear
+    const cy = height * (0.1 + dropRand() * 0.8);
+
+    // Water beads up in patches — it runs together where the surface is
+    // wetter and leaves clear areas between. Scattered evenly at full
+    // strength they stopped reading as water at all and became a starfield.
+    dirForPixel(cx, cy, width, height, dropDir);
+    const wetness = fbm3(dropDir.x * 9 + 313, dropDir.y * 9 + 313, dropDir.z * 9 + 313, 2);
+    if (dropRand() > wetness * 2.4 + 0.55) continue;
+
+    const r = 1.6 + dropRand() * dropRand() * 6;
+    const g = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, 0, cx, cy, r);
+    g.addColorStop(0, 'rgba(255,255,255,0.3)');
+    g.addColorStop(0.45, 'rgba(220,240,255,0.1)');
+    g.addColorStop(1, 'rgba(200,230,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
@@ -1009,31 +1043,11 @@ export function buildWaveTexture(width = 1024, height = 512): THREE.CanvasTextur
   }
   ctx.putImageData(image, 0, 0);
 
-  // Droplets. This is the sea's signature detail in the reference and the
-  // one thing no amount of noise reproduces: the resin surface is stippled
-  // with hundreds of tiny beads of water, each a hard little dome that
-  // catches the key light as a discrete pinpoint. Fractal noise can only
-  // ever make a *cloudy* surface — droplets are discrete round objects
-  // with sharp edges and clear space between them, so they get drawn as
-  // literal circles rather than sampled from a field.
-  const rand = mulberry32(31337);
-  const dropletCount = 2600;
-  for (let i = 0; i < dropletCount; i++) {
-    const cx = rand() * width;
-    // bias away from the poles, where the equirectangular map crowds texels
-    // together and a round droplet would be drawn as a long smear
-    const cy = height * (0.08 + rand() * 0.84);
-    const r = 1.5 + rand() * rand() * 6;
-    const g = ctx.createRadialGradient(cx - r * 0.25, cy - r * 0.25, 0, cx, cy, r);
-    g.addColorStop(0, 'rgba(255,255,255,0.95)');
-    g.addColorStop(0.55, 'rgba(255,255,255,0.42)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
+  // (The droplets that used to be drawn here moved into the ocean's colour
+  // texture. A bump map only perturbs the lighting, and on a surface this
+  // diffuse and this dark that came to almost nothing — the beads were
+  // there in the map and invisible on screen. In the reference they read as
+  // small bright specks, which is a *paint* fact, not a shading one.)
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
