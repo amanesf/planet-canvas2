@@ -340,6 +340,12 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
 
   const trunkMesh = new THREE.InstancedMesh(trunkGeometry, trunkMaterial, trees.length);
   let trunkIndex = 0;
+  // NOTE on the `THREE.SRGBColorSpace` argument passed to every setHSL
+  // below: three's working color space is linear-sRGB, so setHSL's default
+  // treats the lightness/saturation you give it as *linear* values. A
+  // "0.4 lightness green" then displays at roughly sRGB 0.66 — which is
+  // exactly how the foliage ended up as glowing neon lime. Naming sRGB
+  // explicitly makes the numbers mean what they look like in a color picker.
   const foliageColor = new THREE.Color();
 
   treeVariants.forEach((variant, vi) => {
@@ -357,7 +363,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       foliageMesh.setMatrixAt(i, dummy.matrix);
       // a little per-tree color variance so a forest doesn't look like one
       // flat-shaded cutout repeated hundreds of times
-      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.55 + rand() * 0.16, 0.38 + rand() * 0.12);
+      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.42 + rand() * 0.14, 0.26 + rand() * 0.12, THREE.SRGBColorSpace);
       foliageMesh.setColorAt(i, foliageColor);
     });
     foliageMesh.instanceMatrix.needsUpdate = true;
@@ -396,7 +402,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       dummy.scale.set(0.7 + rand() * 0.9, 0.6 + rand() * 0.7, 0.7 + rand() * 0.9);
       dummy.updateMatrix();
       rockMesh.setMatrixAt(i, dummy.matrix);
-      rockColor.setHSL(0.09 + rand() * 0.03, 0.12 + rand() * 0.08, 0.5 + rand() * 0.15);
+      rockColor.setHSL(0.09 + rand() * 0.03, 0.12 + rand() * 0.08, 0.5 + rand() * 0.15, THREE.SRGBColorSpace);
       rockMesh.setColorAt(i, rockColor);
     });
     rockMesh.instanceMatrix.needsUpdate = true;
@@ -422,7 +428,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.6 + rand() * 1.1, 0.5 + rand() * 0.7, 0.6 + rand() * 1.1);
     dummy.updateMatrix();
     duneMesh.setMatrixAt(i, dummy.matrix);
-    duneColor.setHSL(0.11 + rand() * 0.02, 0.4 + rand() * 0.15, 0.62 + rand() * 0.1);
+    duneColor.setHSL(0.11 + rand() * 0.02, 0.4 + rand() * 0.15, 0.62 + rand() * 0.1, THREE.SRGBColorSpace);
     duneMesh.setColorAt(i, duneColor);
   });
   duneMesh.instanceMatrix.needsUpdate = true;
@@ -445,7 +451,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.6 + rand() * 0.8, 0.55 + rand() * 0.6, 0.6 + rand() * 0.8);
     dummy.updateMatrix();
     desertRockMesh.setMatrixAt(i, dummy.matrix);
-    desertRockColor.setHSL(0.1 + rand() * 0.02, 0.3 + rand() * 0.1, 0.55 + rand() * 0.12);
+    desertRockColor.setHSL(0.1 + rand() * 0.02, 0.3 + rand() * 0.1, 0.55 + rand() * 0.12, THREE.SRGBColorSpace);
     desertRockMesh.setColorAt(i, desertRockColor);
   });
   desertRockMesh.instanceMatrix.needsUpdate = true;
@@ -470,7 +476,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.6 + rand() * 1.0, 0.5 + rand() * 0.7, 0.6 + rand() * 1.0);
     dummy.updateMatrix();
     screeMesh.setMatrixAt(i, dummy.matrix);
-    screeColor.setHSL(0.08 + rand() * 0.03, 0.14 + rand() * 0.08, 0.42 + rand() * 0.18);
+    screeColor.setHSL(0.08 + rand() * 0.03, 0.14 + rand() * 0.08, 0.42 + rand() * 0.18, THREE.SRGBColorSpace);
     screeMesh.setColorAt(i, screeColor);
   });
   screeMesh.instanceMatrix.needsUpdate = true;
@@ -512,7 +518,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       // wide lightness spread (not just hue jitter) so neighboring clumps
       // read as light/shadow variation across the canopy, not one flat
       // uniform green — real clump foliage isn't evenly lit all over
-      canopyColor.setHSL(0.225 + rand() * 0.05, 0.55 + rand() * 0.18, 0.3 + rand() * 0.22);
+      canopyColor.setHSL(0.235 + rand() * 0.05, 0.42 + rand() * 0.16, 0.24 + rand() * 0.15, THREE.SRGBColorSpace);
       mesh.setColorAt(i, canopyColor);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -539,7 +545,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);
     dummy.updateMatrix();
     grassMesh.setMatrixAt(i, dummy.matrix);
-    grassColor.setHSL(0.235 + rand() * 0.05, 0.55 + rand() * 0.15, 0.42 + rand() * 0.12);
+    grassColor.setHSL(0.245 + rand() * 0.05, 0.4 + rand() * 0.14, 0.3 + rand() * 0.1, THREE.SRGBColorSpace);
     grassMesh.setColorAt(i, grassColor);
   });
   grassMesh.instanceMatrix.needsUpdate = true;

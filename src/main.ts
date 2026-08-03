@@ -53,7 +53,7 @@ const camera = new THREE.PerspectiveCamera(
 // leaves a lot of dim, blurred workshop visible above and below the
 // globe; filling the whole frame edge-to-edge with the globe (the old
 // distance) left no room for that surrounding context to read at all.
-const BASE_CAMERA_DISTANCE = 12;
+const BASE_CAMERA_DISTANCE = 9.5;
 function cameraDistanceForViewport() {
   const aspect = window.innerWidth / window.innerHeight;
   if (aspect >= 1) return BASE_CAMERA_DISTANCE;
@@ -152,7 +152,7 @@ controls.target.set(0, TARGET_Y, 0);
 // "everything is equally lit" bright CG look. The fake contact-shadow
 // decals (shadow.ts) point along this exact same light direction, so the
 // two reinforce each other as "one consistent light source".
-scene.add(new THREE.AmbientLight(0xffe9c2, 0.28));
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.5));
 
 const keyLight = new THREE.DirectionalLight(0xffd9a0, 2.1);
 keyLight.position.set(4, 5, 3);
@@ -214,7 +214,7 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   bumpScale: 0.006,
   transparent: true,
   opacity: 0.95,
-  roughness: 0.3,
+  roughness: 0.38,
   metalness: 0,
   // poured-epoxy-resin read: a strong, very smooth clearcoat gives the
   // hard, glassy top layer real resin has, instead of reading as a
@@ -222,12 +222,12 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   // clearcoatRoughness) rather than a soft/wide sheen is what actually
   // sells "smooth cured epoxy" over "wet candy" — that came from the
   // *base* roughness being too low, not the clearcoat itself.
-  clearcoat: 0.75,
-  clearcoatRoughness: 0.1,
+  clearcoat: 0.45,
+  clearcoatRoughness: 0.22,
   ior: 1.5,
   // enough ambient reflection to keep the resin looking wet/glassy
   // without washing the saturated blue out to a flat gray-teal
-  envMapIntensity: 0.32,
+  envMapIntensity: 0.22,
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 globeGroup.add(oceanMesh);

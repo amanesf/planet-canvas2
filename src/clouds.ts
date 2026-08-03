@@ -162,7 +162,7 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
       const align = new THREE.Quaternion().setFromUnitVectors(up, p);
       const spin = new THREE.Quaternion().setFromAxisAngle(p, rand() * Math.PI * 2);
       dummy.quaternion.copy(spin).multiply(align);
-      const scale = 0.11 + rand() * 0.09;
+      const scale = 0.15 + rand() * 0.12;
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);

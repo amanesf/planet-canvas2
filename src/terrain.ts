@@ -22,17 +22,17 @@ const riverColor = new THREE.Color('#3184a0');
 const tundraColor = new THREE.Color('#8b8a6e');
 const iceColor = new THREE.Color('#dce8ea');
 // exposed sedimentary rock strata — badlands/canyon country
-const badlandsColorA = new THREE.Color('#b5652f');
-const badlandsColorB = new THREE.Color('#dba15c');
-const badlandsColorC = new THREE.Color('#823f28');
+const badlandsColorA = new THREE.Color('#9a6236');
+const badlandsColorB = new THREE.Color('#c09a68');
+const badlandsColorC = new THREE.Color('#6e4630');
 
 // Rich, saturated sapphire blue — darker in the depths but never reading
 // as black; a real poured-resin ocean over blue paint keeps its color
 // even in shadow; only the *highlight* should go near-white, not the
 // whole sea.
-const deepOceanColor = new THREE.Color('#081c42');
-const midOceanColor = new THREE.Color('#123f7a');
-const shallowOceanColor = new THREE.Color('#2f76a8');
+const deepOceanColor = new THREE.Color('#123a63');
+const midOceanColor = new THREE.Color('#1c66a0');
+const shallowOceanColor = new THREE.Color('#3f9fc4');
 
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
@@ -557,6 +557,23 @@ function sampleRiverFlow(river: { flow: Float32Array; width: number; height: num
   return smoothstep(strength, 0, 1);
 }
 
+// THREE.Color holds its components in the renderer's *linear* working
+// color space (so `new THREE.Color('#123f7a')` is nowhere near 0x12/0x3f/
+// 0x7a numerically). A canvas holds sRGB bytes, and the textures below are
+// tagged SRGBColorSpace so the GPU converts them back to linear on sample.
+// Writing raw linear components straight into the canvas therefore applied
+// the linear->sRGB decode twice, crushing every mid-tone toward black —
+// that's what turned the sapphire ocean into a near-black mirror. Encode
+// on the way out so the painted color survives the round trip intact.
+const srgbScratch = new THREE.Color();
+function writeSRGBPixel(data: Uint8ClampedArray, idx: number, c: THREE.Color): void {
+  srgbScratch.copy(c).convertLinearToSRGB();
+  data[idx] = Math.round(srgbScratch.r * 255);
+  data[idx + 1] = Math.round(srgbScratch.g * 255);
+  data[idx + 2] = Math.round(srgbScratch.b * 255);
+  data[idx + 3] = 255;
+}
+
 // Renders terrain color to a canvas once, matching the exact UV formula
 // THREE.SphereGeometry uses internally, so the crisp texture lines up with
 // the (much lower-poly) displaced mesh without any seams or misalignment.
@@ -581,10 +598,7 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
       const c = terrainColor(dir, h, riverStrength);
 
       const idx = (py * width + px) * 4;
-      image.data[idx] = Math.round(c.r * 255);
-      image.data[idx + 1] = Math.round(c.g * 255);
-      image.data[idx + 2] = Math.round(c.b * 255);
-      image.data[idx + 3] = 255;
+      writeSRGBPixel(image.data, idx, c);
     }
   }
 
@@ -614,10 +628,7 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
       const c = oceanColor(dir, h);
 
       const idx = (py * width + px) * 4;
-      image.data[idx] = Math.round(c.r * 255);
-      image.data[idx + 1] = Math.round(c.g * 255);
-      image.data[idx + 2] = Math.round(c.b * 255);
-      image.data[idx + 3] = 255;
+      writeSRGBPixel(image.data, idx, c);
     }
   }
 
