@@ -39,28 +39,24 @@ camera.position.set(0, 1.4, cameraDistanceForViewport());
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-// capping pixel ratio and using a cheaper shadow filter keeps this from
-// overloading weaker mobile GPUs (which showed up as the canvas going
-// blank a few seconds in — a classic driver-timeout symptom)
+// capping pixel ratio keeps this from overloading weaker mobile GPUs
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+// real-time shadow maps are a well-known trigger for driver-level GPU
+// hangs/resets on weaker mobile GPUs after continuous rendering — the
+// fake blob shadow under the globe (contactShadow, below) does the same
+// visual job for a fraction of the cost, so skip real shadows entirely
+renderer.shadowMap.enabled = false;
 app.appendChild(renderer.domElement);
 
-// if the GPU driver does drop the context under load, recover instead of
-// leaving the canvas permanently blank
+// if the GPU driver does drop the context, the page can't recover its
+// uploaded textures/geometry on its own — reload rather than leaving a
+// permanently blank canvas
 renderer.domElement.addEventListener(
   'webglcontextlost',
   (event) => {
     event.preventDefault();
-    console.warn('WebGL context lost — waiting for restore');
-  },
-  false,
-);
-renderer.domElement.addEventListener(
-  'webglcontextrestored',
-  () => {
-    console.warn('WebGL context restored');
+    console.warn('WebGL context lost — reloading to recover');
+    window.setTimeout(() => window.location.reload(), 300);
   },
   false,
 );
@@ -86,8 +82,6 @@ scene.add(new THREE.AmbientLight(0xfff1e0, 0.4));
 
 const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.7);
 keyLight.position.set(4, 5, 3);
-keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(512, 512);
 scene.add(keyLight);
 
 const rimLight = new THREE.DirectionalLight(0xbfe0ff, 0.5);

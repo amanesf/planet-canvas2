@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { fbm3 } from './noise';
 
-// Sea level sits above the noise midpoint so oceans dominate, matching a
-// toy-globe look rather than a 50/50 water split.
-export const SEA_LEVEL = 0.16;
+// Tuned so land covers roughly 30% of the surface, like real Earth's
+// land:sea ≈ 3:7 (verified empirically against heightAt's noise distribution).
+export const SEA_LEVEL = 0.05;
 const COAST_WIDTH = 0.012;
 
 const deepColor = new THREE.Color('#3fb6e0');
