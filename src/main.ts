@@ -19,7 +19,12 @@ import { buildVegetation } from './vegetation';
 import { buildClouds } from './clouds';
 import { DepthOfFieldShader } from './dof';
 import { buildWorkshop } from './setDressing';
-import { currentTier, installContextLossRecovery, settingsFor } from './quality';
+import {
+  clearDowngradeAfterStableRun,
+  currentTier,
+  installContextLossRecovery,
+  settingsFor,
+} from './quality';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
@@ -225,7 +230,12 @@ renderer.shadowMap.type = THREE.PCFShadowMap;
 // roll off smoothly toward white like a real photo, not clip to a flat
 // disc the way plain linear output does
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.4;
+// Turning shadows off does not just remove shade — it *adds* light,
+// because every surface that was occluded now receives the key in full. At
+// the same exposure the cheap tier came out visibly brighter and flatter
+// than the others: not a lower-detail version of the same picture, a
+// different one. Pulled back to match.
+renderer.toneMappingExposure = QUALITY.shadowMapSize > 0 ? 1.4 : 1.1;
 app.appendChild(renderer.domElement);
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
@@ -293,6 +303,8 @@ pmremGenerator.dispose();
 installContextLossRecovery(renderer.domElement, TIER, () =>
   setStatus('この端末では表示できませんでした（WebGL が停止しました）'),
 );
+// and if this run goes fine, stop holding a past failure against the tab
+clearDowngradeAfterStableRun();
 
 // ---------- controls: pinch / wheel zoom, drag to look around ----------
 
@@ -327,7 +339,7 @@ controls.target.set(0, TARGET_Y, 0);
 // to actually dominate before any of this is visible.
 scene.add(new THREE.AmbientLight(0xffe9c2, 0.16));
 
-const keyLight = new THREE.DirectionalLight(0xfff1dc, 3.4);
+const keyLight = new THREE.DirectionalLight(0xfff1dc, QUALITY.shadowMapSize > 0 ? 3.4 : 2.6);
 keyLight.position.set(-3.2, 4.6, 4.2);
 keyLight.castShadow = QUALITY.shadowMapSize > 0;
 keyLight.shadow.mapSize.set(QUALITY.shadowMapSize || 1, QUALITY.shadowMapSize || 1);
@@ -366,7 +378,7 @@ scene.add(rimLight);
 // desk, the bottles and the foreground clutter sitting in near-black. A
 // warm falloff light above the bench lights the room without touching the
 // key-to-fill ratio the globe is lit by.
-const benchLamp = new THREE.PointLight(0xffcf95, 210, 44, 2);
+const benchLamp = new THREE.PointLight(0xffcf95, QUALITY.shadowMapSize > 0 ? 210 : 150, 44, 2);
 benchLamp.position.set(-3, 7, 4);
 scene.add(benchLamp);
 

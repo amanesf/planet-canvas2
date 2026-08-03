@@ -61,6 +61,29 @@ export function currentTier(): QualityTier {
   return 'high';
 }
 
+/**
+ * Forget a previous downgrade once the page has clearly been running fine.
+ *
+ * Without this, a single bad load pins the tab to a lower tier for as long
+ * as it lives — and the tiers do not merely differ in detail, they turn off
+ * depth of field and shadows, so the page ends up showing a visibly
+ * different product with no way back short of opening a new tab. The
+ * failure that triggered the downgrade is often nothing to do with what the
+ * device can sustain (running out of WebGL contexts because too many tabs
+ * are open, say), so a clean run is good evidence the downgrade was not
+ * needed.
+ */
+export function clearDowngradeAfterStableRun(delayMs = 20000): void {
+  window.setTimeout(() => {
+    try {
+      window.sessionStorage.removeItem(STORAGE_KEY);
+      window.sessionStorage.removeItem(RELOAD_KEY);
+    } catch {
+      /* see readStoredTier */
+    }
+  }, delayMs);
+}
+
 /** The next rung down, or null if we are already at the bottom. */
 function downgrade(tier: QualityTier): QualityTier | null {
   const next = LADDER[LADDER.indexOf(tier) + 1];
@@ -147,8 +170,12 @@ export function settingsFor(tier: QualityTier): QualitySettings {
         globeSegments: [180, 100],
         oceanSegments: [64, 40],
         shadowMapSize: 0,
-        depthOfField: false,
-        dofRings: 0,
+        // Kept even here. Shadows are the expensive one (a second pass over
+        // all the geometry); a single ring of blur is affordable, and
+        // without it the background snaps sharp and the scene stops
+        // reading as a photograph at all.
+        depthOfField: true,
+        dofRings: 1,
         maxPixelRatio: 1,
         canopyDetail: 0,
         textureWidth: 512,
