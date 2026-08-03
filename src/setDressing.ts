@@ -67,125 +67,104 @@ function buildDeskTexture(): THREE.CanvasTexture {
   return texture;
 }
 
-/** A paint bottle: squat body, screw cap, paper label. */
-function buildPaintBottle(rand: () => number): THREE.Group {
-  const group = new THREE.Group();
+// ---------------------------------------------------------------------
+// One batch per material, not one mesh per part
+// ---------------------------------------------------------------------
+// Every prop here used to be a small Group of meshes, and every mesh is a
+// draw call: six paint bottles at three parts each, four brush jars at
+// eight, a conifer at five. Measured, the clutter behind and in front of
+// the subject accounted for most of the frame's hundred-odd draw calls —
+// spent on objects that are never in focus. None of them move, so they can
+// all be baked into one merged geometry per material and drawn a handful
+// of times in total.
+//
+// Materials are shared rather than constructed per object for the same
+// reason: each distinct material compiles its own shader program, and
+// those compile in a block before the first frame can be presented.
 
+const props = {
+  glass: [] as THREE.BufferGeometry[],
+  plastic: [] as THREE.BufferGeometry[],
+  paper: [] as THREE.BufferGeometry[],
+  wood: [] as THREE.BufferGeometry[],
+  foliage: [] as THREE.BufferGeometry[],
+  cotton: [] as THREE.BufferGeometry[],
+};
+type PropMaterial = keyof typeof props;
+
+function emit(
+  material: PropMaterial,
+  geometry: THREE.BufferGeometry,
+  place: (g: THREE.BufferGeometry) => void,
+): void {
+  place(geometry);
+  props[material].push(geometry);
+}
+
+/** A paint bottle: squat body, screw cap, paper label. */
+function buildPaintBottle(rand: () => number, at: THREE.Matrix4): void {
   const bodyHeight = 0.5 + rand() * 0.22;
   const radius = 0.17 + rand() * 0.05;
 
-  // the pigment inside reads through the glass as a dark saturated core
-  const paintHue = rand();
-  const body = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius * 0.96, bodyHeight, 18),
-    new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color().setHSL(paintHue, 0.45, 0.14, THREE.SRGBColorSpace),
-      roughness: 0.25,
-      metalness: 0,
-      clearcoat: 0.7,
-      clearcoatRoughness: 0.15,
-    }),
+  emit('glass', new THREE.CylinderGeometry(radius, radius * 0.96, bodyHeight, 14), (g) => {
+    g.translate(0, bodyHeight / 2, 0);
+    g.applyMatrix4(at);
+  });
+  emit('plastic', new THREE.CylinderGeometry(radius * 0.72, radius * 0.78, 0.16, 14), (g) => {
+    g.translate(0, bodyHeight + 0.08, 0);
+    g.applyMatrix4(at);
+  });
+  emit(
+    'paper',
+    new THREE.CylinderGeometry(radius * 1.015, radius * 1.015, bodyHeight * 0.45, 14, 1, true),
+    (g) => {
+      g.translate(0, bodyHeight * 0.45, 0);
+      g.applyMatrix4(at);
+    },
   );
-  body.position.y = bodyHeight / 2;
-  body.castShadow = true;
-  group.add(body);
-
-  const cap = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 0.72, radius * 0.78, 0.16, 18),
-    new THREE.MeshStandardMaterial({ color: '#26262a', roughness: 0.55 }),
-  );
-  cap.position.y = bodyHeight + 0.08;
-  cap.castShadow = true;
-  group.add(cap);
-
-  const label = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 1.015, radius * 1.015, bodyHeight * 0.45, 18, 1, true),
-    new THREE.MeshStandardMaterial({
-      color: '#d8d2c6',
-      roughness: 0.9,
-      side: THREE.DoubleSide,
-    }),
-  );
-  label.position.y = bodyHeight * 0.45;
-  group.add(label);
-
-  return group;
 }
 
 /** A loose ball of the same cotton the clouds are made of. */
-function buildCottonWad(rand: () => number): THREE.Mesh {
-  const parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 14; i++) {
+function buildCottonWad(rand: () => number, at: THREE.Matrix4): void {
+  for (let i = 0; i < 10; i++) {
     const r = 0.12 + rand() * 0.2;
-    const g = new THREE.SphereGeometry(r, 8, 6);
-    g.translate((rand() - 0.5) * 0.5, (rand() - 0.5) * 0.35, (rand() - 0.5) * 0.5);
-    parts.push(g);
+    emit('cotton', new THREE.SphereGeometry(r, 7, 5), (g) => {
+      g.translate((rand() - 0.5) * 0.5, (rand() - 0.5) * 0.35, (rand() - 0.5) * 0.5);
+      g.applyMatrix4(at);
+    });
   }
-  const merged = mergeGeometries(parts, false);
-  parts.forEach((g) => g.dispose());
-  return new THREE.Mesh(
-    merged,
-    new THREE.MeshStandardMaterial({ color: '#e8e6e4', roughness: 0.95 }),
-  );
 }
 
 /** A jar of brushes — tall enough to reach into the frame from the bench. */
-function buildBrushJar(rand: () => number): THREE.Group {
-  const group = new THREE.Group();
-  const jar = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.34, 0.3, 0.95, 20),
-    new THREE.MeshStandardMaterial({
-      color: '#cfd8d6',
-      roughness: 0.15,
-      metalness: 0,
-      transparent: true,
-      opacity: 0.5,
-    }),
-  );
-  jar.position.y = 0.475;
-  group.add(jar);
-
-  for (let i = 0; i < 7; i++) {
+function buildBrushJar(rand: () => number, at: THREE.Matrix4): void {
+  emit('glass', new THREE.CylinderGeometry(0.34, 0.3, 0.95, 16), (g) => {
+    g.translate(0, 0.475, 0);
+    g.applyMatrix4(at);
+  });
+  for (let i = 0; i < 6; i++) {
     const len = 1.5 + rand() * 0.9;
-    const handle = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.025, 0.035, len, 6),
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color().setHSL(0.07 + rand() * 0.05, 0.4, 0.18 + rand() * 0.2, THREE.SRGBColorSpace),
-        roughness: 0.5,
-      }),
-    );
-    handle.position.set((rand() - 0.5) * 0.34, 0.6 + len / 2, (rand() - 0.5) * 0.34);
-    handle.rotation.z = (rand() - 0.5) * 0.5;
-    handle.rotation.x = (rand() - 0.5) * 0.5;
-    group.add(handle);
+    emit('wood', new THREE.CylinderGeometry(0.025, 0.035, len, 5), (g) => {
+      g.rotateZ((rand() - 0.5) * 0.5);
+      g.rotateX((rand() - 0.5) * 0.5);
+      g.translate((rand() - 0.5) * 0.34, 0.6 + len / 2, (rand() - 0.5) * 0.34);
+      g.applyMatrix4(at);
+    });
   }
-  return group;
 }
 
 /** A spare model conifer, the kind that gets glued onto layouts. */
-function buildSpareTree(rand: () => number): THREE.Group {
-  const group = new THREE.Group();
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.03, 0.05, 0.35, 6),
-    new THREE.MeshStandardMaterial({ color: '#6b4a33', roughness: 0.95 }),
-  );
-  trunk.position.y = 0.175;
-  group.add(trunk);
-
+function buildSpareTree(at: THREE.Matrix4): void {
+  emit('wood', new THREE.CylinderGeometry(0.03, 0.05, 0.35, 6), (g) => {
+    g.translate(0, 0.175, 0);
+    g.applyMatrix4(at);
+  });
   for (let i = 0; i < 4; i++) {
     const t = i / 4;
-    const tier = new THREE.Mesh(
-      new THREE.ConeGeometry(0.34 * (1 - t * 0.62), 0.42, 9),
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color().setHSL(0.27, 0.38, 0.24 + rand() * 0.08, THREE.SRGBColorSpace),
-        roughness: 0.95,
-        flatShading: true,
-      }),
-    );
-    tier.position.y = 0.35 + t * 0.68;
-    group.add(tier);
+    emit('foliage', new THREE.ConeGeometry(0.34 * (1 - t * 0.62), 0.42, 8), (g) => {
+      g.translate(0, 0.35 + t * 0.68, 0);
+      g.applyMatrix4(at);
+    });
   }
-  return group;
 }
 
 /**
@@ -219,34 +198,39 @@ export function buildWorkshop(): THREE.Group {
   wall.position.set(0, 6, -13);
   group.add(wall);
 
+  const at = (x: number, y: number, z: number, s: number | [number, number, number], spin = 0) => {
+    const scale = typeof s === 'number' ? new THREE.Vector3(s, s, s) : new THREE.Vector3(...s);
+    return new THREE.Matrix4().compose(
+      new THREE.Vector3(x, y, z),
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), spin),
+      scale,
+    );
+  };
+
   // paint bottles in a loose row behind the subject
-  const bottlePositions: [number, number][] = [
-    [-5.2, -6.2],
-    [-3.6, -7.1],
-    [-2.0, -6.4],
-    [2.8, -6.8],
-    [4.3, -6.0],
-    [5.7, -7.2],
-  ];
-  bottlePositions.forEach(([x, z]) => {
-    const bottle = buildPaintBottle(rand);
-    bottle.position.set(x, -2.08, z);
-    bottle.rotation.y = rand() * Math.PI * 2;
-    bottle.scale.setScalar(1.7);
-    group.add(bottle);
+  (
+    [
+      [-5.2, -6.2],
+      [-3.6, -7.1],
+      [-2.0, -6.4],
+      [2.8, -6.8],
+      [4.3, -6.0],
+      [5.7, -7.2],
+    ] as [number, number][]
+  ).forEach(([x, z]) => {
+    buildPaintBottle(rand, at(x, -2.08, z, 1.7, rand() * Math.PI * 2));
   });
 
   // A couple of taller items further back. The upper part of a portrait
   // frame was opening onto flat black; the reference fills the same space
   // with defocused shelf clutter.
-  [
-    [-2.9, -5.0, 3.4],
-    [3.4, -5.4, 3.0],
-  ].forEach(([x, z, h]) => {
-    const tall = buildBrushJar(rand);
-    tall.position.set(x, -2.08, z);
-    tall.scale.set(1.4, h, 1.4);
-    group.add(tall);
+  (
+    [
+      [-2.9, -5.0, 3.4],
+      [3.4, -5.4, 3.0],
+    ] as [number, number, number][]
+  ).forEach(([x, z, h]) => {
+    buildBrushJar(rand, at(x, -2.08, z, [1.4, h, 1.4]));
   });
 
   // Foreground clutter, close enough to the lens to be pure soft shape —
@@ -258,21 +242,44 @@ export function buildWorkshop(): THREE.Group {
   // at roughly y = -2.4 in clip space, where the frame ends at -1. Only
   // objects that reach up toward the globe's own height get into shot at a
   // distance short enough to be properly out of focus.
-  const tree = buildSpareTree(rand);
-  tree.position.set(-1.95, -2.08, 6.3);
-  tree.scale.setScalar(3.1);
-  group.add(tree);
+  buildSpareTree(at(-1.95, -2.08, 6.3, 3.1));
+  buildBrushJar(rand, at(2.35, -2.08, 5.6, 1.7));
+  buildCottonWad(rand, at(2.9, -1.85, 2.4, 1.6));
 
-  const jar = buildBrushJar(rand);
-  jar.position.set(2.35, -2.08, 5.6);
-  jar.scale.setScalar(1.7);
-  group.add(jar);
+  // One mesh per material for the whole of the above.
+  const propMaterials: Record<PropMaterial, THREE.Material> = {
+    glass: new THREE.MeshStandardMaterial({
+      color: '#9fb0ad',
+      roughness: 0.18,
+      metalness: 0,
+      transparent: true,
+      opacity: 0.55,
+    }),
+    plastic: new THREE.MeshStandardMaterial({ color: '#26262a', roughness: 0.55 }),
+    paper: new THREE.MeshStandardMaterial({
+      color: '#d8d2c6',
+      roughness: 0.9,
+      side: THREE.DoubleSide,
+    }),
+    wood: new THREE.MeshStandardMaterial({ color: '#6b4a33', roughness: 0.8 }),
+    foliage: new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(0.27, 0.38, 0.26, THREE.SRGBColorSpace),
+      roughness: 0.95,
+      flatShading: true,
+    }),
+    cotton: new THREE.MeshStandardMaterial({ color: '#e8e6e4', roughness: 0.95 }),
+  };
 
-  // a wad of the cloud cotton left on the bench beside the stand
-  const wad = buildCottonWad(rand);
-  wad.position.set(2.9, -1.85, 2.4);
-  wad.scale.setScalar(1.6);
-  group.add(wad);
+  (Object.keys(props) as PropMaterial[]).forEach((key) => {
+    const parts = props[key];
+    if (parts.length === 0) return;
+    const merged = mergeGeometries(parts, false);
+    parts.forEach((g) => g.dispose());
+    parts.length = 0;
+    const mesh = new THREE.Mesh(merged, propMaterials[key]);
+    mesh.castShadow = true;
+    group.add(mesh);
+  });
 
   return group;
 }

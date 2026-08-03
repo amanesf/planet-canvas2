@@ -16,14 +16,10 @@ import {
 } from './terrain';
 import { buildVegetation } from './vegetation';
 import { buildClouds } from './clouds';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
 import { buildWorkshop } from './setDressing';
-import {
-  clearDowngradeAfterStableRun,
-  currentTier,
-  installContextLossRecovery,
-  settingsFor,
-} from './quality';
+
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
@@ -33,8 +29,28 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="loading" id="loading" role="status">組み立て中…</div>
 `;
 
-const TIER = currentTier();
-const QUALITY = settingsFor(TIER);
+// One configuration, not a ladder of them.
+//
+// There used to be three quality tiers with an automatic downgrade on a
+// lost context. It cost more than it bought: three code paths to keep in
+// step, tiers that differed in whether depth of field and shadows exist at
+// all (so the cheap one was a visibly different picture rather than a
+// lower-detail one), and a downgrade that stuck to the tab and pinned it
+// there. The failure that triggered it in practice was running out of
+// WebGL contexts because too many tabs were open — nothing to do with what
+// the device could sustain. These numbers are picked for a current phone
+// and used everywhere.
+const SETTINGS = {
+  /** longitudinal / latitudinal segments for the displaced globe */
+  globeSegments: [240, 135] as const,
+  oceanSegments: [88, 52] as const,
+  shadowMapSize: 1024,
+  /** rings of blur taps in the camera pass; each ring is 8 taps */
+  dofRings: 2,
+  maxPixelRatio: 1.5,
+  /** width of the baked terrain/ocean/bump textures; height is half */
+  textureWidth: 1024,
+};
 
 // Building the model blocks the main thread for seconds: the terrain paint
 // alone evaluates noise over a million texels, and the scatter passes test
@@ -75,7 +91,7 @@ const yieldToBrowser = (label?: string) =>
     if (label) {
       buildStep++;
       const seconds = ((performance.now() - buildStartedAt) / 1000).toFixed(1);
-      setStatus(`組み立て中… ${label} (${buildStep}/${BUILD_STEPS}) ${seconds}s · ${TIER}`);
+      setStatus(`組み立て中… ${label} (${buildStep}/${BUILD_STEPS}) ${seconds}s`);
     }
     let done = false;
     const finish = () => {
@@ -208,7 +224,7 @@ try {
 }
 renderer.setSize(window.innerWidth, window.innerHeight);
 // capping pixel ratio keeps this from overloading weaker mobile GPUs
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY.maxPixelRatio));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, SETTINGS.maxPixelRatio));
 // Real cast shadows, and they are not optional for this subject. What
 // separates the reference photograph from a rendered planet is not its
 // palette — it is that the clouds throw soft shadows down onto the sea,
@@ -218,7 +234,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY.maxPixelRatio))
 // cue the eye actually reads as "these things share one physical space".
 // Only the key light casts (one shadow pass), and the map is sized for a
 // subject that occupies a fixed, known volume.
-renderer.shadowMap.enabled = QUALITY.shadowMapSize > 0;
+renderer.shadowMap.enabled = true;
 // PCFSoftShadowMap is deprecated in this three version and silently falls
 // back to PCF anyway; VSM was tried for a softer edge and produced no
 // visible shadow at all here (its light-bleeding term washes out contact
@@ -233,7 +249,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 // the same exposure the cheap tier came out visibly brighter and flatter
 // than the others: not a lower-detail version of the same picture, a
 // different one. Pulled back to match.
-renderer.toneMappingExposure = QUALITY.shadowMapSize > 0 ? 1.55 : 1.2;
+renderer.toneMappingExposure = 1.55;
 app.appendChild(renderer.domElement);
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
@@ -247,41 +263,29 @@ app.appendChild(renderer.domElement);
 // scene render the stock BokehPass costs. Both ping-pong buffers share the
 // one depth texture: only the RenderPass writes depth, and it runs first
 // every frame, so there is nothing to keep separate.
-const sceneDepth = QUALITY.depthOfField
-  ? new THREE.DepthTexture(window.innerWidth, window.innerHeight)
-  : null;
-if (sceneDepth) sceneDepth.type = THREE.UnsignedIntType;
+const sceneDepth = new THREE.DepthTexture(window.innerWidth, window.innerHeight);
+sceneDepth.type = THREE.UnsignedIntType;
 // the depthTexture key is omitted rather than passed as undefined: the
 // render target treats the key's presence as "attach one"
-const composerTarget = new THREE.WebGLRenderTarget(
-  window.innerWidth,
-  window.innerHeight,
-  sceneDepth ? { depthTexture: sceneDepth, depthBuffer: true } : { depthBuffer: true },
-);
+const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+  depthTexture: sceneDepth,
+  depthBuffer: true,
+});
 const composer = new EffectComposer(renderer, composerTarget);
-if (sceneDepth) composer.renderTarget2.depthTexture = sceneDepth;
+composer.renderTarget2.depthTexture = sceneDepth;
 
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
-// At the lowest tier the blur is dropped rather than cheapened: it is the
-// most expensive pass per pixel in the frame (every tap costs a color fetch
-// *and* a depth fetch), and a device that cannot hold the context is better
-// served by a sharp frame than by a soft one it cannot draw. The render pass
-// then has to go straight to the screen, since the composer only presents
-// through its final enabled pass.
-let cameraPass: ShaderPass | null = null;
-if (sceneDepth) {
-  cameraPass = new ShaderPass(CameraPassShader);
+const cameraPass = new ShaderPass(CameraPassShader);
+{
   cameraPass.renderToScreen = true;
-  cameraPass.material.defines = { ...cameraPass.material.defines, RINGS: QUALITY.dofRings };
+  cameraPass.material.defines = { ...cameraPass.material.defines, RINGS: SETTINGS.dofRings };
   composer.addPass(cameraPass);
   cameraPass.uniforms.tDepth.value = sceneDepth;
   cameraPass.uniforms.uNear.value = camera.near;
   cameraPass.uniforms.uFar.value = camera.far;
   cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
-} else {
-  renderPass.renderToScreen = true;
 }
 
 // The environment the resin reflects.
@@ -325,11 +329,18 @@ scene.environmentIntensity = 0.9;
 
 // A lost context now comes back at a cheaper tier rather than rebuilding
 // the scene that lost it — see quality.ts.
-installContextLossRecovery(renderer.domElement, TIER, () =>
-  setStatus('この端末では表示できませんでした（WebGL が停止しました）'),
+// With one configuration there is no cheaper one to retry at, so a lost
+// context is reported rather than chased through reloads — which is the
+// better behaviour anyway: each reload spends another WebGL context, and
+// the budget for those is shared across every open tab.
+renderer.domElement.addEventListener(
+  'webglcontextlost',
+  (event) => {
+    event.preventDefault();
+    setStatus('WebGL が停止しました。他のタブを閉じて再読み込みしてください。');
+  },
+  false,
 );
-// and if this run goes fine, stop holding a past failure against the tab
-clearDowngradeAfterStableRun();
 
 // ---------- controls: pinch / wheel zoom, drag to look around ----------
 
@@ -364,7 +375,7 @@ controls.target.set(0, TARGET_Y, 0);
 // to actually dominate before any of this is visible.
 scene.add(new THREE.AmbientLight(0xffe9c2, 0.26));
 
-const keyLight = new THREE.DirectionalLight(0xfff1dc, QUALITY.shadowMapSize > 0 ? 3.4 : 2.6);
+const keyLight = new THREE.DirectionalLight(0xfff1dc, 3.4);
 // Raking, not frontal. This sat at (-3.2, 4.6, 4.2) with the camera at
 // roughly (0, 3.9, 13), which put the light barely off the lens axis — and
 // a light near the lens axis casts every shadow directly behind the thing
@@ -374,8 +385,8 @@ const keyLight = new THREE.DirectionalLight(0xfff1dc, QUALITY.shadowMapSize > 0 
 // land *across* the visible face, which is what makes the clouds read as
 // floating above the surface rather than stuck to it.
 keyLight.position.set(-5.0, 4.4, 3.2);
-keyLight.castShadow = QUALITY.shadowMapSize > 0;
-keyLight.shadow.mapSize.set(QUALITY.shadowMapSize || 1, QUALITY.shadowMapSize || 1);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(SETTINGS.shadowMapSize, SETTINGS.shadowMapSize);
 // the subject is a 2-unit globe floating at a known height on a 1.85-unit
 // stand, so the shadow frustum can be wrapped tightly around it instead of
 // wasting depth precision on empty scene
@@ -411,7 +422,7 @@ scene.add(rimLight);
 // desk, the bottles and the foreground clutter sitting in near-black. A
 // warm falloff light above the bench lights the room without touching the
 // key-to-fill ratio the globe is lit by.
-const benchLamp = new THREE.PointLight(0xffcf95, QUALITY.shadowMapSize > 0 ? 210 : 150, 44, 2);
+const benchLamp = new THREE.PointLight(0xffcf95, 210, 44, 2);
 benchLamp.position.set(-3, 7, 4);
 scene.add(benchLamp);
 
@@ -503,25 +514,26 @@ function turnedTier(
   return [body, lowerChamfer, upperChamfer];
 }
 
+// The stand is fifteen small static parts across two materials, and each
+// one was its own draw call. They never move relative to each other, so
+// they are collected here and merged into one mesh per material at the end.
+const standWood: THREE.BufferGeometry[] = [];
+const standBrass: THREE.BufferGeometry[] = [];
+
 function addTurnedTier(
-  group: THREE.Group,
-  material: THREE.Material,
   bottomRadius: number,
   topRadius: number,
   height: number,
   y: number,
 ): void {
   turnedTier(bottomRadius, topRadius, height).forEach((geometry) => {
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.y = y;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    group.add(mesh);
+    geometry.translate(0, y, 0);
+    standWood.push(geometry);
   });
 }
 
-addTurnedTier(standGroup, baseMaterial, 1.85, 1.65, 0.35, -1.9);
-addTurnedTier(standGroup, baseMaterial, 1.65, 1.3, 0.25, -1.65);
+addTurnedTier(1.85, 1.65, 0.35, -1.9);
+addTurnedTier(1.65, 1.3, 0.25, -1.65);
 
 // small brass nameplate on the front of the pedestal
 function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
@@ -556,9 +568,7 @@ const plaqueMaterial = new THREE.MeshStandardMaterial({
   roughness: 0.28,
   envMapIntensity: 1.8,
 });
-const plaqueBacking = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.32, 0.03), plaqueMaterial);
-plaqueBacking.position.set(0, -1.86, 1.78);
-standGroup.add(plaqueBacking);
+standBrass.push(new THREE.BoxGeometry(1.15, 0.32, 0.03).translate(0, -1.86, 1.78));
 
 const plaqueTextMaterial = new THREE.MeshBasicMaterial({
   map: buildPlaqueTexture(),
@@ -579,20 +589,16 @@ screwGeometry.rotateX(Math.PI / 2);
   [-0.5, -1.765],
   [0.5, -1.765],
 ].forEach(([x, y]) => {
-  const screw = new THREE.Mesh(screwGeometry, plaqueMaterial);
-  screw.position.set(x, y, 1.797);
-  standGroup.add(screw);
+  standBrass.push(screwGeometry.clone().translate(x, y, 1.797));
 });
+screwGeometry.dispose();
 
 // a thin brass trim ring right at the seam between the two wood tiers —
 // the "museum trophy base" detail that reads as a real display stand
 // rather than a plain stacked block of wood
-const trimRing = new THREE.Mesh(
-  new THREE.CylinderGeometry(1.655, 1.655, 0.045, 48, 1, true),
-  plaqueMaterial,
+standBrass.push(
+  new THREE.CylinderGeometry(1.655, 1.655, 0.045, 48, 1, true).translate(0, -1.75, 0),
 );
-trimRing.position.y = -1.75;
-standGroup.add(trimRing);
 
 // The brass collar the sphere rests in. A pulsing glow ring used to sit
 // here; a glowing ring belongs to a sci-fi prop, not to something
@@ -603,26 +609,30 @@ standGroup.add(trimRing);
 // around its tip. Sized to the sphere's actual horizontal radius where it
 // meets the collar, and raised onto a turned wooden neck so the brass has
 // something to sit on.
-const collarNeck = new THREE.Mesh(
-  new THREE.CylinderGeometry(1.16, 1.2, 0.48, 44),
-  baseMaterial,
-);
-collarNeck.position.y = -1.29;
-collarNeck.castShadow = true;
-collarNeck.receiveShadow = true;
-standGroup.add(collarNeck);
+standWood.push(new THREE.CylinderGeometry(1.16, 1.2, 0.48, 44).translate(0, -1.29, 0));
 
 // Sized to where the sphere actually is at the collar's height, so the
 // brass meets the curve instead of ringing empty air below the south pole.
-const cradleRing = new THREE.Mesh(
-  new THREE.TorusGeometry(1.16, 0.065, 16, 72),
-  plaqueMaterial,
-);
-cradleRing.rotation.x = Math.PI / 2;
-cradleRing.position.y = -1.05;
-cradleRing.castShadow = true;
-cradleRing.receiveShadow = true;
-standGroup.add(cradleRing);
+{
+  const ring = new THREE.TorusGeometry(1.16, 0.065, 12, 56);
+  ring.rotateX(Math.PI / 2);
+  ring.translate(0, -1.05, 0);
+  standBrass.push(ring);
+}
+
+// two meshes for the whole pedestal, instead of one per turned part
+[
+  [standWood, baseMaterial],
+  [standBrass, plaqueMaterial],
+].forEach(([parts, material]) => {
+  const list = parts as THREE.BufferGeometry[];
+  if (list.length === 0) return;
+  const mesh = new THREE.Mesh(mergeGeometries(list, false), material as THREE.Material);
+  list.forEach((g) => g.dispose());
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  standGroup.add(mesh);
+});
 
 // (the globe's shadow on the stand is a real cast shadow now — the blob
 // decal that used to stand in for it would only double up on top of it)
@@ -674,14 +684,11 @@ function animate() {
   // keep the focal plane pinned to the front face of the globe as the
   // viewer orbits or zooms, the way a photographer refocuses on the
   // subject rather than on a fixed distance
-  if (cameraPass) {
-    cameraPass.uniforms.uTime.value = t;
-    const globeCenter = globeGroup.position;
-    cameraPass.uniforms.uFocusDistance.value = Math.max(
-      camera.position.distanceTo(globeCenter) - RADIUS * 0.72,
-      0.5,
-    );
-  }
+  cameraPass.uniforms.uTime.value = t;
+  cameraPass.uniforms.uFocusDistance.value = Math.max(
+    camera.position.distanceTo(globeGroup.position) - RADIUS * 0.72,
+    0.5,
+  );
 
   controls.update();
   composer.render();
@@ -697,10 +704,10 @@ function animate() {
 // read as exactly that.
 startRendering();
 
-const geometry = new THREE.SphereGeometry(RADIUS, QUALITY.globeSegments[0], QUALITY.globeSegments[1]);
+const geometry = new THREE.SphereGeometry(RADIUS, SETTINGS.globeSegments[0], SETTINGS.globeSegments[1]);
 displaceSphere(geometry, RADIUS, BUMP_HEIGHT);
 await yieldToBrowser('地形');
-const TEX_W = QUALITY.textureWidth;
+const TEX_W = SETTINGS.textureWidth;
 const TEX_H = TEX_W / 2;
 await yieldToBrowser('地形');
 const terrainTexture = buildTerrainTexture(TEX_W, TEX_H);
@@ -735,8 +742,8 @@ globeGroup.add(globeMesh);
 // read as a soft gummy-candy jelly instead of a solid miniature material.
 const oceanGeometry = new THREE.SphereGeometry(
   seaLevelRadius(RADIUS, BUMP_HEIGHT),
-  QUALITY.oceanSegments[0],
-  QUALITY.oceanSegments[1],
+  SETTINGS.oceanSegments[0],
+  SETTINGS.oceanSegments[1],
 );
 rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
 // a thin raised lip hugging the actual coastline, like poured resin (or
@@ -783,7 +790,7 @@ globeGroup.add(oceanMesh);
 // terrain are what actually reads as "diorama", not just a smooth
 // colored/shiny surface
 await yieldToBrowser('植生');
-const vegetation = buildVegetation(RADIUS, BUMP_HEIGHT, QUALITY.canopyDetail, QUALITY.scatterBudget);
+const vegetation = buildVegetation(RADIUS, BUMP_HEIGHT);
 vegetation.traverse((child) => {
   if ((child as THREE.Mesh).isMesh) {
     child.castShadow = true;
@@ -818,12 +825,10 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
-  if (sceneDepth) {
-    sceneDepth.image.width = window.innerWidth;
-    sceneDepth.image.height = window.innerHeight;
-    sceneDepth.needsUpdate = true;
-  }
-  cameraPass?.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+  sceneDepth.image.width = window.innerWidth;
+  sceneDepth.image.height = window.innerHeight;
+  sceneDepth.needsUpdate = true;
+  cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
   // rescale the orbit distance (and its clamps) for the new aspect ratio,
   // preserving how zoomed-in the user currently is

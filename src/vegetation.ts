@@ -276,21 +276,11 @@ function orient(position: THREE.Vector3, normal: THREE.Vector3, spin: number, ti
   }
 }
 
-export function buildVegetation(
-  radius: number,
-  bumpHeight: number,
-  canopyDetail: number,
-  scatterBudget = 1,
-): THREE.Group {
+export function buildVegetation(radius: number, bumpHeight: number): THREE.Group {
   const group = new THREE.Group();
   const rand = mulberry32(20260803);
-  // Candidates are the startup cost here: each one evaluates the terrain
-  // height before the spacing test gets a chance to throw it away, and the
-  // forest pass alone was testing 430,000 of them to keep about 1,500.
-  // Spacing widens with the budget so a cheaper pass thins out evenly
-  // instead of leaving bald patches where candidates ran out.
-  const budget = (n: number) => Math.round(n * scatterBudget);
-  const spacing = (s: number) => s / Math.sqrt(scatterBudget);
+  const budget = (n: number) => n;
+  const spacing = (s: number) => s;
 
   // this pass covers savanna trees, mountain rocks, and desert dressing —
   // real forest canopy is handled separately below as a dense connected
@@ -504,57 +494,79 @@ export function buildVegetation(
   // shows through between them the way it does in a real miniature.
 
   const forestPoints = scatterForest(budget(340000), spacing(0.02), rand);
+
+  // Two tessellations, chosen per clump by how big it is.
+  //
+  // A clump's faces only become visible when it covers enough pixels for
+  // one triangle to be several across, and the scale distribution has a
+  // long tail — most clumps are small, a few are several times their
+  // neighbours. Giving every clump enough vertices to satisfy the largest
+  // was what made foliage seventy percent of the frame; giving them all
+  // the cheap one leaves the big ones reading as chips of green glass.
+  // Spend the triangles only where they can be seen.
+  const CANOPY_FINE_SCALE = 1.1;
   const canopyVariantCount = 3;
-  const canopyVariants = Array.from({ length: canopyVariantCount }, () =>
-    buildCanopyBlob(rand, canopyDetail),
-  );
+  const coarseVariants = Array.from({ length: canopyVariantCount }, () => buildCanopyBlob(rand, 1));
+  const fineVariants = Array.from({ length: 2 }, () => buildCanopyBlob(rand, 2));
   const canopyMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.92,
     envMapIntensity: 0.1,
   });
-  const canopyByVariant: ForestPoint[][] = Array.from({ length: canopyVariantCount }, () => []);
-  forestPoints.forEach((p, i) => canopyByVariant[i % canopyVariantCount].push(p));
-  const canopyColor = new THREE.Color();
 
-  canopyByVariant.forEach((pts, vi) => {
-    if (pts.length === 0) return;
-    const mesh = new THREE.InstancedMesh(canopyVariants[vi], canopyMaterial, pts.length);
-    pts.forEach((p, i) => {
-      const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight;
-      const position = p.dir.clone().multiplyScalar(surfaceRadius);
-      orient(position, p.dir, rand() * Math.PI * 2);
-      // Measured, the old distribution put the middle half of all clumps
-      // between 0.66 and 1.17 — a third either side of the median, which the
-      // eye cannot tell from a single size. Real applied flock has a genuine
-      // range: mostly small stuff, a good spread of mid-sized clumps, and
-      // the occasional mass several times the size of its neighbours. A cube
-      // gives that long tail where a square did not.
-      const r0 = rand();
-      const scale = 0.45 + r0 * r0 * 1.9;
-      dummy.scale.setScalar(scale);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-      // Foliage colour follows the climate it grows in, not one palette
-      // sprayed over the whole planet. A jungle, a temperate wood and a
-      // taiga are three different greens — the tropics yellow-bright, the
-      // boreal belt a dark blue-green — and painting them identically is
-      // what made the flock read as one material applied everywhere.
-      // The lightness spread on top of that is per-clump light and shade;
-      // real clump foliage is not evenly lit all over.
-      const climate = canopyClimate(p.dir, terracedElevation(p.height));
-      canopyColor.setHSL(
-        climate.hue + rand() * 0.03,
-        climate.saturation + rand() * 0.12,
-        climate.lightness + rand() * 0.11,
-        THREE.SRGBColorSpace,
-      );
-      mesh.setColorAt(i, canopyColor);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    group.add(mesh);
+  interface CanopyInstance {
+    point: ForestPoint;
+    scale: number;
+  }
+  const coarseBuckets: CanopyInstance[][] = Array.from({ length: canopyVariantCount }, () => []);
+  const fineBuckets: CanopyInstance[][] = Array.from({ length: 2 }, () => []);
+
+  forestPoints.forEach((point, i) => {
+    // Measured, a flat range put the middle half of all clumps between 0.66
+    // and 1.17 — a third either side of the median, which the eye cannot
+    // tell from a single size. Squaring gives the long tail real applied
+    // flock has: mostly small stuff, with occasional masses several times
+    // the size of their neighbours.
+    const r0 = rand();
+    const scale = 0.45 + r0 * r0 * 1.9;
+    const instance = { point, scale };
+    if (scale >= CANOPY_FINE_SCALE) fineBuckets[i % 2].push(instance);
+    else coarseBuckets[i % canopyVariantCount].push(instance);
   });
+
+  const canopyColor = new THREE.Color();
+  const placeCanopy = (variants: THREE.BufferGeometry[], buckets: CanopyInstance[][]) => {
+    buckets.forEach((list, vi) => {
+      if (list.length === 0) return;
+      const mesh = new THREE.InstancedMesh(variants[vi], canopyMaterial, list.length);
+      list.forEach(({ point, scale }, i) => {
+        const surfaceRadius = radius + sampledHeight(point.dir).display * bumpHeight;
+        const position = point.dir.clone().multiplyScalar(surfaceRadius);
+        orient(position, point.dir, rand() * Math.PI * 2);
+        dummy.scale.setScalar(scale);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        // Foliage colour follows the climate it grows in, not one palette
+        // sprayed over the whole planet. A jungle, a temperate wood and a
+        // taiga are three different greens, and painting them identically is
+        // what made the flock read as one material applied everywhere. The
+        // lightness spread on top is per-clump light and shade.
+        const climate = canopyClimate(point.dir, terracedElevation(point.height));
+        canopyColor.setHSL(
+          climate.hue + rand() * 0.03,
+          climate.saturation + rand() * 0.12,
+          climate.lightness + rand() * 0.11,
+          THREE.SRGBColorSpace,
+        );
+        mesh.setColorAt(i, canopyColor);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      group.add(mesh);
+    });
+  };
+  placeCanopy(coarseVariants, coarseBuckets);
+  placeCanopy(fineVariants, fineBuckets);
 
   // ---------- grass: dense tiny tufts covering the (non-desert) ground ----------
 
@@ -606,24 +618,32 @@ export function buildVegetation(
 // its own (bare rock shows between clumps at the scatter level, see
 // buildVegetation), not a tiny piece of a wall-to-wall speckle blanket.
 function buildCanopyBlob(rand: () => number, detail: number): THREE.BufferGeometry {
-  const lobes = 4 + Math.floor(rand() * 3);
-  const parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < lobes; i++) {
-    const r = 0.022 + rand() * 0.016;
-    // Detail 2 is 320 triangles per lobe and, at five or six lobes across
-    // fifteen hundred clumps, was 1.4 million triangles of foliage on its
-    // own — more than four fifths of the entire frame, for shapes a few
-    // pixels across that get their form from the noise displacement below
-    // rather than from their tessellation.
-    const g = new THREE.IcosahedronGeometry(r, detail);
-    displaceWithNoise(g, 0.32, 3.2, rand() * 500);
-    displaceWithNoise(g, 0.14, 9, rand() * 500 + 300);
-    g.computeVertexNormals();
-    g.translate((rand() - 0.5) * 0.055, rand() * 0.015, (rand() - 0.5) * 0.055);
-    parts.push(g);
-  }
-  const merged = mergeGeometries(parts, false);
-  parts.forEach((p) => p.dispose());
-  return merged;
+  // One displaced sphere, not a merged pile of them.
+  //
+  // This used to be four to six separate icosahedra fused together, at 80
+  // to 320 triangles apiece — measured, the foliage alone was 602,000
+  // triangles, seventy-one percent of everything in the scene, for shapes
+  // that cover ten to twenty pixels on screen. At that size the lobes are
+  // not resolvable as separate lobes; what reads is the lumpy outline, and
+  // a single sphere pushed around by noise gives that just as well for a
+  // twentieth of the cost.
+  //
+  // The trick is that the displacement has to be strong and low-frequency
+  // enough to actually break the silhouette. Gentle high-frequency noise on
+  // a sphere yields a slightly rough ball, which is exactly the "moulded
+  // bead" look the lobes were introduced to escape.
+  //
+  // Displacement strength is the tuning knob and it cuts both ways. Too
+  // little and it is a slightly rough ball; too much and, at this vertex
+  // count, the faces splay into large flat triangles and the clump reads as
+  // a chip of green glass. The lumpiness of the *mass* comes mostly from
+  // many clumps overlapping anyway, so each one only has to avoid looking
+  // like a sphere.
+  const g = new THREE.IcosahedronGeometry(0.05, detail);
+  displaceWithNoise(g, detail >= 2 ? 0.42 : 0.3, 2.4, rand() * 500);
+  displaceWithNoise(g, 0.13, 7, rand() * 500 + 300);
+  g.scale(1, 0.78, 1); // clump foliage settles wider than it is tall
+  g.computeVertexNormals();
+  return g;
 }
 
