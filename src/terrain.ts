@@ -61,6 +61,38 @@ const seabedSandColor = new THREE.Color('#96917a');
 const seabedSiltColor = new THREE.Color('#4a6357');
 const seabedDeepColor = new THREE.Color('#2b3d47');
 
+// Coral: a handful of saturated accent hues against the otherwise muted
+// palette. The "no high-saturation primary colors" rule elsewhere in this
+// file is about *fake* vividness — live coral is one of the few things in
+// nature that really is that saturated, the same exception the lava glow
+// below gets.
+const coralColors = [
+  new THREE.Color('#e0925f'), // salmon
+  new THREE.Color('#c37cab'), // magenta-pink
+  new THREE.Color('#74bfb8'), // cyan
+  new THREE.Color('#cdab52'), // gold
+];
+
+// A dry lakebed's crust: pale, faintly pink-white salt, with darker
+// cracked mud showing through between the plates.
+const saltColor = new THREE.Color('#ded2c4');
+const saltCrackColor = new THREE.Color('#8c7c68');
+
+// Cooled basalt reads as close to black but never quite — real lava rock
+// still carries a little warmth. The crack glow is the other saturated
+// exception in the file, next to coral: the one thing here that's meant
+// to look like it's actually emitting light.
+const basaltColor = new THREE.Color('#1c1815');
+const lavaGlowColor = new THREE.Color('#ff5a1f');
+const craterLakeColor = new THREE.Color('#2f6f8a');
+
+// A river mouth's sediment fan: pale silty tan, distinct from both the
+// riverbed blue and ordinary shore sand.
+const deltaColor = new THREE.Color('#a99568');
+
+// Whitewater foam at the base of a waterfall.
+const foamColor = new THREE.Color('#eef6f2');
+
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
   return t * t * (3 - 2 * t);
@@ -114,6 +146,54 @@ const mountainBeltSamples: THREE.Vector3[] = [
   ...buildBeltSamples(MOUNTAIN_BELT_A, 5),
   ...buildBeltSamples(MOUNTAIN_BELT_B, 5),
 ];
+
+// ---------------------------------------------------------------------
+// Volcanoes: a handful of explicit landmark peaks, the same "an artist
+// decided it goes here" logic as the mountain belts above — a smooth
+// conical silhouette with a crater dead centre is a specific named shape,
+// not something a noise threshold over the belt would ever produce (that
+// gives an irregular ridge, not a clean cone). The centres were picked by
+// walking candidate points on land, well inside an orogeny belt (real
+// volcanism follows subduction zones), spread apart across the globe —
+// not eyeballed, since a hand-guessed direction has no guarantee of
+// landing on actual land.
+// ---------------------------------------------------------------------
+
+interface VolcanoDef {
+  center: THREE.Vector3;
+  radius: number;
+  craterRadius: number;
+  /** active: a glowing lava pool; dormant: a crater lake instead */
+  active: boolean;
+}
+
+const VOLCANOES: VolcanoDef[] = [
+  { center: new THREE.Vector3(0.873, 0.353, -0.338).normalize(), radius: 0.052, craterRadius: 0.016, active: true },
+  { center: new THREE.Vector3(-0.24, -0.715, 0.656).normalize(), radius: 0.048, craterRadius: 0.015, active: false },
+  { center: new THREE.Vector3(-0.561, 0.261, 0.785).normalize(), radius: 0.05, craterRadius: 0.015, active: true },
+  { center: new THREE.Vector3(0.656, 0.745, 0.119).normalize(), radius: 0.046, craterRadius: 0.014, active: false },
+];
+
+export interface VolcanoSample {
+  /** 0 on the outer flank, 1 at the summit */
+  cone: number;
+  /** 0 outside the crater, 1 at its centre */
+  crater: number;
+  active: boolean;
+}
+
+/** Which volcano (if any) has a hold on this point, and how strongly. */
+export function volcanoAt(dir: THREE.Vector3): VolcanoSample | null {
+  let best: VolcanoSample | null = null;
+  for (const v of VOLCANOES) {
+    const dist = dir.angleTo(v.center);
+    if (dist > v.radius) continue;
+    const cone = Math.pow(1 - dist / v.radius, 1.7);
+    const crater = dist < v.craterRadius ? 1 - dist / v.craterRadius : 0;
+    if (!best || cone > best.cone) best = { cone, crater, active: v.active };
+  }
+  return best;
+}
 
 function distanceToNearestBelt(dir: THREE.Vector3): number {
   let best = Math.PI;
@@ -221,6 +301,22 @@ export function heightAt(dir: THREE.Vector3): number {
     n = THREE.MathUtils.lerp(n, iceShelfHeight, poleCloseness * 0.62);
   }
 
+  // Volcanoes: an explicit conical peak with a crater bowl at its summit,
+  // blended in over whatever the ordinary noise terrain says was there.
+  // The crater floor sits well up the flank (not at sea level) — a lava
+  // pool or crater lake is a summit feature, not a hole clear through the
+  // mountain.
+  const volcano = volcanoAt(dir);
+  if (volcano) {
+    const peakElevation = SEA_LEVEL + TERRACE_MAX * 1.05;
+    let volcanoHeight = THREE.MathUtils.lerp(SEA_LEVEL, peakElevation, volcano.cone);
+    if (volcano.crater > 0) {
+      const craterFloor = SEA_LEVEL + TERRACE_MAX * 0.62;
+      volcanoHeight = THREE.MathUtils.lerp(volcanoHeight, craterFloor, smoothstep(volcano.crater, 0, 1));
+    }
+    n = THREE.MathUtils.lerp(n, volcanoHeight, smoothstep(volcano.cone, 0.05, 0.3));
+  }
+
   return Math.max(n, -0.2); // flatten the deep ocean floor a bit
 }
 
@@ -311,6 +407,20 @@ function badlandsAt(dir: THREE.Vector3): number {
   return sampleField(badlandsGrid, dir);
 }
 export const BADLANDS_THRESHOLD = 0.28;
+
+// A dry lakebed forms in specific low, flat desert basins, not uniformly
+// across every arid stretch — the same "committed regions, not speckle"
+// logic aridity and badlands already use. A dedicated low-frequency field
+// marks where the pan is, decorrelated from the aridity/badlands fields
+// so its patches don't just retrace their existing shapes.
+let saltPanGrid: Float32Array | null = null;
+function saltPanAt(dir: THREE.Vector3): number {
+  saltPanGrid ??= bakeField(FIELD_W, FIELD_H, (d) =>
+    fbm3(d.x * 1.3 + 909, d.y * 1.3 + 909, d.z * 1.3 + 909, 2),
+  );
+  return sampleField(saltPanGrid, dir);
+}
+const SALT_PAN_THRESHOLD = 0.32;
 
 // Latitude-driven climate (Whittaker's temperature axis), like the design
 // memo originally called for: hot at the equator, cold at the poles, and
@@ -431,7 +541,19 @@ export function displayHeight(height: number, dir: THREE.Vector3): number {
   // Gentle coasts get barely any lift and meet the water as a beach; the
   // glass sea already sits slightly below SEA_LEVEL, so they still emerge.
   const coastalStep = 0.012 + coastCliffiness(dir) * 0.15;
-  return SEA_LEVEL + coastalStep + terracedElevation(height) * LAND_BOOST * orogenyBoost;
+  let boost = orogenyBoost;
+
+  // A volcano's summit is meant to read as one singular landmark, taller
+  // than an ordinary range peak nearby — but the boost backs off inside
+  // the crater itself (scaled by 1 - crater), or the bowl carved into the
+  // raw height above would just get lifted back into a bump.
+  const volcano = volcanoAt(dir);
+  if (volcano) {
+    const volcanoBoost = 1 + volcano.cone * (1 - volcano.crater) * 1.9;
+    boost = Math.max(boost, volcanoBoost);
+  }
+
+  return SEA_LEVEL + coastalStep + terracedElevation(height) * LAND_BOOST * boost;
 }
 
 export function seaLevelRadius(radius: number, bumpHeight: number): number {
@@ -440,6 +562,7 @@ export function seaLevelRadius(radius: number, bumpHeight: number): number {
 
 const outColor = new THREE.Color();
 const badlandsScratch = new THREE.Color();
+const saltScratch = new THREE.Color();
 
 // Purely cosmetic: perturbs where a pixel's color band boundary falls,
 // without touching the height value used for geometry, sea level, or
@@ -465,6 +588,28 @@ function badlandsColor(elevation: number): THREE.Color {
   const stripeB = Math.sin(elevation * 230 + 1.7) * 0.5 + 0.5;
   badlandsScratch.copy(badlandsColorA).lerp(badlandsColorB, stripeA);
   return badlandsScratch.lerp(badlandsColorC, stripeB * 0.4);
+}
+
+// A salt pan's crust: mostly a pale, faintly pink crust with a network of
+// dark cracked mud between the plates. The crack lines fall out for free
+// from thresholding noise near its zero crossing — a coherent field is
+// smooth almost everywhere and flips sign along thin connected seams,
+// which is exactly what a real dried, cracked surface looks like.
+function saltFlatColor(dir: THREE.Vector3): THREE.Color {
+  const cracks = fbm3(dir.x * 130 + 4040, dir.y * 130 + 4040, dir.z * 130 + 4040, 2);
+  const crackT = 1 - smoothstep(Math.abs(cracks), 0, 0.06);
+  return saltScratch.copy(saltColor).lerp(saltCrackColor, crackT * 0.6);
+}
+
+// The one place in the model meant to look like it is actually emitting
+// light rather than just reflecting it — a lava pool or flow gets a
+// network of bright cracks through the cooled basalt, the same
+// zero-crossing trick as the salt pan's mud cracks above but read as
+// glowing seams instead of dark ones.
+function applyLavaGlow(color: THREE.Color, strength: number, dir: THREE.Vector3): void {
+  const cracks = fbm3(dir.x * 90 + 5050, dir.y * 90 + 5050, dir.z * 90 + 5050, 2);
+  const glow = smoothstep(cracks, 0.15, 0.5) * strength;
+  color.lerp(lavaGlowColor, glow * 0.7);
 }
 
 // green lowland, with patches nudged toward desert; rock band climbing
@@ -787,6 +932,20 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
     // features through the water rather than as noise on the surface
     const mottle = fbm3(dir.x * 22 + 61, dir.y * 22 + 61, dir.z * 22 + 61, 3);
     color.offsetHSL(0, 0, mottle * 0.12);
+
+    // Coral reef: warm, shallow, tropical shelf only — real reefs are a
+    // narrow band right off a warm coast, not the whole shelf, and they
+    // grow in patches rather than as a uniform crust.
+    const reefShallow = smoothstep(h, SEA_LEVEL - 0.03, SEA_LEVEL - 0.006);
+    const reefWarmth = smoothstep(temperature, 0.58, 0.78);
+    const reefPatch = fbm3(dir.x * 26 + 7070, dir.y * 26 + 7070, dir.z * 26 + 7070, 3);
+    const reefGate = reefShallow * reefWarmth * smoothstep(reefPatch, 0.05, 0.35);
+    if (reefGate > 0.01) {
+      const paletteT = fbm3(dir.x * 60 + 8080, dir.y * 60 + 8080, dir.z * 60 + 8080, 2);
+      const idx = Math.min(coralColors.length - 1, Math.floor(((paletteT + 1) / 2) * coralColors.length));
+      color.lerp(coralColors[idx], reefGate * 0.55);
+    }
+
     color.lerp(iceColor, seaIce);
   } else if (h < SEA_LEVEL + COAST_WIDTH * 0.35) {
     // The waterline itself. A wide pale band around every coast reads as a
@@ -813,7 +972,48 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
     const aridity = aridityAt(dir);
     const badlandsRaw = badlandsAt(dir);
     color = biomeColor(elevation, aridity, temperature, badlandsRaw, beltCloseness);
+
+    // River delta: right at the coast, a big river fans out into a wide
+    // sediment plain instead of staying a single blue thread — the
+    // braided-channel look of a real river mouth. Blended in before the
+    // ordinary river line below, so the tan fan shows as a halo around
+    // the (still blue) main channel rather than replacing it.
+    const deltaCoast = 1 - smoothstep(elevation, 0, 0.05);
+    if (riverStrength > 0.35 && deltaCoast > 0) {
+      color.lerp(deltaColor, riverStrength * deltaCoast * 0.55);
+    }
     if (riverStrength > 0) color.lerp(riverColor, riverStrength);
+
+    // Salt lake: a dry, flat desert basin crusted white instead of
+    // ordinary sand.
+    if (aridity > DESERT_ARIDITY_THRESHOLD + 0.02 && elevation < 0.045) {
+      const pan = saltPanAt(dir);
+      if (pan > SALT_PAN_THRESHOLD) {
+        color.lerp(saltFlatColor(dir), smoothstep(pan, SALT_PAN_THRESHOLD, SALT_PAN_THRESHOLD + 0.12));
+      }
+    }
+
+    // Volcano: a crater's lava pool or lake overrides whatever the
+    // elevation band said, and an active crater bleeds a glowing basalt
+    // flow down its flank.
+    const volcano = volcanoAt(dir);
+    if (volcano) {
+      if (volcano.crater > 0) {
+        color.lerp(volcano.active ? basaltColor : craterLakeColor, smoothstep(volcano.crater, 0, 0.4));
+        if (volcano.active) applyLavaGlow(color, volcano.crater, dir);
+      } else if (volcano.active) {
+        const flowNoise = fbm3(dir.x * 40 + 6060, dir.y * 40 + 6060, dir.z * 40 + 6060, 3);
+        const flowGate =
+          smoothstep(flowNoise, 0.1, 0.35) *
+          smoothstep(volcano.cone, 0.06, 0.35) *
+          (1 - smoothstep(volcano.cone, 0.55, 0.9));
+        if (flowGate > 0.01) {
+          color.lerp(basaltColor, flowGate * 0.7);
+          applyLavaGlow(color, flowGate, dir);
+        }
+      }
+    }
+
     color.offsetHSL(0, 0, coastalAO(h, beltCloseness));
   }
 
@@ -979,6 +1179,13 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
       if (h >= SEA_LEVEL) {
         const ri = py * width + px;
         applyReliefPaint(c, relief.convexity[ri], relief.slope[ri], snowinessAt(dir, h));
+        // Waterfall: a river crossing genuinely steep ground foams white
+        // instead of stalling as a flat blue line drawn straight over a
+        // cliff.
+        if (riverStrength > 0.4 && relief.slope[ri] > 0.35) {
+          const foam = smoothstep(relief.slope[ri], 0.35, 0.7) * smoothstep(riverStrength, 0.4, 0.7);
+          c.lerp(foamColor, foam * 0.75);
+        }
       }
 
       const idx = (py * width + px) * 4;
@@ -990,6 +1197,54 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+// A small emissive-only map: black everywhere except inside an active
+// volcano's crater or the glowing cracks in its flank flow, repeating the
+// same pattern terrainColor already painted into the diffuse map (same
+// noise calls, same seeds — dirForPixel keys purely off world direction,
+// so the two line up regardless of this texture's lower resolution).
+// Applied as emissiveMap so the lava genuinely reads as lit from within
+// instead of just being a bright color that goes dark in shadow like
+// everything else on the model.
+export function buildLavaTexture(width = 768, height = 384): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  const image = ctx.createImageData(width, height);
+  const dir = new THREE.Vector3();
+  const glow = new THREE.Color();
+
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      dirForPixel(px, py, width, height, dir);
+      glow.set(0, 0, 0);
+
+      const volcano = volcanoAt(dir);
+      if (volcano && volcano.active) {
+        if (volcano.crater > 0) {
+          applyLavaGlow(glow, volcano.crater, dir);
+        } else {
+          const flowNoise = fbm3(dir.x * 40 + 6060, dir.y * 40 + 6060, dir.z * 40 + 6060, 3);
+          const flowGate =
+            smoothstep(flowNoise, 0.1, 0.35) *
+            smoothstep(volcano.cone, 0.06, 0.35) *
+            (1 - smoothstep(volcano.cone, 0.55, 0.9));
+          if (flowGate > 0.01) applyLavaGlow(glow, flowGate, dir);
+        }
+      }
+
+      const idx = (py * width + px) * 4;
+      writeSRGBPixel(image.data, idx, glow);
+    }
+  }
+
+  ctx.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
   texture.needsUpdate = true;
   return texture;
 }
