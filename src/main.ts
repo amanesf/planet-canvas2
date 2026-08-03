@@ -106,9 +106,14 @@ controls.target.set(0, TARGET_Y, 0);
 
 // ---------- lighting ----------
 
-scene.add(new THREE.AmbientLight(0xfff1e0, 0.62));
+// less ambient / more key-light contrast gives the surface a visible
+// light/shadow terminator again — flattening everything to fix the earlier
+// "gummy" glossiness also flattened the sense of form, and clearcoat (the
+// real source of that gumminess) is already dialed way down, so there's
+// room to bring contrast back without the candy highlights returning
+scene.add(new THREE.AmbientLight(0xfff1e0, 0.48));
 
-const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.3);
+const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.6);
 keyLight.position.set(4, 5, 3);
 scene.add(keyLight);
 

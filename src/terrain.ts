@@ -64,11 +64,14 @@ function aridityAt(dir: THREE.Vector3): number {
 // flat regardless, this doesn't reintroduce the "potato" whole-sphere
 // distortion from earlier — only the 30% landmass gets dramatic.
 const LAND_BOOST = 2.0;
-const UNDERWATER_HEIGHT = SEA_LEVEL - 0.02;
+// a bigger drop than a purely cosmetic clamp needs — real relief globes
+// have a visible carved "step" right at the coastline instead of land
+// gently sloping into the water, and this is what makes that step read
+const UNDERWATER_HEIGHT = SEA_LEVEL - 0.045;
 // sits between the flattened underwater terrain and true sea level, so the
 // glass ocean shell (built from this in main.ts) fully covers the seabed
 // without z-fighting the coastline
-export const GLASS_SEA_HEIGHT = SEA_LEVEL - 0.008;
+export const GLASS_SEA_HEIGHT = SEA_LEVEL - 0.015;
 
 export function displayHeight(height: number): number {
   if (height < SEA_LEVEL) return UNDERWATER_HEIGHT;
