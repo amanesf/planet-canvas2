@@ -1,7 +1,7 @@
 import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { fbm3 } from './noise';
+import { buildTerrainTexture, displaceSphere } from './terrain';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
@@ -39,10 +39,31 @@ camera.position.set(0, 1.4, cameraDistanceForViewport());
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// capping pixel ratio and using a cheaper shadow filter keeps this from
+// overloading weaker mobile GPUs (which showed up as the canvas going
+// blank a few seconds in — a classic driver-timeout symptom)
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 app.appendChild(renderer.domElement);
+
+// if the GPU driver does drop the context under load, recover instead of
+// leaving the canvas permanently blank
+renderer.domElement.addEventListener(
+  'webglcontextlost',
+  (event) => {
+    event.preventDefault();
+    console.warn('WebGL context lost — waiting for restore');
+  },
+  false,
+);
+renderer.domElement.addEventListener(
+  'webglcontextrestored',
+  () => {
+    console.warn('WebGL context restored');
+  },
+  false,
+);
 
 // ---------- controls: pinch / wheel zoom, drag to look around ----------
 
@@ -66,76 +87,30 @@ scene.add(new THREE.AmbientLight(0xfff1e0, 0.4));
 const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.7);
 keyLight.position.set(4, 5, 3);
 keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(1024, 1024);
+keyLight.shadow.mapSize.set(512, 512);
 scene.add(keyLight);
 
 const rimLight = new THREE.DirectionalLight(0xbfe0ff, 0.5);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
 
-// ---------- globe: displaced sphere, pastel "clay" colors ----------
+// ---------- globe: displaced sphere, crisp painted terrain texture ----------
 
 const globeGroup = new THREE.Group();
 globeGroup.position.set(0, GLOBE_FLOAT_Y, 0);
 scene.add(globeGroup);
 
-const geometry = new THREE.IcosahedronGeometry(RADIUS, 44);
-const positionAttr = geometry.attributes.position;
-const colors = new Float32Array(positionAttr.count * 3);
-
-const deepColor = new THREE.Color('#3fb6e0'); // saturated sea
-const shoreColor = new THREE.Color('#ffe58a'); // warm sand
-const landColor = new THREE.Color('#6bcf5a'); // vivid meadow
-const peakColor = new THREE.Color('#ff8fc2'); // candy-pink peak
-
-const tmp = new THREE.Vector3();
-for (let i = 0; i < positionAttr.count; i++) {
-  tmp.fromBufferAttribute(positionAttr, i).normalize();
-
-  // higher frequency so bumps read as continents/mountains, not a
-  // whole-sphere ovoid distortion (that's what was making it look like
-  // a potato) — the low-frequency term is now just a mild base wobble
-  const n =
-    fbm3(tmp.x * 2.4, tmp.y * 2.4, tmp.z * 2.4, 4) * 0.65 +
-    fbm3(tmp.x * 5 + 9.2, tmp.y * 5 + 9.2, tmp.z * 5 + 9.2, 3) * 0.25 +
-    fbm3(tmp.x * 1.1 + 3.7, tmp.y * 1.1 + 3.7, tmp.z * 1.1 + 3.7, 2) * 0.1;
-
-  const height = Math.max(n, -0.2); // flatten deep ocean floor a bit
-
-  // sea level sits well above the noise midpoint so oceans dominate,
-  // and the coastline itself is a near-hard cutoff (a real map doesn't
-  // fade gradually from water to sand over a wide band)
-  const SEA_LEVEL = 0.16;
-  const COAST_WIDTH = 0.012;
-
-  // water is a flat shell — only land pokes up above sea level, so the
-  // ocean doesn't visibly inherit the terrain noise as bumpy waves
-  const displayHeight = height < SEA_LEVEL ? SEA_LEVEL - 0.02 : height;
-  const displaced = tmp.clone().multiplyScalar(RADIUS + displayHeight * BUMP_HEIGHT);
-  positionAttr.setXYZ(i, displaced.x, displaced.y, displaced.z);
-
-  const c = new THREE.Color();
-  if (height < SEA_LEVEL - COAST_WIDTH) {
-    c.copy(deepColor);
-  } else if (height < SEA_LEVEL + COAST_WIDTH) {
-    c.copy(deepColor).lerp(shoreColor, (height - (SEA_LEVEL - COAST_WIDTH)) / (COAST_WIDTH * 2));
-  } else if (height < SEA_LEVEL + 0.08) {
-    c.copy(shoreColor).lerp(landColor, (height - SEA_LEVEL) / 0.08);
-  } else {
-    c.copy(landColor).lerp(peakColor, Math.min((height - (SEA_LEVEL + 0.08)) / 0.25, 1));
-  }
-  colors[i * 3] = c.r;
-  colors[i * 3 + 1] = c.g;
-  colors[i * 3 + 2] = c.b;
-}
-geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-geometry.computeVertexNormals();
+// terrain color is painted once onto a texture (crisp, cheap to sample)
+// instead of interpolated per-vertex (which read as blurry) — geometry
+// only needs to be smooth enough to carry the displacement + lighting
+const geometry = new THREE.SphereGeometry(RADIUS, 96, 56);
+displaceSphere(geometry, RADIUS, BUMP_HEIGHT);
+const terrainTexture = buildTerrainTexture();
 
 const globeMaterial = new THREE.MeshStandardMaterial({
-  vertexColors: true,
+  map: terrainTexture,
   roughness: 0.65,
   metalness: 0.02,
-  flatShading: false,
 });
 
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
