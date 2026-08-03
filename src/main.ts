@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { buildTerrainTexture, displaceSphere, seaLevelRadius } from './terrain';
+import { buildVegetation } from './vegetation';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
@@ -140,6 +141,11 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 globeGroup.add(oceanMesh);
+
+// scattered trees and rocks — discrete miniature objects standing on the
+// terrain are what actually reads as "diorama", not just a smooth
+// colored/shiny surface
+globeGroup.add(buildVegetation(RADIUS, BUMP_HEIGHT));
 
 // soft cloud shell, purely decorative for now
 const cloudGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
