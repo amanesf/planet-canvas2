@@ -16,8 +16,23 @@ const shoreColor = new THREE.Color('#a89b80');
 // covering the ground in grass/tree instances, not from painting the
 // terrain itself bright green underneath them
 const landColor = new THREE.Color('#6a6a50');
-const desertColor = new THREE.Color('#8d7a5f');
+// Two separate deserts, because sand and stone desert look nothing alike:
+// pale wind-sorted sand, and the darker gravel pavement that surrounds it.
+const desertColor = new THREE.Color('#c0a878');
+const desertGravelColor = new THREE.Color('#8a7554');
+// Warm sedimentary rock, for the foothills a forest could grow on.
 const rockColor = new THREE.Color('#6f5c4a');
+// Alpine stone is a *different rock*, and it is the difference the eye
+// reads first at altitude: cold grey granite scoured bare, not the warm
+// brown of a lowland outcrop. Colouring high ground as merely a darker
+// version of the same brown is what made every mountain read as a big hill.
+const alpineRockColor = new THREE.Color('#7a7a80');
+const alpineShadowColor = new THREE.Color('#4e5058');
+// Boreal forest floor: needle litter and peat, much darker and cooler than
+// temperate soil.
+const taigaColor = new THREE.Color('#4a5344');
+// Tropical soil: the red laterite that shows through equatorial jungle.
+const tropicalSoilColor = new THREE.Color('#6b5138');
 const snowColor = new THREE.Color('#dde4e6');
 const riverColor = new THREE.Color('#3184a0');
 const tundraColor = new THREE.Color('#8b8a6e');
@@ -477,6 +492,11 @@ function biomeColor(
   }
 
   const desertAmount = smoothstep(aridity, 0.4, 0.58);
+  // How equatorial this is: drives the tropical/temperate/boreal split that
+  // used to be missing entirely — every warm lowland was painted the same
+  // olive regardless of whether it sat on the equator or near the tree line.
+  const tropical = smoothstep(temperature, 0.62, 0.88);
+  const boreal = 1 - smoothstep(temperature, TUNDRA_TEMPERATURE, 0.45);
 
   if (elevation < 0.15) {
     // cold + dry lowland reads as bare tundra instead of green — being
@@ -485,7 +505,7 @@ function biomeColor(
     if (temperature < TUNDRA_TEMPERATURE) {
       const coldness = smoothstep(temperature, TUNDRA_TEMPERATURE, ICE_TEMPERATURE);
       outColor.copy(landColor).lerp(tundraColor, coldness);
-      outColor.lerp(desertColor, desertAmount * (1 - coldness));
+      outColor.lerp(desertGravelColor, desertAmount * (1 - coldness));
     } else {
       // sand only right at the coast — being *low* elevation isn't the
       // same as being *dry*. A wide shore→green transition was tying the
@@ -493,15 +513,29 @@ function biomeColor(
       // regardless of its actual (independent) aridity value.
       const t = elevation / 0.035;
       outColor.copy(shoreColor).lerp(landColor, Math.min(Math.max(t, 0), 1));
-      outColor.lerp(desertColor, desertAmount);
+      // climate belts on the ground itself, under whatever grows on it
+      outColor.lerp(tropicalSoilColor, tropical * 0.65);
+      outColor.lerp(taigaColor, boreal * 0.7);
+
+      // A sand sea has a pale, almost bleached core with a darker gravel
+      // margin. Ramping straight to one sand colour gave a flat khaki
+      // patch that read as discoloured grass rather than as desert.
+      outColor.lerp(desertGravelColor, desertAmount);
+      outColor.lerp(desertColor, smoothstep(aridity, 0.56, 0.72));
     }
   } else if (elevation < 0.22) {
     const t = (elevation - 0.15) / 0.07;
     outColor.copy(landColor).lerp(rockColor, t);
-    outColor.lerp(desertColor, desertAmount * (1 - t) * 0.5);
+    outColor.lerp(taigaColor, boreal * 0.5 * (1 - t));
+    outColor.lerp(desertGravelColor, desertAmount * (1 - t) * 0.6);
   } else if (elevation < TERRACE_MAX) {
+    // Above the tree line the rock changes character, not just shade: warm
+    // sedimentary brown gives way to cold grey granite, and only then to
+    // snow. The old ramp went brown straight to white.
     const t = (elevation - 0.22) / (TERRACE_MAX - 0.22);
-    outColor.copy(rockColor).lerp(snowColor, t);
+    outColor.copy(rockColor).lerp(alpineRockColor, smoothstep(t, 0, 0.55));
+    outColor.lerp(alpineShadowColor, smoothstep(t, 0.1, 0.45) * 0.35);
+    outColor.lerp(snowColor, smoothstep(t, 0.62, 1));
   } else {
     outColor.copy(snowColor);
   }
@@ -1096,6 +1130,19 @@ export function buildBumpTexture(width = 1536, height = 768): THREE.CanvasTextur
         const clumps = fbm3(dir.x * 45 + 8, dir.y * 45 + 8, dir.z * 45 + 8, 2);
         const grain = fbm3(dir.x * 140 + 22, dir.y * 140 + 22, dir.z * 140 + 22, 2);
         v = 0.5 + (clumps * 0.18 + grain * 0.11) * shoreFade;
+
+        // Wind ripples. A sand sea is not a rough surface — it is a
+        // *combed* one, ridged in one direction at a scale you can see, and
+        // that directional pattern is most of what says "desert" before any
+        // colour does. The dune field props were removed as unconvincing
+        // objects; this puts the desert back as a surface instead.
+        const sandiness = smoothstep(aridityAt(dir), 0.5, 0.7);
+        if (sandiness > 0) {
+          const drift = fbm3(dir.x * 4 + 88, dir.y * 4 + 88, dir.z * 4 + 88, 2);
+          const ripple =
+            Math.sin((dir.x * 150 + dir.z * 95 + dir.y * 40) + drift * 14) * 0.5 + 0.5;
+          v = v * (1 - sandiness) + (0.5 + (ripple - 0.5) * 0.34) * sandiness;
+        }
 
         // Granular snow: a coarse drift lump plus a hard crystalline
         // sparkle. Modelling snow as *smoother* than rock is the mistake —

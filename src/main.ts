@@ -156,7 +156,53 @@ function cameraStartPosition() {
 const startPos = cameraStartPosition();
 camera.position.set(startPos.x, startPos.y, startPos.z);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+// Getting a context is not a given. A browser will only hand out a limited
+// number of live WebGL contexts across all tabs — a dozen or so — and once
+// that budget is spent, the next request simply fails. With twenty tabs
+// open, or after this page has reloaded itself a few times chasing a lost
+// context, that is exactly what happens, and the constructor throws
+// "Error creating WebGL context" before anything else can run.
+//
+// So: ask for less on each retry, and if there is still nothing to be had,
+// say so in terms the reader can act on rather than surfacing the raw
+// exception.
+function createRenderer(): THREE.WebGLRenderer {
+  const attempts: THREE.WebGLRendererParameters[] = [
+    { antialias: true, alpha: true },
+    // antialiasing needs a multisampled buffer, which is a large part of
+    // what a constrained driver is refusing to allocate
+    { antialias: false, alpha: true },
+    // last resort: the integrated GPU, an opaque buffer, and permission to
+    // fall back to a software rasteriser
+    {
+      antialias: false,
+      alpha: false,
+      powerPreference: 'low-power',
+      failIfMajorPerformanceCaveat: false,
+    },
+  ];
+
+  let lastError: unknown = null;
+  for (const options of attempts) {
+    try {
+      return new THREE.WebGLRenderer(options);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+let renderer: THREE.WebGLRenderer;
+try {
+  renderer = createRenderer();
+} catch (error) {
+  setStatus(
+    'この端末で 3D を開始できませんでした。ブラウザの他のタブを閉じてから再読み込みしてください。',
+  );
+  console.error(error);
+  throw error;
+}
 renderer.setSize(window.innerWidth, window.innerHeight);
 // capping pixel ratio keeps this from overloading weaker mobile GPUs
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY.maxPixelRatio));

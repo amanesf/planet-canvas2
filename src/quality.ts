@@ -14,6 +14,7 @@
 export type QualityTier = 'high' | 'medium' | 'low';
 
 const STORAGE_KEY = 'planet-canvas-quality';
+const RELOAD_KEY = 'planet-canvas-reloads';
 const LADDER: QualityTier[] = ['high', 'medium', 'low'];
 
 function readStoredTier(): QualityTier | null {
@@ -86,8 +87,30 @@ export function installContextLossRecovery(
         onGaveUp?.();
         return;
       }
+      // Reloading to recover costs a fresh WebGL context, and the browser
+      // only grants a limited number of those across all open tabs. Chasing
+      // a lost context through several reloads can exhaust that budget and
+      // leave the page unable to create a context at all — a worse failure
+      // than the one being recovered from. Two attempts, then stop.
+      let reloads = 0;
+      try {
+        reloads = Number(window.sessionStorage.getItem(RELOAD_KEY) ?? '0');
+      } catch {
+        /* see readStoredTier */
+      }
+      if (reloads >= 2) {
+        console.warn('WebGL context lost after repeated reloads — giving up');
+        onGaveUp?.();
+        return;
+      }
+
       console.warn(`WebGL context lost — reloading at "${next}" quality`);
       storeTier(next);
+      try {
+        window.sessionStorage.setItem(RELOAD_KEY, String(reloads + 1));
+      } catch {
+        /* see readStoredTier */
+      }
       window.setTimeout(() => window.location.reload(), 300);
     },
     false,

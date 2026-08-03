@@ -211,6 +211,46 @@ function scatterScree(candidateCount: number, minSpacing: number, rand: () => nu
   return placed;
 }
 
+/**
+ * Where on the tropical/temperate/boreal scale a point sits, expressed as
+ * the hue, saturation and lightness its foliage should start from.
+ */
+function canopyClimate(
+  dir: THREE.Vector3,
+  elevation: number,
+): { hue: number; saturation: number; lightness: number } {
+  const temperature = temperatureAt(dir, elevation);
+  const tropical = smoothstep(temperature, 0.6, 0.86);
+  const boreal = 1 - smoothstep(temperature, 0.22, 0.48);
+
+  // temperate baseline
+  let hue = 0.215;
+  let saturation = 0.48;
+  let lightness = 0.3;
+
+  // jungle: yellower and brighter
+  hue = THREE.MathUtils.lerp(hue, 0.195, tropical);
+  saturation = THREE.MathUtils.lerp(saturation, 0.58, tropical);
+  lightness = THREE.MathUtils.lerp(lightness, 0.34, tropical);
+
+  // taiga: bluer, darker, less saturated — spruce, not meadow
+  hue = THREE.MathUtils.lerp(hue, 0.3, boreal);
+  saturation = THREE.MathUtils.lerp(saturation, 0.3, boreal);
+  lightness = THREE.MathUtils.lerp(lightness, 0.19, boreal);
+
+  // and everything thins and dulls as it climbs toward the tree line
+  const alpine = smoothstep(elevation, 0.09, 0.16);
+  saturation *= 1 - alpine * 0.35;
+  lightness *= 1 - alpine * 0.3;
+
+  return { hue, saturation, lightness };
+}
+
+function smoothstep(x: number, edge0: number, edge1: number): number {
+  const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
 const dummy = new THREE.Object3D();
 const up = new THREE.Vector3(0, 1, 0);
 
@@ -484,10 +524,20 @@ export function buildVegetation(
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
-      // wide lightness spread (not just hue jitter) so neighboring clumps
-      // read as light/shadow variation across the canopy, not one flat
-      // uniform green — real clump foliage isn't evenly lit all over
-      canopyColor.setHSL(0.205 + rand() * 0.04, 0.5 + rand() * 0.14, 0.3 + rand() * 0.13, THREE.SRGBColorSpace);
+      // Foliage colour follows the climate it grows in, not one palette
+      // sprayed over the whole planet. A jungle, a temperate wood and a
+      // taiga are three different greens — the tropics yellow-bright, the
+      // boreal belt a dark blue-green — and painting them identically is
+      // what made the flock read as one material applied everywhere.
+      // The lightness spread on top of that is per-clump light and shade;
+      // real clump foliage is not evenly lit all over.
+      const climate = canopyClimate(p.dir, terracedElevation(p.height));
+      canopyColor.setHSL(
+        climate.hue + rand() * 0.03,
+        climate.saturation + rand() * 0.12,
+        climate.lightness + rand() * 0.11,
+        THREE.SRGBColorSpace,
+      );
       mesh.setColorAt(i, canopyColor);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -514,7 +564,13 @@ export function buildVegetation(
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);
     dummy.updateMatrix();
     grassMesh.setMatrixAt(i, dummy.matrix);
-    grassColor.setHSL(0.215 + rand() * 0.04, 0.46 + rand() * 0.14, 0.28 + rand() * 0.1, THREE.SRGBColorSpace);
+    const gc = canopyClimate(p.dir, terracedElevation(p.height));
+    grassColor.setHSL(
+      gc.hue + rand() * 0.03,
+      gc.saturation * 0.92 + rand() * 0.1,
+      gc.lightness * 0.92 + rand() * 0.08,
+      THREE.SRGBColorSpace,
+    );
     grassMesh.setColorAt(i, grassColor);
   });
   grassMesh.instanceMatrix.needsUpdate = true;
