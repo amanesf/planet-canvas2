@@ -17,7 +17,7 @@ import {
 } from './terrain';
 import { buildVegetation } from './vegetation';
 import { buildClouds } from './clouds';
-import { DepthOfFieldShader } from './dof';
+import { CameraPassShader } from './cameraPass';
 import { buildWorkshop } from './setDressing';
 import {
   clearDowngradeAfterStableRun,
@@ -28,7 +28,6 @@ import {
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
-  <div class="vignette"></div>
   <div class="ui">
     <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
   </div>
@@ -272,16 +271,16 @@ composer.addPass(renderPass);
 // served by a sharp frame than by a soft one it cannot draw. The render pass
 // then has to go straight to the screen, since the composer only presents
 // through its final enabled pass.
-let dofPass: ShaderPass | null = null;
+let cameraPass: ShaderPass | null = null;
 if (sceneDepth) {
-  dofPass = new ShaderPass(DepthOfFieldShader);
-  dofPass.renderToScreen = true;
-  dofPass.material.defines = { ...dofPass.material.defines, RINGS: QUALITY.dofRings };
-  composer.addPass(dofPass);
-  dofPass.uniforms.tDepth.value = sceneDepth;
-  dofPass.uniforms.uNear.value = camera.near;
-  dofPass.uniforms.uFar.value = camera.far;
-  dofPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+  cameraPass = new ShaderPass(CameraPassShader);
+  cameraPass.renderToScreen = true;
+  cameraPass.material.defines = { ...cameraPass.material.defines, RINGS: QUALITY.dofRings };
+  composer.addPass(cameraPass);
+  cameraPass.uniforms.tDepth.value = sceneDepth;
+  cameraPass.uniforms.uNear.value = camera.near;
+  cameraPass.uniforms.uFar.value = camera.far;
+  cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 } else {
   renderPass.renderToScreen = true;
 }
@@ -597,9 +596,10 @@ function animate() {
   // keep the focal plane pinned to the front face of the globe as the
   // viewer orbits or zooms, the way a photographer refocuses on the
   // subject rather than on a fixed distance
-  if (dofPass) {
+  if (cameraPass) {
+    cameraPass.uniforms.uTime.value = t;
     const globeCenter = globeGroup.position;
-    dofPass.uniforms.uFocusDistance.value = Math.max(
+    cameraPass.uniforms.uFocusDistance.value = Math.max(
       camera.position.distanceTo(globeCenter) - RADIUS * 0.72,
       0.5,
     );
@@ -745,7 +745,7 @@ window.addEventListener('resize', () => {
     sceneDepth.image.height = window.innerHeight;
     sceneDepth.needsUpdate = true;
   }
-  dofPass?.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+  cameraPass?.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
   // rescale the orbit distance (and its clamps) for the new aspect ratio,
   // preserving how zoomed-in the user currently is

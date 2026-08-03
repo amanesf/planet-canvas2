@@ -161,7 +161,12 @@ export function buildClouds(radius: number): THREE.Group {
     emissive: '#ffffff',
     emissiveIntensity: 0.14,
     transparent: true,
-    opacity: 0.19,
+    // At 1.85x and this opacity the halo lumps were large enough to be read
+    // individually: where several overlapped, their alpha built up into a
+    // visible polygon boundary — a pale box around the cloud rather than a
+    // soft fringe. Closer to the core and fainter, it does the job it was
+    // added for without announcing itself.
+    opacity: 0.13,
     depthWrite: false,
     envMapIntensity: 0.1,
   });
@@ -202,7 +207,7 @@ export function buildClouds(radius: number): THREE.Group {
   // dark as one from the solid middle, which is not how looking through
   // cotton works
   group.add(place(coreMaterial, 1, true));
-  group.add(place(haloMaterial, 1.85, false));
+  group.add(place(haloMaterial, 1.32, false));
 
   return group;
 }
