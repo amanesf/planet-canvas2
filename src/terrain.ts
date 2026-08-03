@@ -21,6 +21,10 @@ const snowColor = new THREE.Color('#e9eef0');
 const riverColor = new THREE.Color('#3184a0');
 const tundraColor = new THREE.Color('#8b8a6e');
 const iceColor = new THREE.Color('#dce8ea');
+// exposed sedimentary rock strata — badlands/canyon country
+const badlandsColorA = new THREE.Color('#b5652f');
+const badlandsColorB = new THREE.Color('#dba15c');
+const badlandsColorC = new THREE.Color('#823f28');
 
 const deepOceanColor = new THREE.Color('#0c4a5e');
 const midOceanColor = new THREE.Color('#1c6f7f');
@@ -29,6 +33,104 @@ const shallowOceanColor = new THREE.Color('#4fa8ad');
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
   return t * t * (3 - 2 * t);
+}
+
+// ---------------------------------------------------------------------
+// Great mountain belts: instead of a random noise threshold scattering
+// tall bumps anywhere, a couple of explicit arcs are drawn across the
+// sphere (like an artist deciding "the range runs here") — the same way
+// real orogenic belts are specific lines where two plates actually
+// collided (Himalaya, Andes), not an evenly-distributed phenomenon.
+// Every other point on the planet only cares "how close am I to one of
+// these arcs", which reads as one coherent mountain chain rather than
+// scattered unrelated peaks.
+// ---------------------------------------------------------------------
+
+function slerpDir(a: THREE.Vector3, b: THREE.Vector3, t: number): THREE.Vector3 {
+  const dot = THREE.MathUtils.clamp(a.dot(b), -1, 1);
+  const theta = Math.acos(dot) * t;
+  if (theta === 0) return a.clone();
+  const relative = b.clone().addScaledVector(a, -dot).normalize();
+  return a.clone().multiplyScalar(Math.cos(theta)).addScaledVector(relative, Math.sin(theta));
+}
+
+function buildBeltSamples(controlPoints: THREE.Vector3[], segmentsPerSpan: number): THREE.Vector3[] {
+  const samples: THREE.Vector3[] = [];
+  for (let i = 0; i < controlPoints.length - 1; i++) {
+    for (let s = 0; s <= segmentsPerSpan; s++) {
+      samples.push(slerpDir(controlPoints[i], controlPoints[i + 1], s / segmentsPerSpan));
+    }
+  }
+  return samples;
+}
+
+const MOUNTAIN_BELT_A = [
+  new THREE.Vector3(0.9, 0.25, -0.35),
+  new THREE.Vector3(0.55, 0.5, -0.05),
+  new THREE.Vector3(0.15, 0.62, 0.35),
+  new THREE.Vector3(-0.2, 0.55, 0.68),
+  new THREE.Vector3(-0.55, 0.35, 0.78),
+].map((v) => v.normalize());
+
+const MOUNTAIN_BELT_B = [
+  new THREE.Vector3(-0.6, -0.2, 0.75),
+  new THREE.Vector3(-0.3, -0.5, 0.55),
+  new THREE.Vector3(0.05, -0.68, 0.25),
+  new THREE.Vector3(0.35, -0.62, -0.15),
+].map((v) => v.normalize());
+
+const mountainBeltSamples: THREE.Vector3[] = [
+  ...buildBeltSamples(MOUNTAIN_BELT_A, 5),
+  ...buildBeltSamples(MOUNTAIN_BELT_B, 5),
+];
+
+function distanceToNearestBelt(dir: THREE.Vector3): number {
+  let best = Math.PI;
+  for (let i = 0; i < mountainBeltSamples.length; i++) {
+    const dot = THREE.MathUtils.clamp(dir.dot(mountainBeltSamples[i]), -1, 1);
+    const angle = Math.acos(dot);
+    if (angle < best) best = angle;
+  }
+  return best;
+}
+
+// 1 right on a designated "great range" belt, fading to 0 a
+// continent-width away.
+function rawOrogenyBelt(dir: THREE.Vector3): number {
+  const dist = distanceToNearestBelt(dir);
+  return 1 - smoothstep(dist, 0.06, 0.26);
+}
+
+// distanceToNearestBelt scans every sample on every one of the belts for
+// every call — fine occasionally, but heightAt alone calls this for every
+// pixel of 3 different textures (3.5M+ calls). Precomputing it once onto a
+// coarse grid (same trick as the river-flow field below) turns that into a
+// cheap O(1) lookup on the hot path instead of visibly slowing page load.
+let orogenyGridCache: { grid: Float32Array; width: number; height: number } | null = null;
+function orogenyGrid(): { grid: Float32Array; width: number; height: number } {
+  if (orogenyGridCache) return orogenyGridCache;
+  const width = 192;
+  const height = 96;
+  const grid = new Float32Array(width * height);
+  const dir = new THREE.Vector3();
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      dirForPixel(px, py, width, height, dir);
+      grid[py * width + px] = rawOrogenyBelt(dir);
+    }
+  }
+  orogenyGridCache = { grid, width, height };
+  return orogenyGridCache;
+}
+
+function orogenyBeltAt(dir: THREE.Vector3): number {
+  const { grid, width, height } = orogenyGrid();
+  const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
+  let phi = Math.atan2(dir.z, -dir.x);
+  if (phi < 0) phi += Math.PI * 2;
+  const px = Math.min(width - 1, Math.floor((phi / (Math.PI * 2)) * width));
+  const py = Math.min(height - 1, Math.floor((theta / Math.PI) * height));
+  return grid[py * width + px];
 }
 
 // Big smooth rounded continents and coastal hills as the base shape — kept
@@ -49,28 +151,75 @@ export function heightAt(dir: THREE.Vector3): number {
   // gentle, but the higher land gets, the more rugged/jagged it should
   // look. Fade in finer, higher-frequency noise only once we're well into
   // "mountain" elevation, so peaks read as genuinely rocky and steep.
+  // Inside a designated mountain belt, that ruggedness kicks in earlier
+  // and hits harder — even modest foothills there already look torn up,
+  // not like an ordinary hill that just happens to be taller.
   const rugged = fbm3(dir.x * 6.5 + 4.1, dir.y * 6.5 + 4.1, dir.z * 6.5 + 4.1, 4);
-  const ruggedAmount = smoothstep(macro, SEA_LEVEL + 0.04, SEA_LEVEL + 0.22);
+  const beltBoost = orogenyBeltAt(dir);
+  const ruggedAmount = smoothstep(macro, SEA_LEVEL + 0.04 - beltBoost * 0.05, SEA_LEVEL + 0.22 - beltBoost * 0.12);
 
-  const n = macro + rugged * 0.2 * ruggedAmount;
+  let n = macro + rugged * 0.2 * ruggedAmount * (1 + beltBoost * 0.9);
+
+  // Polar ice continents: guarantee a broad ice-sheet landmass right at
+  // the poles instead of leaving it to chance whether ordinary continent
+  // noise happens to land there — Antarctica isn't a lucky accident, it's
+  // reliably there every time you look at a real globe's pole.
+  const poleCloseness = smoothstep(Math.abs(dir.y), 0.88, 0.97);
+  if (poleCloseness > 0) {
+    const iceShelfHeight =
+      SEA_LEVEL + 0.05 + fbm3(dir.x * 3 + 222, dir.y * 3 + 222, dir.z * 3 + 222, 2) * 0.03;
+    n = THREE.MathUtils.lerp(n, iceShelfHeight, poleCloseness);
+  }
+
   return Math.max(n, -0.2); // flatten the deep ocean floor a bit
 }
 
-// Climate variety, in two layers: a broad, low-frequency "climate belt"
-// (so a real Sahara-scale desert can span a huge stretch of a continent,
-// not just a patch) blended with finer noise for patchy edges within it —
-// the way the reference photo shows a tan Sahara next to green elsewhere
-// in the *same* continent, but the Sahara itself is enormous, not a spot.
+// Real deserts follow latitude, not random chance: Earth's subtropical
+// high-pressure belts (~15-35° from the equator) are where the Sahara,
+// Arabian, Kalahari and Australian deserts all sit, with humid air right
+// at the equator and humid temperate zones further out toward the poles.
+// dir.y stands in for latitude, matching how the rest of this file uses it.
+function desertBeltAt(dir: THREE.Vector3): number {
+  const lat = Math.abs(dir.y);
+  return smoothstep(lat, 0.1, 0.3) * (1 - smoothstep(lat, 0.55, 0.8));
+}
+
+// Very low-frequency, continent-scale "is this whole landmass dry or wet"
+// identity — a real Sahara doesn't have much jungle hiding inside it; an
+// entire continent commits to being arid or lush, and only its edges blend.
+function climateBiasAt(dir: THREE.Vector3): number {
+  return fbm3(dir.x * 0.35 + 300, dir.y * 0.35 + 300, dir.z * 0.35 + 300, 2);
+}
+
+// Climate variety in three layers: the latitude desert belt (where deserts
+// are *allowed* at all), a continent-scale wet/dry bias (whether this
+// particular landmass commits to being one), and local noise for patchy
+// edges. Where the belt and the continent's own bias both agree it's dry,
+// local noise is mostly ignored so the whole region reads as one
+// unbroken desert instead of a speckled mix.
 export function aridityAt(dir: THREE.Vector3): number {
-  const belt = fbm3(dir.x * 0.7 + 400, dir.y * 0.7 + 400, dir.z * 0.7 + 400, 2);
+  const belt = desertBeltAt(dir);
+  const bias = climateBiasAt(dir);
   const local = fbm3(dir.x * 2.6 + 51.3, dir.y * 2.6 + 51.3, dir.z * 2.6 + 51.3, 3);
-  return belt * 0.65 + local * 0.35;
+  const commitment = belt * smoothstep(bias, 0, 0.5);
+  return belt * 0.55 + bias * 0.4 + local * (0.4 - commitment * 0.28);
 }
 
 // same threshold biomeColor uses to start blending toward desert — shared
 // so vegetation placement (dunes/dry rock vs. grass/trees) agrees with
 // what the paint underneath actually looks like
-export const DESERT_ARIDITY_THRESHOLD = 0.1;
+export const DESERT_ARIDITY_THRESHOLD = 0.52;
+
+// A separate, decorrelated low-frequency field marking "canyon/badlands
+// country" — dry, exposed sedimentary rock distinct from both a sand-dune
+// desert and ordinary rocky mountains, like the American Southwest or the
+// Grand Canyon. Reuses the terracing language already established
+// elsewhere (a hand-cut layered model) but as color banding instead of
+// geometric steps.
+function badlandsAt(dir: THREE.Vector3): number {
+  return fbm3(dir.x * 0.9 + 555, dir.y * 0.9 + 555, dir.z * 0.9 + 555, 2);
+}
+export const BADLANDS_THRESHOLD = 0.28;
 
 // Latitude-driven climate (Whittaker's temperature axis), like the design
 // memo originally called for: hot at the equator, cold at the poles, and
@@ -87,16 +236,16 @@ export function temperatureAt(dir: THREE.Vector3, elevation: number): number {
 export const ICE_TEMPERATURE = -0.14;
 const TUNDRA_TEMPERATURE = 0.09;
 
-// A rare, huge-scale bump that pushes one or two regions dramatically
-// higher than everywhere else — real mountain building isn't evenly
-// distributed the way plain elevation noise implies; a couple of specific
-// belts (Himalaya, Andes) tower over everything else on the planet.
-// Frequency is low enough that only a small fraction of the sphere ever
-// sees a high value here at all.
+// Extra height multiplier on top of the belt's own increased ruggedness
+// (see heightAt) — some peaks along the range still tower further above
+// others, the way a real range has both dramatic summits and lower
+// passes along its length rather than a uniform wall.
 function orogenyAt(dir: THREE.Vector3): number {
-  return fbm3(dir.x * 0.6 + 900, dir.y * 0.6 + 900, dir.z * 0.6 + 900, 2);
+  const beltBoost = orogenyBeltAt(dir);
+  const jitter = fbm3(dir.x * 2.2 + 900, dir.y * 2.2 + 900, dir.z * 2.2 + 900, 3);
+  return beltBoost * (0.5 + jitter * 0.5);
 }
-const OROGENY_THRESHOLD = 0.32;
+const OROGENY_THRESHOLD = 0.28;
 
 // water is flattened to sea level on the mesh so it doesn't visibly
 // inherit the terrain noise as bumpy waves — only land pokes up. Land is
@@ -163,6 +312,7 @@ export function seaLevelRadius(radius: number, bumpHeight: number): number {
 }
 
 const outColor = new THREE.Color();
+const badlandsScratch = new THREE.Color();
 
 // Purely cosmetic: perturbs where a pixel's color band boundary falls,
 // without touching the height value used for geometry, sea level, or
@@ -180,23 +330,38 @@ function paintGrain(dir: THREE.Vector3): number {
   return fbm3(dir.x * 180 + 13, dir.y * 180 + 13, dir.z * 180 + 13, 1) * 0.05;
 }
 
+// Alternating sediment-layer stripes driven directly by elevation, so the
+// bands stay perfectly horizontal/contour-following like real exposed
+// rock strata, and automatically line up with the terrace steps underneath.
+function badlandsColor(elevation: number): THREE.Color {
+  const stripeA = Math.sin(elevation * 95) * 0.5 + 0.5;
+  const stripeB = Math.sin(elevation * 230 + 1.7) * 0.5 + 0.5;
+  badlandsScratch.copy(badlandsColorA).lerp(badlandsColorB, stripeA);
+  return badlandsScratch.lerp(badlandsColorC, stripeB * 0.4);
+}
+
 // green lowland, with patches nudged toward desert; rock band climbing
 // into rugged elevation; snow capping the highest peaks — real elevation
 // color grading instead of a single flat "land" band.
 // Thresholds were picked by sampling the actual height/aridity noise
-// distributions so bands land at sensible percentiles of land area:
-// rock starts ~p80, full snow ~p97, desert patches cover ~top 20%.
+// distributions so bands land at sensible percentiles of land area.
 // Takes the already-terraced elevation (0..TERRACE_MAX) so each color
 // band's edge lines up exactly with a geometric terrace edge — the
 // "layers are individually painted" read this is going for.
-function biomeColor(elevation: number, aridity: number, temperature: number): THREE.Color {
+function biomeColor(
+  elevation: number,
+  aridity: number,
+  temperature: number,
+  badlandsRaw: number,
+  beltCloseness: number,
+): THREE.Color {
   // polar ice caps: cold enough, and it's ice regardless of elevation or
   // aridity — Antarctica doesn't care if it would otherwise be a beach
   if (temperature < ICE_TEMPERATURE) {
     return outColor.copy(iceColor);
   }
 
-  const desertAmount = smoothstep(aridity, 0.12, 0.26);
+  const desertAmount = smoothstep(aridity, 0.4, 0.58);
 
   if (elevation < 0.15) {
     // cold + dry lowland reads as bare tundra instead of green — being
@@ -205,41 +370,60 @@ function biomeColor(elevation: number, aridity: number, temperature: number): TH
     if (temperature < TUNDRA_TEMPERATURE) {
       const coldness = smoothstep(temperature, TUNDRA_TEMPERATURE, ICE_TEMPERATURE);
       outColor.copy(landColor).lerp(tundraColor, coldness);
-      return outColor.lerp(desertColor, desertAmount * (1 - coldness));
+      outColor.lerp(desertColor, desertAmount * (1 - coldness));
+    } else {
+      // sand only right at the coast — being *low* elevation isn't the
+      // same as being *dry*. A wide shore→green transition was tying the
+      // two together, so any low flat continent read as one giant beach
+      // regardless of its actual (independent) aridity value.
+      const t = elevation / 0.035;
+      outColor.copy(shoreColor).lerp(landColor, Math.min(Math.max(t, 0), 1));
+      outColor.lerp(desertColor, desertAmount);
     }
-    // sand only right at the coast — being *low* elevation isn't the same
-    // as being *dry*. A wide shore→green transition was tying the two
-    // together, so any low flat continent read as one giant beach
-    // regardless of its actual (independent) aridity value.
-    const t = elevation / 0.035;
-    outColor.copy(shoreColor).lerp(landColor, Math.min(Math.max(t, 0), 1));
-    return outColor.lerp(desertColor, desertAmount);
-  }
-  if (elevation < 0.22) {
+  } else if (elevation < 0.22) {
     const t = (elevation - 0.15) / 0.07;
     outColor.copy(landColor).lerp(rockColor, t);
-    return outColor.lerp(desertColor, desertAmount * (1 - t) * 0.5);
-  }
-  if (elevation < TERRACE_MAX) {
+    outColor.lerp(desertColor, desertAmount * (1 - t) * 0.5);
+  } else if (elevation < TERRACE_MAX) {
     const t = (elevation - 0.22) / (TERRACE_MAX - 0.22);
-    return outColor.copy(rockColor).lerp(snowColor, t);
+    outColor.copy(rockColor).lerp(snowColor, t);
+  } else {
+    outColor.copy(snowColor);
   }
-  return outColor.copy(snowColor);
+
+  // Canyon/badlands banding: only in dry-but-not-desert, low/foothill,
+  // warm-enough country that isn't already claimed by a great mountain
+  // belt (which keeps its own alpine-rock look).
+  const badlandsGate =
+    smoothstep(badlandsRaw, BADLANDS_THRESHOLD, BADLANDS_THRESHOLD + 0.15) *
+    (1 - smoothstep(beltCloseness, 0.15, 0.4)) *
+    smoothstep(aridity, -0.05, 0.15) *
+    (1 - smoothstep(elevation, 0.2, 0.28)) *
+    smoothstep(temperature, TUNDRA_TEMPERATURE - 0.05, TUNDRA_TEMPERATURE + 0.05);
+
+  if (badlandsGate > 0.001) {
+    outColor.lerp(badlandsColor(elevation), badlandsGate);
+  }
+
+  return outColor;
 }
 
 // Real shadow maps are off (mobile GPU stability), so the coastline's
 // geometric "step" never actually casts a shadow onto the beach — without
 // this the carved edge just looks like a color boundary, not a relief.
 // Baking a fake AO crease directly into the paint fakes the same read.
-function coastalAO(height: number): number {
+// Steeper/darker right where a mountain belt meets the sea, matching the
+// fjord-style cliff coastline used there (see terrainColor).
+function coastalAO(height: number, cliffiness: number): number {
   const t = smoothstep(height, SEA_LEVEL, SEA_LEVEL + 0.05);
-  return -0.16 * (1 - t);
+  return -0.16 * (1 - t) * (1 + cliffiness * 1.3);
 }
 
 function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number): THREE.Color {
   const h = height + coastlineJitter(dir);
   const temperature = temperatureAt(dir, terracedElevation(Math.max(h, SEA_LEVEL)));
   const seaIce = smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE - 0.08);
+  const beltCloseness = orogenyBeltAt(dir);
 
   let color: THREE.Color;
   if (h < SEA_LEVEL - COAST_WIDTH) {
@@ -247,12 +431,23 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
     // shell is very slightly transparent, so keep this in the same family
     color = outColor.copy(midOceanColor).lerp(iceColor, seaIce);
   } else if (h < SEA_LEVEL + COAST_WIDTH) {
-    color = outColor.copy(midOceanColor).lerp(shoreColor, (h - (SEA_LEVEL - COAST_WIDTH)) / (COAST_WIDTH * 2));
+    if (beltCloseness > 0.35) {
+      // fjord-style coastline: a mountain range meeting the sea drops
+      // straight into deep water instead of tapering out to a sandy beach
+      const t = smoothstep(h, SEA_LEVEL - COAST_WIDTH * 0.4, SEA_LEVEL + COAST_WIDTH);
+      color = outColor.copy(midOceanColor).lerp(rockColor, t);
+      color.offsetHSL(0, 0, -0.05);
+    } else {
+      color = outColor.copy(midOceanColor).lerp(shoreColor, (h - (SEA_LEVEL - COAST_WIDTH)) / (COAST_WIDTH * 2));
+    }
     color.lerp(iceColor, seaIce);
   } else {
-    color = biomeColor(terracedElevation(h), aridityAt(dir), temperature);
+    const elevation = terracedElevation(h);
+    const aridity = aridityAt(dir);
+    const badlandsRaw = badlandsAt(dir);
+    color = biomeColor(elevation, aridity, temperature, badlandsRaw, beltCloseness);
     if (riverStrength > 0) color.lerp(riverColor, riverStrength);
-    color.offsetHSL(0, 0, coastalAO(h));
+    color.offsetHSL(0, 0, coastalAO(h, beltCloseness));
   }
 
   return color.offsetHSL(0, 0, paintGrain(dir));
@@ -546,3 +741,5 @@ export function rippleSphere(geometry: THREE.SphereGeometry, radius: number, amp
   }
   geometry.computeVertexNormals();
 }
+
+export { badlandsAt };

@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   aridityAt,
+  badlandsAt,
+  BADLANDS_THRESHOLD,
   DESERT_ARIDITY_THRESHOLD,
   displayHeight,
   heightAt,
@@ -17,7 +19,7 @@ type Kind = 'tree' | 'rock' | 'dune' | 'desertRock';
 // by scatterForest, not individual trees). Between this and the desert
 // threshold: savanna — sparse, individually-visible trees are correct
 // there, not a mistake to "fix" with more density.
-const FOREST_ARIDITY_MAX = 0.05;
+const FOREST_ARIDITY_MAX = 0.44;
 
 // Below this temperature it's tundra/ice country — too cold for forest,
 // savanna, or desert dressing; those zones stay bare (the paint itself
@@ -56,6 +58,7 @@ function scatterPoints(candidateCount: number, minSpacing: number, rand: () => n
     let kind: Kind;
     if (elevation < 0.15) {
       if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // tundra/ice — stays bare
+      if (badlandsAt(dir) > BADLANDS_THRESHOLD) continue; // bare exposed rock — no trees
       const aridity = aridityAt(dir);
       if (aridity > DESERT_ARIDITY_THRESHOLD) continue; // handled by the denser scatterDesert pass
       if (aridity <= FOREST_ARIDITY_MAX) continue; // lush forest zone — covered by the canopy pass instead
@@ -102,6 +105,7 @@ function scatterGrass(candidateCount: number, minSpacing: number, rand: () => nu
     const elevation = terracedElevation(height);
     if (elevation > 0.16) continue; // grass, not alpine scrub
     if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // tundra/ice — stays bare
+    if (badlandsAt(dir) > BADLANDS_THRESHOLD) continue; // bare exposed rock — no grass
     const aridity = aridityAt(dir);
     if (aridity > DESERT_ARIDITY_THRESHOLD) continue; // no grass in the desert
     if (aridity <= FOREST_ARIDITY_MAX) continue; // forest floor is covered by canopy instead
@@ -143,6 +147,7 @@ function scatterForest(candidateCount: number, minSpacing: number, rand: () => n
     const elevation = terracedElevation(height);
     if (elevation > 0.15) continue; // canopy stays off the rocky slopes
     if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // too cold for forest — taiga/tundra instead
+    if (badlandsAt(dir) > BADLANDS_THRESHOLD) continue; // bare exposed rock — no canopy
     if (aridityAt(dir) > FOREST_ARIDITY_MAX) continue; // savanna/desert get their own treatment
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
@@ -180,6 +185,7 @@ function scatterDesert(candidateCount: number, minSpacing: number, rand: () => n
     const elevation = terracedElevation(height);
     if (elevation > 0.15) continue;
     if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // cold + dry is tundra, not a sand desert
+    if (badlandsAt(dir) > BADLANDS_THRESHOLD) continue; // badlands gets rock banding, not sand dunes
     if (aridityAt(dir) <= DESERT_ARIDITY_THRESHOLD) continue;
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
