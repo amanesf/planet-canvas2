@@ -20,7 +20,7 @@ function addWisps(parts: THREE.BufferGeometry[], center: THREE.Vector3, baseRadi
   const up = new THREE.Vector3(0, 1, 0);
   for (let i = 0; i < count; i++) {
     const dir = new THREE.Vector3(rand() - 0.5, (rand() - 0.5) * 0.6, rand() - 0.5).normalize();
-    const length = baseRadius * (0.6 + rand() * 1.1);
+    const length = baseRadius * (0.4 + rand() * 0.6);
     const wisp = new THREE.ConeGeometry(baseRadius * (0.1 + rand() * 0.12), length, 5, 1);
     wisp.translate(0, length / 2, 0);
     const q = new THREE.Quaternion().setFromUnitVectors(up, dir);
@@ -50,7 +50,7 @@ function bakeVerticalShading(geometry: THREE.BufferGeometry) {
   const colors = new Float32Array(position.count * 3);
   for (let i = 0; i < position.count; i++) {
     const t = THREE.MathUtils.clamp((position.getY(i) - minY) / span, 0, 1);
-    const shade = 0.66 + t * 0.4;
+    const shade = 0.46 + t * 0.52;
     colors[i * 3] = shade;
     colors[i * 3 + 1] = shade;
     colors[i * 3 + 2] = Math.min(1, shade + 0.02); // faint cool tint in the shadowed underside
@@ -73,8 +73,8 @@ function buildPuffGeometry(rand: () => number): THREE.BufferGeometry {
     const g = new THREE.SphereGeometry(r, 14, 10);
     displaceWithNoise(g, 0.4, 2.6, rand() * 500);
     displaceWithNoise(g, 0.16, 8.5, rand() * 500 + 200);
-    g.scale(0.7 + rand() * 0.7, 0.55 + rand() * 0.5, 0.7 + rand() * 0.7);
-    const center = new THREE.Vector3((rand() - 0.5) * 1.6, (rand() - 0.5) * 0.4, (rand() - 0.5) * 0.75);
+    g.scale(0.8 + rand() * 0.5, 0.72 + rand() * 0.4, 0.8 + rand() * 0.5);
+    const center = new THREE.Vector3((rand() - 0.5) * 1.0, (rand() - 0.5) * 0.55, (rand() - 0.5) * 0.85);
     g.translate(center.x, center.y, center.z);
     g.computeVertexNormals();
     parts.push(g);
@@ -85,7 +85,7 @@ function buildPuffGeometry(rand: () => number): THREE.BufferGeometry {
   // real torn cotton has some denser core lumps and some wispier edges
   const wispyLobes = lobeCenters.filter(() => rand() < 0.6);
   wispyLobes.forEach(({ center, radius }) => {
-    addWisps(parts, center, radius, 2 + Math.floor(rand() * 3), rand);
+    addWisps(parts, center, radius, 1 + Math.floor(rand() * 2), rand);
   });
 
   const merged = mergeGeometries(parts, false);
@@ -117,12 +117,12 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
   const group = new THREE.Group();
   const rand = mulberry32(4242);
 
-  const hash = new SpatialHash(0.4);
-  const minSpacingSq = 0.4 * 0.4;
+  const hash = new SpatialHash(0.44);
+  const minSpacingSq = 0.44 * 0.44;
   const points: THREE.Vector3[] = [];
   const dir = new THREE.Vector3();
 
-  for (let i = 0; i < 6000 && points.length < 70; i++) {
+  for (let i = 0; i < 6000 && points.length < 58; i++) {
     const z = rand() * 2 - 1;
     const t = rand() * Math.PI * 2;
     const r = Math.sqrt(1 - z * z);
@@ -139,11 +139,11 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
   const variantCount = 3;
   const variants = Array.from({ length: variantCount }, () => buildPuffGeometry(rand));
   const cloudMaterial = new THREE.MeshStandardMaterial({
-    color: '#ffffff',
+    color: '#d9d7d6',
     vertexColors: true, // baked top-lit/underside-shadow gradient, see bakeVerticalShading
     roughness: 0.88, // a little sheen — real cotton fiber catches a soft highlight, unlike matte rock
     transparent: true,
-    opacity: 0.9,
+    opacity: 0.88,
     envMapIntensity: 0.15,
   });
 
@@ -157,13 +157,15 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
     if (pts.length === 0) return;
     const mesh = new THREE.InstancedMesh(variants[vi], cloudMaterial, pts.length);
     pts.forEach((p, i) => {
-      const hoverRadius = radius + 0.3 + rand() * 0.22;
+      const hoverRadius = radius + 0.08 + rand() * 0.16;
       dummy.position.copy(p).multiplyScalar(hoverRadius);
       const align = new THREE.Quaternion().setFromUnitVectors(up, p);
       const spin = new THREE.Quaternion().setFromAxisAngle(p, rand() * Math.PI * 2);
       dummy.quaternion.copy(spin).multiply(align);
-      const scale = 0.15 + rand() * 0.12;
-      dummy.scale.setScalar(scale);
+      const scale = 0.2 + rand() * 0.12;
+      // real cotton-batting clouds laid on a globe spread sideways and stay
+      // shallow; a uniform scale gives spherical popcorn balls instead
+      dummy.scale.set(scale * 1.15, scale * 0.95, scale * 1.05);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     });

@@ -53,7 +53,7 @@ const camera = new THREE.PerspectiveCamera(
 // leaves a lot of dim, blurred workshop visible above and below the
 // globe; filling the whole frame edge-to-edge with the globe (the old
 // distance) left no room for that surrounding context to read at all.
-const BASE_CAMERA_DISTANCE = 9.5;
+const BASE_CAMERA_DISTANCE = 8.0;
 function cameraDistanceForViewport() {
   const aspect = window.innerWidth / window.innerHeight;
   if (aspect >= 1) return BASE_CAMERA_DISTANCE;
@@ -90,7 +90,7 @@ renderer.shadowMap.enabled = false;
 // roll off smoothly toward white like a real photo, not clip to a flat
 // disc the way plain linear output does
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 1.1;
 app.appendChild(renderer.domElement);
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
@@ -152,15 +152,24 @@ controls.target.set(0, TARGET_Y, 0);
 // "everything is equally lit" bright CG look. The fake contact-shadow
 // decals (shadow.ts) point along this exact same light direction, so the
 // two reinforce each other as "one consistent light source".
-scene.add(new THREE.AmbientLight(0xffe9c2, 0.5));
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.72));
 
-const keyLight = new THREE.DirectionalLight(0xffd9a0, 2.1);
+const keyLight = new THREE.DirectionalLight(0xffd9a0, 1.15);
 keyLight.position.set(4, 5, 3);
 scene.add(keyLight);
 
 const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.3);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
+
+// The key alone left the globe's lower hemisphere falling off into black
+// while the snow cap facing it clipped to flat white. A soft frontal fill
+// from slightly below the lens — the bounce card a real tabletop shooter
+// props against the desk — evens that range out without flattening the
+// key's direction.
+const fillLight = new THREE.DirectionalLight(0xd9e4f0, 0.55);
+fillLight.position.set(-1.5, -1, 5);
+scene.add(fillLight);
 
 // ---------- globe: displaced sphere, crisp painted terrain texture ----------
 
@@ -171,7 +180,7 @@ scene.add(globeGroup);
 // terrain color is painted once onto a texture (crisp, cheap to sample)
 // instead of interpolated per-vertex (which read as blurry) — geometry
 // only needs to be smooth enough to carry the displacement + lighting
-const geometry = new THREE.SphereGeometry(RADIUS, 112, 64);
+const geometry = new THREE.SphereGeometry(RADIUS, 220, 124);
 displaceSphere(geometry, RADIUS, BUMP_HEIGHT);
 const terrainTexture = buildTerrainTexture();
 
@@ -211,10 +220,10 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   // a directional wave pattern, slowly scrolled in the animation loop —
   // gives moving, shimmering highlights instead of a fixed pattern
   bumpMap: waveTexture,
-  bumpScale: 0.006,
+  bumpScale: 0.0055,
   transparent: true,
   opacity: 0.95,
-  roughness: 0.38,
+  roughness: 0.46,
   metalness: 0,
   // poured-epoxy-resin read: a strong, very smooth clearcoat gives the
   // hard, glassy top layer real resin has, instead of reading as a
@@ -227,7 +236,7 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   ior: 1.5,
   // enough ambient reflection to keep the resin looking wet/glassy
   // without washing the saturated blue out to a flat gray-teal
-  envMapIntensity: 0.22,
+  envMapIntensity: 0.16,
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 globeGroup.add(oceanMesh);

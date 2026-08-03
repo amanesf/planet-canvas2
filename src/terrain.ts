@@ -3,36 +3,36 @@ import { fbm3 } from './noise';
 
 // Tuned so land covers roughly 30% of the surface, like real Earth's
 // land:sea ≈ 3:7 (verified empirically against heightAt's noise distribution).
-export const SEA_LEVEL = 0.095;
+export const SEA_LEVEL = 0.072;
 const COAST_WIDTH = 0.012;
 
 // Toned down across the board — high-saturation primary colors are what
 // made this read as "cheap mobile game" regardless of how much detail
 // sat on top of them. Real terrain photography has much narrower,
 // muddier, more correlated color ranges than a clean color wheel.
-const shoreColor = new THREE.Color('#d9c58a');
+const shoreColor = new THREE.Color('#c2b393');
 // muted/soil-toned on purpose — the vivid green now comes from actually
 // covering the ground in grass/tree instances, not from painting the
 // terrain itself bright green underneath them
-const landColor = new THREE.Color('#6d7f4c');
-const desertColor = new THREE.Color('#bd9a5f');
-const rockColor = new THREE.Color('#7d7264');
-const snowColor = new THREE.Color('#e9eef0');
+const landColor = new THREE.Color('#6a6a50');
+const desertColor = new THREE.Color('#9a7f5c');
+const rockColor = new THREE.Color('#7b6248');
+const snowColor = new THREE.Color('#dde4e6');
 const riverColor = new THREE.Color('#3184a0');
 const tundraColor = new THREE.Color('#8b8a6e');
-const iceColor = new THREE.Color('#dce8ea');
+const iceColor = new THREE.Color('#d3dee1');
 // exposed sedimentary rock strata — badlands/canyon country
-const badlandsColorA = new THREE.Color('#9a6236');
-const badlandsColorB = new THREE.Color('#c09a68');
-const badlandsColorC = new THREE.Color('#6e4630');
+const badlandsColorA = new THREE.Color('#7f6247');
+const badlandsColorB = new THREE.Color('#a08a6b');
+const badlandsColorC = new THREE.Color('#5e463a');
 
 // Rich, saturated sapphire blue — darker in the depths but never reading
 // as black; a real poured-resin ocean over blue paint keeps its color
 // even in shadow; only the *highlight* should go near-white, not the
 // whole sea.
-const deepOceanColor = new THREE.Color('#123a63');
-const midOceanColor = new THREE.Color('#1c66a0');
-const shallowOceanColor = new THREE.Color('#3f9fc4');
+const deepOceanColor = new THREE.Color('#0d3346');
+const midOceanColor = new THREE.Color('#14607f');
+const shallowOceanColor = new THREE.Color('#3ea7b2');
 
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
@@ -237,8 +237,8 @@ export function temperatureAt(dir: THREE.Vector3, elevation: number): number {
   return latitude + wobble - elevationCooling;
 }
 
-export const ICE_TEMPERATURE = -0.14;
-const TUNDRA_TEMPERATURE = 0.09;
+export const ICE_TEMPERATURE = 0.02;
+const TUNDRA_TEMPERATURE = 0.2;
 
 // Extra height multiplier on top of the belt's own increased ruggedness
 // (see heightAt) — some peaks along the range still tower further above
@@ -257,7 +257,7 @@ const OROGENY_THRESHOLD = 0.28;
 // mountain look; since the ocean (~70% of the surface) stays perfectly
 // flat regardless, this doesn't reintroduce the "potato" whole-sphere
 // distortion from earlier — only the 30% landmass gets dramatic.
-const LAND_BOOST = 2.5;
+const LAND_BOOST = 3.0;
 // a bigger drop than a purely cosmetic clamp needs — real relief globes
 // have a visible carved "step" right at the coastline instead of land
 // gently sloping into the water, and this is what makes that step read
@@ -307,8 +307,14 @@ export function terracedElevation(height: number): number {
 // snow already); only the geometry shoots up further.
 export function displayHeight(height: number, dir: THREE.Vector3): number {
   if (height < SEA_LEVEL) return UNDERWATER_HEIGHT;
-  const orogenyBoost = 1 + smoothstep(orogenyAt(dir), OROGENY_THRESHOLD, OROGENY_THRESHOLD + 0.12) * 2.4;
-  return SEA_LEVEL + terracedElevation(height) * LAND_BOOST * orogenyBoost;
+  const orogenyBoost = 1 + smoothstep(orogenyAt(dir), OROGENY_THRESHOLD, OROGENY_THRESHOLD + 0.12) * 1.7;
+  // A flat step lifting *all* land clear of the resin the instant it
+  // crosses the shoreline. In the reference the continents are carved
+  // plateaus standing proud of the poured sea with a real vertical cliff
+  // at their edge; without this floor, low-lying land tapers to the same
+  // radius as the water and the coastline reads as painted-on, not carved.
+  const COASTAL_STEP = 0.12;
+  return SEA_LEVEL + COASTAL_STEP + terracedElevation(height) * LAND_BOOST * orogenyBoost;
 }
 
 export function seaLevelRadius(radius: number, bumpHeight: number): number {
@@ -406,7 +412,7 @@ function biomeColor(
     smoothstep(temperature, TUNDRA_TEMPERATURE - 0.05, TUNDRA_TEMPERATURE + 0.05);
 
   if (badlandsGate > 0.001) {
-    outColor.lerp(badlandsColor(elevation), badlandsGate);
+    outColor.lerp(badlandsColor(elevation), badlandsGate * 0.3);
   }
 
   return outColor;
@@ -663,7 +669,7 @@ export function buildWaveTexture(width = 1024, height = 512): THREE.CanvasTextur
       // tiny embedded glitter/mica or trapped air, which catches the key
       // light as scattered pinprick sparkle rather than one smooth sheen
       const sparkle = fbm3(dir.x * 240 + 77, dir.y * 240 + 77, dir.z * 240 + 77, 2);
-      const v = 0.5 + (ridge - 0.5) * 0.5 + chop * 0.18 + sparkle * 0.14;
+      const v = 0.5 + (ridge - 0.5) * 0.24 + chop * 0.14 + sparkle * 0.34;
 
       const gray = Math.round(Math.min(Math.max(v, 0), 1) * 255);
       const idx = (py * width + px) * 4;

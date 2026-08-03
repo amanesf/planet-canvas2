@@ -355,7 +355,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     pts.forEach((p, i) => {
       const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
-      const scale = 0.6 + rand() * 0.75;
+      const scale = 0.42 + rand() * 0.45;
       orient(position, p.dir, rand() * Math.PI * 2);
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
@@ -363,7 +363,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       foliageMesh.setMatrixAt(i, dummy.matrix);
       // a little per-tree color variance so a forest doesn't look like one
       // flat-shaded cutout repeated hundreds of times
-      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.42 + rand() * 0.14, 0.26 + rand() * 0.12, THREE.SRGBColorSpace);
+      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.46 + rand() * 0.14, 0.3 + rand() * 0.12, THREE.SRGBColorSpace);
       foliageMesh.setColorAt(i, foliageColor);
     });
     foliageMesh.instanceMatrix.needsUpdate = true;
@@ -415,7 +415,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const duneGeometry = new THREE.IcosahedronGeometry(0.032, 1);
   duneGeometry.scale(1.8, 0.28, 1.15);
   const duneMaterial = new THREE.MeshStandardMaterial({
-    color: '#d9bb7c',
+    color: '#c3b190',
     roughness: 0.92,
     envMapIntensity: 0.1,
   });
@@ -428,7 +428,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.6 + rand() * 1.1, 0.5 + rand() * 0.7, 0.6 + rand() * 1.1);
     dummy.updateMatrix();
     duneMesh.setMatrixAt(i, dummy.matrix);
-    duneColor.setHSL(0.11 + rand() * 0.02, 0.4 + rand() * 0.15, 0.62 + rand() * 0.1, THREE.SRGBColorSpace);
+    duneColor.setHSL(0.105 + rand() * 0.02, 0.2 + rand() * 0.08, 0.54 + rand() * 0.09, THREE.SRGBColorSpace);
     duneMesh.setColorAt(i, duneColor);
   });
   duneMesh.instanceMatrix.needsUpdate = true;
@@ -437,7 +437,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
 
   const desertRockGeometry = new THREE.IcosahedronGeometry(0.034, 0);
   const desertRockMaterial = new THREE.MeshStandardMaterial({
-    color: '#c7a877',
+    color: '#b3a184',
     roughness: 0.95,
     flatShading: true,
     envMapIntensity: 0.1,
@@ -451,7 +451,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.6 + rand() * 0.8, 0.55 + rand() * 0.6, 0.6 + rand() * 0.8);
     dummy.updateMatrix();
     desertRockMesh.setMatrixAt(i, dummy.matrix);
-    desertRockColor.setHSL(0.1 + rand() * 0.02, 0.3 + rand() * 0.1, 0.55 + rand() * 0.12, THREE.SRGBColorSpace);
+    desertRockColor.setHSL(0.095 + rand() * 0.02, 0.16 + rand() * 0.07, 0.47 + rand() * 0.1, THREE.SRGBColorSpace);
     desertRockMesh.setColorAt(i, desertRockColor);
   });
   desertRockMesh.instanceMatrix.needsUpdate = true;
@@ -492,7 +492,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   // per clump (each one is several overlapping lobes), but the ground
   // shows through between them the way it does in a real miniature.
 
-  const forestPoints = scatterForest(38000, 0.11, rand);
+  const forestPoints = scatterForest(340000, 0.024, rand);
   const canopyVariantCount = 3;
   const canopyVariants = Array.from({ length: canopyVariantCount }, () => buildCanopyBlob(rand));
   const canopyMaterial = new THREE.MeshStandardMaterial({
@@ -511,14 +511,14 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2);
-      const scale = 1.35 + rand() * 1.1;
+      const scale = 0.85 + rand() * 0.55;
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
       // wide lightness spread (not just hue jitter) so neighboring clumps
       // read as light/shadow variation across the canopy, not one flat
       // uniform green — real clump foliage isn't evenly lit all over
-      canopyColor.setHSL(0.235 + rand() * 0.05, 0.42 + rand() * 0.16, 0.24 + rand() * 0.15, THREE.SRGBColorSpace);
+      canopyColor.setHSL(0.22 + rand() * 0.045, 0.46 + rand() * 0.16, 0.3 + rand() * 0.15, THREE.SRGBColorSpace);
       mesh.setColorAt(i, canopyColor);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -545,7 +545,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);
     dummy.updateMatrix();
     grassMesh.setMatrixAt(i, dummy.matrix);
-    grassColor.setHSL(0.245 + rand() * 0.05, 0.4 + rand() * 0.14, 0.3 + rand() * 0.1, THREE.SRGBColorSpace);
+    grassColor.setHSL(0.23 + rand() * 0.045, 0.44 + rand() * 0.14, 0.34 + rand() * 0.1, THREE.SRGBColorSpace);
     grassMesh.setColorAt(i, grassColor);
   });
   grassMesh.instanceMatrix.needsUpdate = true;
@@ -562,7 +562,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const shadowMaterial = new THREE.MeshBasicMaterial({
     map: buildSoftDotTexture(),
     transparent: true,
-    opacity: 0.5,
+    opacity: 0.34,
     depthWrite: false,
   });
   const shadowPoints: (ScatterPoint | DesertPoint)[] = [...points, ...desertPoints];
@@ -573,10 +573,10 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     const basePosition = p.dir.clone().multiplyScalar(surfaceRadius);
     const size =
       p.kind === 'tree'
-        ? 0.05 + rand() * 0.02
+        ? 0.028 + rand() * 0.012
         : p.kind === 'dune'
-          ? 0.09 + rand() * 0.05
-          : 0.07 + rand() * 0.04;
+          ? 0.05 + rand() * 0.028
+          : 0.04 + rand() * 0.022;
     orientShadowDecal(dummy, basePosition, p.dir, size, 1.5, rand() * Math.PI * 2);
     dummy.updateMatrix();
     shadowMesh.setMatrixAt(i, dummy.matrix);
@@ -600,12 +600,12 @@ function buildCanopyBlob(rand: () => number): THREE.BufferGeometry {
   const lobes = 4 + Math.floor(rand() * 3);
   const parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < lobes; i++) {
-    const r = 0.05 + rand() * 0.038;
+    const r = 0.022 + rand() * 0.016;
     const g = new THREE.IcosahedronGeometry(r, 2);
     displaceWithNoise(g, 0.32, 3.2, rand() * 500);
     displaceWithNoise(g, 0.14, 9, rand() * 500 + 300);
     g.computeVertexNormals();
-    g.translate((rand() - 0.5) * 0.13, rand() * 0.035, (rand() - 0.5) * 0.13);
+    g.translate((rand() - 0.5) * 0.055, rand() * 0.015, (rand() - 0.5) * 0.055);
     parts.push(g);
   }
   const merged = mergeGeometries(parts, false);
