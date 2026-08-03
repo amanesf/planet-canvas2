@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { fbm3 } from './noise';
 
 // A spatial hash over the (small) 3D direction space so a minimum-spacing
 // rejection test is ~O(1) per candidate instead of checking against every
@@ -46,24 +47,31 @@ export class SpatialHash {
   }
 }
 
-// Perturbs each vertex of an origin-centered geometry radially by a random
-// factor before it's translated/merged into a larger shape — a perfectly
-// smooth icosahedron/sphere reads as a rubber ball; scaling every vertex
-// by a slightly different amount breaks that up into the lumpy, irregular
-// silhouette of a real clumped material (foliage clusters, rolled cotton),
-// which is what actually reads as "handmade from a physical material"
-// instead of "geometric primitive".
-export function jitterGeometry(geometry: THREE.BufferGeometry, amount: number, rand: () => number) {
+// Displaces each vertex of an origin-centered geometry radially, using
+// actual coherent 3D noise sampled at the vertex's own direction — not an
+// independently-randomized per-vertex scale. Independent-random jitter
+// only ever produces a jagged, faceted potato at the low poly counts this
+// project uses for performance, because neighboring vertices have no
+// relationship to each other. Real puffy/clumped materials (cotton,
+// foliage clusters, cumulus cloud) have bumps correlated with their
+// neighbors at multiple scales, which is exactly what sampling coherent
+// noise gives for free. Call twice at different frequency/amplitude
+// (broad lumps, then fine surface fluff) for a proper fractal look.
+export function displaceWithNoise(geometry: THREE.BufferGeometry, amount: number, frequency: number, seed: number) {
   const position = geometry.attributes.position;
   const v = new THREE.Vector3();
   for (let i = 0; i < position.count; i++) {
     v.fromBufferAttribute(position, i);
-    const factor = 1 + (rand() - 0.5) * 2 * amount;
-    v.multiplyScalar(factor);
+    const len = v.length();
+    if (len < 1e-6) continue;
+    const nx = v.x / len;
+    const ny = v.y / len;
+    const nz = v.z / len;
+    const n = fbm3(nx * frequency + seed, ny * frequency + seed, nz * frequency + seed, 3);
+    v.multiplyScalar(1 + n * amount);
     position.setXYZ(i, v.x, v.y, v.z);
   }
   position.needsUpdate = true;
-  geometry.computeVertexNormals();
 }
 
 // deterministic RNG so scatter patterns look the same every reload

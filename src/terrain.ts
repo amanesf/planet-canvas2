@@ -26,12 +26,13 @@ const badlandsColorA = new THREE.Color('#b5652f');
 const badlandsColorB = new THREE.Color('#dba15c');
 const badlandsColorC = new THREE.Color('#823f28');
 
-// Deep and saturated, almost black in shadow — a real poured-resin ocean
-// over dark blue paint reads as near-black except right where a light
-// actually hits it, not as an evenly bright teal swimming pool.
-const deepOceanColor = new THREE.Color('#040e1c');
-const midOceanColor = new THREE.Color('#0c3450');
-const shallowOceanColor = new THREE.Color('#1c5f76');
+// Rich, saturated sapphire blue — darker in the depths but never reading
+// as black; a real poured-resin ocean over blue paint keeps its color
+// even in shadow; only the *highlight* should go near-white, not the
+// whole sea.
+const deepOceanColor = new THREE.Color('#081c42');
+const midOceanColor = new THREE.Color('#123f7a');
+const shallowOceanColor = new THREE.Color('#2f76a8');
 
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
@@ -647,7 +648,11 @@ export function buildWaveTexture(width = 1024, height = 512): THREE.CanvasTextur
 
       const ridge = Math.sin(dir.x * 42 + dir.z * 17 + dir.y * 9) * 0.5 + 0.5;
       const chop = fbm3(dir.x * 30 + 8, dir.y * 30 + 8, dir.z * 30 + 8, 3);
-      const v = 0.5 + (ridge - 0.5) * 0.5 + chop * 0.18;
+      // fine, very-high-frequency speckle — real poured resin often has
+      // tiny embedded glitter/mica or trapped air, which catches the key
+      // light as scattered pinprick sparkle rather than one smooth sheen
+      const sparkle = fbm3(dir.x * 240 + 77, dir.y * 240 + 77, dir.z * 240 + 77, 2);
+      const v = 0.5 + (ridge - 0.5) * 0.5 + chop * 0.18 + sparkle * 0.14;
 
       const gray = Math.round(Math.min(Math.max(v, 0), 1) * 255);
       const idx = (py * width + px) * 4;

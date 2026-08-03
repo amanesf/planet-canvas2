@@ -11,7 +11,7 @@ import {
   temperatureAt,
   terracedElevation,
 } from './terrain';
-import { jitterGeometry, SpatialHash, mulberry32 } from './spatialHash';
+import { displaceWithNoise, SpatialHash, mulberry32 } from './spatialHash';
 import { orientShadowDecal } from './shadow';
 
 type Kind = 'tree' | 'rock' | 'dune' | 'desertRock';
@@ -477,15 +477,16 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   if (screeMesh.instanceColor) screeMesh.instanceColor.needsUpdate = true;
   group.add(screeMesh);
 
-  // ---------- forest: a continuous, overlapping canopy mass ----------
-  // Real forest reads as one bumpy green blanket, not a field of evenly
-  // spaced individual trees. Each clump is several overlapping poofy
-  // lobes (same merged-blob trick as the clouds), sized *bigger* than the
-  // spacing between clumps so neighbors overlap and read as one canopy.
-  // No trunks or per-instance contact shadows — they'd be invisible under
-  // a continuous mass anyway, so skipping them is one less draw call.
+  // ---------- forest: big rock-clinging clumps, not a solid blanket ----------
+  // A real diorama's foliage clumps are substantial individual masses
+  // with visible bare rock between and around them — packing tons of tiny
+  // clumps edge-to-edge (the previous approach) just reads as a uniform
+  // green speckle/stipple hiding the rock entirely, not as clumped
+  // vegetation. Bigger clumps + wider spacing gets both: still a "mass"
+  // per clump (each one is several overlapping lobes), but the ground
+  // shows through between them the way it does in a real miniature.
 
-  const forestPoints = scatterForest(90000, 0.05, rand);
+  const forestPoints = scatterForest(38000, 0.11, rand);
   const canopyVariantCount = 3;
   const canopyVariants = Array.from({ length: canopyVariantCount }, () => buildCanopyBlob(rand));
   const canopyMaterial = new THREE.MeshStandardMaterial({
@@ -504,11 +505,14 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2);
-      const scale = 0.85 + rand() * 0.6;
+      const scale = 1.35 + rand() * 1.1;
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
-      canopyColor.setHSL(0.225 + rand() * 0.05, 0.58 + rand() * 0.15, 0.4 + rand() * 0.12);
+      // wide lightness spread (not just hue jitter) so neighboring clumps
+      // read as light/shadow variation across the canopy, not one flat
+      // uniform green — real clump foliage isn't evenly lit all over
+      canopyColor.setHSL(0.225 + rand() * 0.05, 0.55 + rand() * 0.18, 0.3 + rand() * 0.22);
       mesh.setColorAt(i, canopyColor);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -580,14 +584,22 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
 // A poofy, "mokomoko" canopy clump — several overlapping rounded lobes
 // merged into one piece of geometry (same trick as the cloud puffs), so
 // hundreds of forest clumps still cost only a few instanced draw calls.
+// A big, substantial clump — several overlapping lobes with coherent
+// fractal surface detail (see displaceWithNoise) at two scales instead of
+// independently-randomized per-vertex jitter, which only ever reads as a
+// faceted potato at this poly count. Sized to be a real visible mass on
+// its own (bare rock shows between clumps at the scatter level, see
+// buildVegetation), not a tiny piece of a wall-to-wall speckle blanket.
 function buildCanopyBlob(rand: () => number): THREE.BufferGeometry {
   const lobes = 4 + Math.floor(rand() * 3);
   const parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < lobes; i++) {
-    const r = 0.024 + rand() * 0.022;
-    const g = new THREE.IcosahedronGeometry(r, 1);
-    jitterGeometry(g, 0.22, rand); // irregular foliage-clump silhouette, not a smooth ball
-    g.translate((rand() - 0.5) * 0.07, rand() * 0.02, (rand() - 0.5) * 0.07);
+    const r = 0.05 + rand() * 0.038;
+    const g = new THREE.IcosahedronGeometry(r, 2);
+    displaceWithNoise(g, 0.32, 3.2, rand() * 500);
+    displaceWithNoise(g, 0.14, 9, rand() * 500 + 300);
+    g.computeVertexNormals();
+    g.translate((rand() - 0.5) * 0.13, rand() * 0.035, (rand() - 0.5) * 0.13);
     parts.push(g);
   }
   const merged = mergeGeometries(parts, false);

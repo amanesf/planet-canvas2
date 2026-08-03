@@ -49,7 +49,11 @@ const camera = new THREE.PerspectiveCamera(
 
 // on a narrow portrait screen the globe + stand need more breathing room
 // horizontally, so pull the camera back as the viewport gets taller than wide
-const BASE_CAMERA_DISTANCE = 9.5;
+// Pulled back further than a tight product shot — the reference photo
+// leaves a lot of dim, blurred workshop visible above and below the
+// globe; filling the whole frame edge-to-edge with the globe (the old
+// distance) left no room for that surrounding context to read at all.
+const BASE_CAMERA_DISTANCE = 12;
 function cameraDistanceForViewport() {
   const aspect = window.innerWidth / window.innerHeight;
   if (aspect >= 1) return BASE_CAMERA_DISTANCE;
@@ -86,7 +90,7 @@ renderer.shadowMap.enabled = false;
 // roll off smoothly toward white like a real photo, not clip to a flat
 // disc the way plain linear output does
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.92;
+renderer.toneMappingExposure = 1.0;
 app.appendChild(renderer.domElement);
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
@@ -148,7 +152,7 @@ controls.target.set(0, TARGET_Y, 0);
 // "everything is equally lit" bright CG look. The fake contact-shadow
 // decals (shadow.ts) point along this exact same light direction, so the
 // two reinforce each other as "one consistent light source".
-scene.add(new THREE.AmbientLight(0xffe9c2, 0.22));
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.28));
 
 const keyLight = new THREE.DirectionalLight(0xffd9a0, 2.1);
 keyLight.position.set(4, 5, 3);
@@ -177,10 +181,13 @@ const globeMaterial = new THREE.MeshStandardMaterial({
   // single biggest lever for "sculpted miniature" vs. "smooth painted
   // ball" once you actually zoom in on it
   bumpMap: buildBumpTexture(),
-  bumpScale: 0.004,
-  roughness: 0.88,
-  metalness: 0.02,
-  envMapIntensity: 0.15, // painted-clay matte, not shiny/rubbery
+  bumpScale: 0.005,
+  // pushed to fully matte — the whole point of the glossy ocean resin is
+  // that it's the *only* shiny thing in the scene; any gloss on the rock
+  // undercuts that contrast and makes both materials read as "plastic"
+  roughness: 0.97,
+  metalness: 0,
+  envMapIntensity: 0.06,
 });
 
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
@@ -218,10 +225,9 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   clearcoat: 0.75,
   clearcoatRoughness: 0.1,
   ior: 1.5,
-  // kept low on purpose — too much ambient room-reflection washes the
-  // dark resin color out to a flat gray-teal; the highlight should come
-  // from the key light itself, not from bounced ambient light
-  envMapIntensity: 0.2,
+  // enough ambient reflection to keep the resin looking wet/glassy
+  // without washing the saturated blue out to a flat gray-teal
+  envMapIntensity: 0.32,
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 globeGroup.add(oceanMesh);

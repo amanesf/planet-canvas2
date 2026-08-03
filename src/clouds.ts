@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { fbm3 } from './noise';
 import { heightAt, displayHeight } from './terrain';
-import { jitterGeometry, SpatialHash, mulberry32 } from './spatialHash';
+import { displaceWithNoise, SpatialHash, mulberry32 } from './spatialHash';
 import { orientShadowDecal } from './shadow';
 
 // Low-frequency "weather system" noise — clouds cluster into patches
@@ -11,24 +11,86 @@ function cloudDensityAt(dir: THREE.Vector3): number {
   return fbm3(dir.x * 1.1 + 150, dir.y * 1.1 + 150, dir.z * 1.1 + 150, 2);
 }
 
-// A cute puffy "cumulus" shape: a handful of overlapping low-poly spheres
-// merged into one piece of geometry, so hundreds of clouds still cost only
-// one instanced draw call each variant.
+// A handful of thin, stretched slivers stabbed outward from random points
+// near a lobe's surface — this is what actually breaks a round silhouette
+// into something that reads as torn/frayed cotton rather than a smooth
+// balloon; no amount of surface bumpiness alone fixes a perfectly round
+// outline, because silhouette shape is the strongest cue the eye uses.
+function addWisps(parts: THREE.BufferGeometry[], center: THREE.Vector3, baseRadius: number, count: number, rand: () => number) {
+  const up = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < count; i++) {
+    const dir = new THREE.Vector3(rand() - 0.5, (rand() - 0.5) * 0.6, rand() - 0.5).normalize();
+    const length = baseRadius * (0.6 + rand() * 1.1);
+    const wisp = new THREE.ConeGeometry(baseRadius * (0.1 + rand() * 0.12), length, 5, 1);
+    wisp.translate(0, length / 2, 0);
+    const q = new THREE.Quaternion().setFromUnitVectors(up, dir);
+    wisp.applyQuaternion(q);
+    const originOffset = baseRadius * (0.55 + rand() * 0.35);
+    wisp.translate(
+      center.x + dir.x * originOffset,
+      center.y + dir.y * originOffset,
+      center.z + dir.z * originOffset,
+    );
+    parts.push(wisp);
+  }
+}
+
+// Bakes a simple top-lit/underside-shadowed gradient directly into the
+// geometry's vertex colors — real cotton batting is visibly brighter on
+// top and dimmer/cooler in its own self-shadowed underside, which reads
+// as volume even under otherwise flat lighting. Baked once at build time,
+// so it costs nothing per frame.
+function bakeVerticalShading(geometry: THREE.BufferGeometry) {
+  geometry.computeBoundingBox();
+  const bbox = geometry.boundingBox!;
+  const minY = bbox.min.y;
+  const maxY = bbox.max.y;
+  const span = Math.max(maxY - minY, 1e-6);
+  const position = geometry.attributes.position;
+  const colors = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i++) {
+    const t = THREE.MathUtils.clamp((position.getY(i) - minY) / span, 0, 1);
+    const shade = 0.66 + t * 0.4;
+    colors[i * 3] = shade;
+    colors[i * 3 + 1] = shade;
+    colors[i * 3 + 2] = Math.min(1, shade + 0.02); // faint cool tint in the shadowed underside
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+// A puffy "cumulus"/cotton-batting shape: several overlapping lobes with
+// coherent fractal surface detail at two scales, a scatter of thin frayed
+// wisps breaking up the silhouette, and baked top-lit vertex shading —
+// merged into one piece of geometry so hundreds of clouds still cost only
+// one instanced draw call per variant.
 function buildPuffGeometry(rand: () => number): THREE.BufferGeometry {
   const lumps = 5 + Math.floor(rand() * 3);
   const parts: THREE.BufferGeometry[] = [];
+  const lobeCenters: { center: THREE.Vector3; radius: number }[] = [];
+
   for (let i = 0; i < lumps; i++) {
     const r = 0.4 + rand() * 0.55;
-    const g = new THREE.SphereGeometry(r, 8, 6);
-    // heavier jitter + a non-uniform stretch per lobe — real cotton
-    // batting is torn and wispy, not a cluster of smooth round balloons
-    jitterGeometry(g, 0.32, rand);
+    const g = new THREE.SphereGeometry(r, 14, 10);
+    displaceWithNoise(g, 0.4, 2.6, rand() * 500);
+    displaceWithNoise(g, 0.16, 8.5, rand() * 500 + 200);
     g.scale(0.7 + rand() * 0.7, 0.55 + rand() * 0.5, 0.7 + rand() * 0.7);
-    g.translate((rand() - 0.5) * 1.6, (rand() - 0.5) * 0.4, (rand() - 0.5) * 0.75);
+    const center = new THREE.Vector3((rand() - 0.5) * 1.6, (rand() - 0.5) * 0.4, (rand() - 0.5) * 0.75);
+    g.translate(center.x, center.y, center.z);
+    g.computeVertexNormals();
     parts.push(g);
+    lobeCenters.push({ center, radius: r });
   }
+
+  // frayed wisps scattered across a couple of the lobes, not every one —
+  // real torn cotton has some denser core lumps and some wispier edges
+  const wispyLobes = lobeCenters.filter(() => rand() < 0.6);
+  wispyLobes.forEach(({ center, radius }) => {
+    addWisps(parts, center, radius, 2 + Math.floor(rand() * 3), rand);
+  });
+
   const merged = mergeGeometries(parts, false);
   parts.forEach((p) => p.dispose());
+  bakeVerticalShading(merged);
   return merged;
 }
 
@@ -78,9 +140,10 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
   const variants = Array.from({ length: variantCount }, () => buildPuffGeometry(rand));
   const cloudMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
-    roughness: 0.95,
+    vertexColors: true, // baked top-lit/underside-shadow gradient, see bakeVerticalShading
+    roughness: 0.88, // a little sheen — real cotton fiber catches a soft highlight, unlike matte rock
     transparent: true,
-    opacity: 0.88,
+    opacity: 0.9,
     envMapIntensity: 0.15,
   });
 
