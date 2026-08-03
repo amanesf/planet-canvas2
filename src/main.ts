@@ -1,7 +1,8 @@
 import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { buildTerrainTexture, displaceSphere } from './terrain';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { buildTerrainTexture, displaceSphere, seaLevelRadius } from './terrain';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
@@ -47,6 +48,12 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 // visual job for a fraction of the cost, so skip real shadows entirely
 renderer.shadowMap.enabled = false;
 app.appendChild(renderer.domElement);
+
+// a generic light "room" environment for the glass ocean's reflections/
+// highlights — generated once at startup (PMREM), not a per-frame cost
+const pmremGenerator = new THREE.PMREMGenerator(renderer);
+scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+pmremGenerator.dispose();
 
 // if the GPU driver does drop the context, the page can't recover its
 // uploaded textures/geometry on its own — reload rather than leaving a
@@ -97,7 +104,7 @@ scene.add(globeGroup);
 // terrain color is painted once onto a texture (crisp, cheap to sample)
 // instead of interpolated per-vertex (which read as blurry) — geometry
 // only needs to be smooth enough to carry the displacement + lighting
-const geometry = new THREE.SphereGeometry(RADIUS, 96, 56);
+const geometry = new THREE.SphereGeometry(RADIUS, 112, 64);
 displaceSphere(geometry, RADIUS, BUMP_HEIGHT);
 const terrainTexture = buildTerrainTexture();
 
@@ -105,12 +112,30 @@ const globeMaterial = new THREE.MeshStandardMaterial({
   map: terrainTexture,
   roughness: 0.65,
   metalness: 0.02,
+  envMapIntensity: 0.25, // land should read matte, not shiny
 });
 
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
 globeMesh.castShadow = true;
 globeMesh.receiveShadow = true;
 globeGroup.add(globeMesh);
+
+// glassy ocean shell sitting right at sea level, covering the flattened
+// seabed below — glossy + semi-transparent + env-reflective reads as
+// "glass water" without the expensive transmission render pass
+const oceanGeometry = new THREE.SphereGeometry(seaLevelRadius(RADIUS, BUMP_HEIGHT), 96, 56);
+const oceanMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0x4fc3e8,
+  transparent: true,
+  opacity: 0.8,
+  roughness: 0.08,
+  metalness: 0,
+  clearcoat: 1,
+  clearcoatRoughness: 0.06,
+  envMapIntensity: 1.2,
+});
+const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
+globeGroup.add(oceanMesh);
 
 // soft cloud shell, purely decorative for now
 const cloudGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
@@ -133,6 +158,7 @@ const baseMaterial = new THREE.MeshStandardMaterial({
   color: 0xe7cdb0,
   roughness: 0.55,
   metalness: 0.15,
+  envMapIntensity: 0.3, // the room env map was blowing the stand out to near-white
 });
 
 const baseBottom = new THREE.Mesh(

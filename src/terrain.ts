@@ -3,7 +3,7 @@ import { fbm3 } from './noise';
 
 // Tuned so land covers roughly 30% of the surface, like real Earth's
 // land:sea ≈ 3:7 (verified empirically against heightAt's noise distribution).
-export const SEA_LEVEL = 0.05;
+export const SEA_LEVEL = 0.095;
 const COAST_WIDTH = 0.012;
 
 const deepColor = new THREE.Color('#3fb6e0');
@@ -11,18 +11,50 @@ const shoreColor = new THREE.Color('#ffe58a');
 const landColor = new THREE.Color('#6bcf5a');
 const peakColor = new THREE.Color('#ff8fc2');
 
+function smoothstep(x: number, edge0: number, edge1: number): number {
+  const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
 export function heightAt(dir: THREE.Vector3): number {
-  const n =
-    fbm3(dir.x * 2.4, dir.y * 2.4, dir.z * 2.4, 4) * 0.65 +
-    fbm3(dir.x * 5 + 9.2, dir.y * 5 + 9.2, dir.z * 5 + 9.2, 3) * 0.25 +
-    fbm3(dir.x * 1.1 + 3.7, dir.y * 1.1 + 3.7, dir.z * 1.1 + 3.7, 2) * 0.1;
+  // low frequency, few octaves — big smooth rounded continents and coastal
+  // hills as the base shape (uniformly fine noise everywhere is what
+  // previously turned exaggerated mountains into a "warty" mess).
+  const macro =
+    fbm3(dir.x * 1.6, dir.y * 1.6, dir.z * 1.6, 3) * 0.8 +
+    fbm3(dir.x * 3.2 + 9.2, dir.y * 3.2 + 9.2, dir.z * 3.2 + 9.2, 2) * 0.2;
+
+  // real terrain isn't uniformly smooth either — coasts and lowlands are
+  // gentle, but the higher land gets, the more rugged/jagged it should
+  // look. Fade in finer, higher-frequency noise only once we're well into
+  // "mountain" elevation, so peaks read as genuinely rocky and steep.
+  const rugged = fbm3(dir.x * 6.5 + 4.1, dir.y * 6.5 + 4.1, dir.z * 6.5 + 4.1, 4);
+  const ruggedAmount = smoothstep(macro, SEA_LEVEL + 0.04, SEA_LEVEL + 0.22);
+
+  const n = macro + rugged * 0.2 * ruggedAmount;
   return Math.max(n, -0.2); // flatten the deep ocean floor a bit
 }
 
 // water is flattened to sea level on the mesh so it doesn't visibly
-// inherit the terrain noise as bumpy waves — only land pokes up
+// inherit the terrain noise as bumpy waves — only land pokes up. Land is
+// pushed up well beyond its raw noise height for a toy-globe, exaggerated
+// mountain look; since the ocean (~70% of the surface) stays perfectly
+// flat regardless, this doesn't reintroduce the "potato" whole-sphere
+// distortion from earlier — only the 30% landmass gets dramatic.
+const LAND_BOOST = 2.0;
+const UNDERWATER_HEIGHT = SEA_LEVEL - 0.02;
+// sits between the flattened underwater terrain and true sea level, so the
+// glass ocean shell (built from this in main.ts) fully covers the seabed
+// without z-fighting the coastline
+export const GLASS_SEA_HEIGHT = SEA_LEVEL - 0.008;
+
 export function displayHeight(height: number): number {
-  return height < SEA_LEVEL ? SEA_LEVEL - 0.02 : height;
+  if (height < SEA_LEVEL) return UNDERWATER_HEIGHT;
+  return SEA_LEVEL + (height - SEA_LEVEL) * LAND_BOOST;
+}
+
+export function seaLevelRadius(radius: number, bumpHeight: number): number {
+  return radius + GLASS_SEA_HEIGHT * bumpHeight;
 }
 
 const outColor = new THREE.Color();
