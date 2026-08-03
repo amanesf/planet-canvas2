@@ -28,7 +28,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 `;
 
 const RADIUS = 2;
-const BUMP_HEIGHT = 0.34; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
+const BUMP_HEIGHT = 0.36; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
 // A real wood pedestal reads as the dominant, grounded object; the globe
 // should hover just slightly above it (a hint of the magnetic-levitation
 // idea), not float high overhead like a sci-fi prop.
@@ -81,17 +81,28 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 // capping pixel ratio keeps this from overloading weaker mobile GPUs
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-// real-time shadow maps are a well-known trigger for driver-level GPU
-// hangs/resets on weaker mobile GPUs after continuous rendering — the
-// fake blob shadow under the globe (contactShadow, below) does the same
-// visual job for a fraction of the cost, so skip real shadows entirely
-renderer.shadowMap.enabled = false;
+// Real cast shadows, and they are not optional for this subject. What
+// separates the reference photograph from a rendered planet is not its
+// palette — it is that the clouds throw soft shadows down onto the sea,
+// the coastal cliffs shade the water at their foot, and every mountain
+// occludes the valley beside it. Blob decals fake contact, but they
+// cannot produce an object shadowing a *different* object, which is the
+// cue the eye actually reads as "these things share one physical space".
+// Only the key light casts (one shadow pass), and the map is sized for a
+// subject that occupies a fixed, known volume.
+renderer.shadowMap.enabled = true;
+// PCFSoftShadowMap is deprecated in this three version and silently falls
+// back to PCF anyway; VSM was tried for a softer edge and produced no
+// visible shadow at all here (its light-bleeding term washes out contact
+// shade over a subject this small relative to the shadow frustum).
+renderer.shadowMap.type = THREE.PCFShadowMap;
 // filmic contrast/highlight rolloff — a bright resin highlight should
 // roll off smoothly toward white like a real photo, not clip to a flat
 // disc the way plain linear output does
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
+renderer.toneMappingExposure = 1.25;
 app.appendChild(renderer.domElement);
+(window as any).__dbg = { THREE, renderer, scene, camera };
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
 // shader rather than the stock, much heavier BokehPass). One extra
@@ -110,6 +121,10 @@ tiltShiftPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeig
 // highlights — generated once at startup (PMREM), not a per-frame cost
 const pmremGenerator = new THREE.PMREMGenerator(renderer);
 scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+// the room map is here to put believable reflections in the resin, not to
+// light the scene — at full strength it acts as a second, shadowless
+// ambient term and flattens everything the key light is doing
+scene.environmentIntensity = 0.3;
 pmremGenerator.dispose();
 
 // if the GPU driver does drop the context, the page can't recover its
@@ -145,31 +160,51 @@ controls.target.set(0, TARGET_Y, 0);
 
 // ---------- lighting ----------
 
-// A real diorama sits under one strong, warm, slightly-raking desk lamp
-// in an otherwise dim room — low ambient + a punchy, warm-toned single
-// key light is what gives every surface a visible sharp light/shadow
-// terminator and that moody workshop-photo read, instead of the flat
-// "everything is equally lit" bright CG look. The fake contact-shadow
-// decals (shadow.ts) point along this exact same light direction, so the
-// two reinforce each other as "one consistent light source".
-scene.add(new THREE.AmbientLight(0xffe9c2, 0.72));
+// One softbox, one bounce card. That is the whole lighting rig in the
+// reference photograph, and matching its *ratio* matters more than
+// matching any individual color.
+//
+// The previous rig had this backwards: ambient 0.72 + fill 0.55 + rim 0.3
+// + a full-strength environment map added up to well over half the total
+// illumination, all of it from sources that cast nothing. Enabling shadow
+// maps against that changed the frame by at most 13 of 255 levels — the
+// shadows were rendering correctly and were simply drowned. A shadow is
+// only as legible as the fraction of the light it removes, so the key has
+// to actually dominate before any of this is visible.
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.16));
 
-const keyLight = new THREE.DirectionalLight(0xffd9a0, 1.15);
-keyLight.position.set(4, 5, 3);
+const keyLight = new THREE.DirectionalLight(0xffe0b4, 3.4);
+keyLight.position.set(-3.2, 4.6, 4.2);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+// the subject is a 2-unit globe floating at a known height on a 1.85-unit
+// stand, so the shadow frustum can be wrapped tightly around it instead of
+// wasting depth precision on empty scene
+keyLight.shadow.camera.left = -4;
+keyLight.shadow.camera.right = 4;
+keyLight.shadow.camera.top = 4;
+keyLight.shadow.camera.bottom = -4;
+keyLight.shadow.camera.near = 1;
+keyLight.shadow.camera.far = 20;
+keyLight.shadow.camera.updateProjectionMatrix(); // three does not do this for you
+// normalBias rather than a plain constant bias: the globe is a heavily
+// displaced sphere, and a constant offset that clears the shallow terraces
+// visibly detaches shadows from the steep cliff faces
+keyLight.shadow.bias = -0.00025;
+keyLight.shadow.normalBias = 0.005;
 scene.add(keyLight);
 
-const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.3);
+// the bounce card propped against the desk: enough to keep the shaded
+// side readable, nowhere near enough to compete with the key
+const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.42);
+fillLight.position.set(3.5, -0.8, 2.5);
+scene.add(fillLight);
+
+// cool separation edge along the far side, so the globe doesn't merge
+// into the dim background it's sitting against
+const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.35);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
-
-// The key alone left the globe's lower hemisphere falling off into black
-// while the snow cap facing it clipped to flat white. A soft frontal fill
-// from slightly below the lens — the bounce card a real tabletop shooter
-// props against the desk — evens that range out without flattening the
-// key's direction.
-const fillLight = new THREE.DirectionalLight(0xd9e4f0, 0.55);
-fillLight.position.set(-1.5, -1, 5);
-scene.add(fillLight);
 
 // ---------- globe: displaced sphere, crisp painted terrain texture ----------
 
@@ -180,7 +215,7 @@ scene.add(globeGroup);
 // terrain color is painted once onto a texture (crisp, cheap to sample)
 // instead of interpolated per-vertex (which read as blurry) — geometry
 // only needs to be smooth enough to carry the displacement + lighting
-const geometry = new THREE.SphereGeometry(RADIUS, 220, 124);
+const geometry = new THREE.SphereGeometry(RADIUS, 420, 236);
 displaceSphere(geometry, RADIUS, BUMP_HEIGHT);
 const terrainTexture = buildTerrainTexture();
 
@@ -222,7 +257,10 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   bumpMap: waveTexture,
   bumpScale: 0.0055,
   transparent: true,
-  opacity: 0.95,
+  // full strength — the per-texel alpha ramp baked into the ocean texture
+  // is what varies the transparency now, so a flat material opacity here
+  // would only fight it
+  opacity: 1,
   roughness: 0.46,
   metalness: 0,
   // poured-epoxy-resin read: a strong, very smooth clearcoat gives the
@@ -239,12 +277,22 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   envMapIntensity: 0.16,
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
+// receives only — a translucent resin sheet casting a hard opaque shadow
+// onto the seabed it covers would read as a lid, not as water
+oceanMesh.receiveShadow = true;
 globeGroup.add(oceanMesh);
 
 // scattered trees and rocks — discrete miniature objects standing on the
 // terrain are what actually reads as "diorama", not just a smooth
 // colored/shiny surface
-globeGroup.add(buildVegetation(RADIUS, BUMP_HEIGHT));
+const vegetation = buildVegetation(RADIUS, BUMP_HEIGHT);
+vegetation.traverse((child) => {
+  if ((child as THREE.Mesh).isMesh) {
+    child.castShadow = true;
+    child.receiveShadow = true;
+  }
+});
+globeGroup.add(vegetation);
 
 // faint atmospheric haze shell, purely decorative
 const hazeGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
@@ -260,7 +308,11 @@ globeGroup.add(hazeMesh);
 
 // real puffy 3D clouds with cast shadows — matches the design memo's
 // "evaporation + rain shadow" sky layer with an actual visible presence
-globeGroup.add(buildClouds(RADIUS, BUMP_HEIGHT));
+const clouds = buildClouds(RADIUS);
+clouds.traverse((child) => {
+  if ((child as THREE.Mesh).isMesh) child.castShadow = true;
+});
+globeGroup.add(clouds);
 
 // ---------- stand: real wood pedestal + nameplate, globe hovers just
 // slightly above it (a hint of "magnetic levitation" kept, but the wood
@@ -335,6 +387,7 @@ const baseTop = new THREE.Mesh(
 );
 baseTop.position.y = -1.65;
 baseTop.receiveShadow = true;
+baseTop.castShadow = true;
 standGroup.add(baseTop);
 
 // small brass nameplate on the front of the pedestal
@@ -395,17 +448,8 @@ glowRing.rotation.x = Math.PI / 2;
 glowRing.position.y = -1.45;
 standGroup.add(glowRing);
 
-// soft contact shadow blob cast onto the stand by the floating globe
-const shadowGeometry = new THREE.CircleGeometry(1.1, 48);
-const shadowMaterial = new THREE.MeshBasicMaterial({
-  color: 0x40281a,
-  transparent: true,
-  opacity: 0.22,
-});
-const contactShadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
-contactShadow.rotation.x = -Math.PI / 2;
-contactShadow.position.y = -1.52;
-standGroup.add(contactShadow);
+// (the globe's shadow on the stand is a real cast shadow now — the blob
+// decal that used to stand in for it would only double up on top of it)
 
 // ---------- resize ----------
 
@@ -463,7 +507,6 @@ function animate() {
 
   const ringPulse = 0.45 + Math.sin(t * 2.2) * 0.1;
   glowRingMaterial.opacity = ringPulse;
-  contactShadow.scale.setScalar(1 + Math.sin(t * 1.1) * 0.03);
 
   controls.update();
   composer.render();

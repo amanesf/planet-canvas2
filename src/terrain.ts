@@ -30,9 +30,20 @@ const badlandsColorC = new THREE.Color('#5e463a');
 // as black; a real poured-resin ocean over blue paint keeps its color
 // even in shadow; only the *highlight* should go near-white, not the
 // whole sea.
-const deepOceanColor = new THREE.Color('#0d3346');
-const midOceanColor = new THREE.Color('#14607f');
-const shallowOceanColor = new THREE.Color('#3ea7b2');
+const deepOceanColor = new THREE.Color('#1b5675');
+const midOceanColor = new THREE.Color('#2385ac');
+const shallowOceanColor = new THREE.Color('#57bcc6');
+
+// The seabed, which until now was painted one flat blue on the assumption
+// that nothing would ever see it. In the reference photograph the resin is
+// the most obviously *physical* material on the model precisely because you
+// can see down through it: pale sand right off the beach, going silty and
+// then dark as the shelf drops away. Painting the floor and then letting
+// the water's own opacity vary with depth is what produces that read — a
+// uniformly opaque sheet of blue is a painted ball no matter how glossy.
+const seabedSandColor = new THREE.Color('#bfae8b');
+const seabedSiltColor = new THREE.Color('#587065');
+const seabedDeepColor = new THREE.Color('#2b3d47');
 
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
@@ -164,15 +175,34 @@ export function heightAt(dir: THREE.Vector3): number {
 
   let n = macro + rugged * 0.2 * ruggedAmount * (1 + beltBoost * 0.9);
 
+  // Mid-frequency relief across *all* land, not just the mountains.
+  // Without it the lowlands are pure smooth macro noise, and terracing a
+  // smooth dome necessarily produces perfectly concentric steps — which is
+  // where the tree-ring / wood-grain look on the plateaus came from. It is
+  // not a texture problem: no amount of paint fixes contours that really
+  // are nested circles. Irregular mid-scale relief makes each terrace edge
+  // wander, and the wash then traces genuinely rock-like strata.
+  // (fbm3 here is signed and centred on zero, like every other use of it
+  // in this file — subtracting 0.5 to "centre" it would quietly lower every
+  // landmass by half the amplitude and shrink the continents.)
+  const midRelief = fbm3(dir.x * 3.4 + 17.7, dir.y * 3.4 + 17.7, dir.z * 3.4 + 17.7, 3);
+  const landMask = smoothstep(macro, SEA_LEVEL - 0.03, SEA_LEVEL + 0.07);
+  n += midRelief * 0.11 * landMask;
+
   // Polar ice continents: guarantee a broad ice-sheet landmass right at
   // the poles instead of leaving it to chance whether ordinary continent
   // noise happens to land there — Antarctica isn't a lucky accident, it's
   // reliably there every time you look at a real globe's pole.
-  const poleCloseness = smoothstep(Math.abs(dir.y), 0.88, 0.97);
+  const poleCloseness = smoothstep(Math.abs(dir.y), 0.86, 0.98);
   if (poleCloseness > 0) {
+    // Blend toward the shelf, never all the way to it. Pulling the height
+    // fully onto a smooth low-frequency surface flattened the cap into a
+    // featureless disc — a white plate sitting on top of the globe — where
+    // the reference has snow draped over ground that still has shape under
+    // it. Capping the blend keeps the underlying relief showing through.
     const iceShelfHeight =
-      SEA_LEVEL + 0.05 + fbm3(dir.x * 3 + 222, dir.y * 3 + 222, dir.z * 3 + 222, 2) * 0.03;
-    n = THREE.MathUtils.lerp(n, iceShelfHeight, poleCloseness);
+      SEA_LEVEL + 0.03 + fbm3(dir.x * 5 + 222, dir.y * 5 + 222, dir.z * 5 + 222, 3) * 0.06;
+    n = THREE.MathUtils.lerp(n, iceShelfHeight, poleCloseness * 0.62);
   }
 
   return Math.max(n, -0.2); // flatten the deep ocean floor a bit
@@ -237,8 +267,8 @@ export function temperatureAt(dir: THREE.Vector3, elevation: number): number {
   return latitude + wobble - elevationCooling;
 }
 
-export const ICE_TEMPERATURE = 0.02;
-const TUNDRA_TEMPERATURE = 0.2;
+export const ICE_TEMPERATURE = -0.04;
+const TUNDRA_TEMPERATURE = 0.14;
 
 // Extra height multiplier on top of the belt's own increased ruggedness
 // (see heightAt) — some peaks along the range still tower further above
@@ -257,7 +287,7 @@ const OROGENY_THRESHOLD = 0.28;
 // mountain look; since the ocean (~70% of the surface) stays perfectly
 // flat regardless, this doesn't reintroduce the "potato" whole-sphere
 // distortion from earlier — only the 30% landmass gets dramatic.
-const LAND_BOOST = 3.0;
+const LAND_BOOST = 2.0;
 // a bigger drop than a purely cosmetic clamp needs — real relief globes
 // have a visible carved "step" right at the coastline instead of land
 // gently sloping into the water, and this is what makes that step read
@@ -307,13 +337,13 @@ export function terracedElevation(height: number): number {
 // snow already); only the geometry shoots up further.
 export function displayHeight(height: number, dir: THREE.Vector3): number {
   if (height < SEA_LEVEL) return UNDERWATER_HEIGHT;
-  const orogenyBoost = 1 + smoothstep(orogenyAt(dir), OROGENY_THRESHOLD, OROGENY_THRESHOLD + 0.12) * 1.7;
+  const orogenyBoost = 1 + smoothstep(orogenyAt(dir), OROGENY_THRESHOLD, OROGENY_THRESHOLD + 0.12) * 1.3;
   // A flat step lifting *all* land clear of the resin the instant it
   // crosses the shoreline. In the reference the continents are carved
   // plateaus standing proud of the poured sea with a real vertical cliff
   // at their edge; without this floor, low-lying land tapers to the same
   // radius as the water and the coastline reads as painted-on, not carved.
-  const COASTAL_STEP = 0.12;
+  const COASTAL_STEP = 0.13;
   return SEA_LEVEL + COASTAL_STEP + terracedElevation(height) * LAND_BOOST * orogenyBoost;
 }
 
@@ -429,6 +459,137 @@ function coastalAO(height: number, cliffiness: number): number {
   return -0.16 * (1 - t) * (1 + cliffiness * 1.3);
 }
 
+// Where snow lies, agreed on by the paint, the wash and the bump texture.
+// These used to disagree: the cap was painted from *temperature* (so it
+// covers the flat polar landmass) while its sparkle keyed off *elevation*,
+// which meant the one piece of snow big enough to see had no surface
+// texture at all and rendered as a flat white sticker.
+export function snowinessAt(dir: THREE.Vector3, height: number): number {
+  if (height < SEA_LEVEL) return 0;
+  const elevation = terracedElevation(height);
+  const temperature = temperatureAt(dir, elevation);
+  const polar = 1 - smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE + 0.14);
+  const alpine = smoothstep(elevation, 0.19, TERRACE_MAX);
+  return Math.max(polar, alpine);
+}
+
+// ---------------------------------------------------------------------
+// Wash + drybrush: the two pigment passes that make a painted model read
+// as a solid sculpted object
+// ---------------------------------------------------------------------
+// A painted resin miniature does not get its readable form from its base
+// colors. It gets it from two passes applied *after* the base coat: a
+// thin dark wash that flows into every recess and pools there, and a
+// nearly-dry brush dragged across the surface so pigment catches only on
+// raised edges and leaves the hollows untouched. Both depend on local
+// surface *curvature*.
+//
+// That is exactly the term a height-colored texture has no way to
+// express. Coloring by elevation and climate produces a map — accurate,
+// and flat-looking no matter how many biomes it distinguishes — because
+// every point at the same altitude gets the same pigment whether it sits
+// on a ridge crest or at the bottom of a ravine. Adding the curvature
+// term is what turns the paint into something that describes a shape.
+//
+// Curvature is read off a precomputed height grid rather than by sampling
+// the noise field four extra times per texel, which would have multiplied
+// an already-expensive texture bake by five.
+const washColor = new THREE.Color('#241a11'); // sepia recess pigment, never neutral black
+const drybrushColor = new THREE.Color('#d8cbb2'); // bone highlight caught on raised edges
+const cliffColor = new THREE.Color('#6a5a49'); // bare stone: paint doesn't hold on a vertical face
+// Snow takes the opposite treatment. Its recesses are lit by skylight
+// bouncing between crystals, so they go cool blue-grey, never sepia — a
+// brown wash over snow is the classic way to make a winter model look
+// like it was left out in the mud.
+const snowWashColor = new THREE.Color('#93a8bd');
+const snowDrybrushColor = new THREE.Color('#ffffff');
+
+export interface ReliefField {
+  width: number;
+  height: number;
+  /** positive on convex ridges and edges, negative inside concave recesses */
+  convexity: Float32Array;
+  /** 0 on flat ground, 1 on a near-vertical face */
+  slope: Float32Array;
+}
+
+export function buildReliefField(width: number, height: number): ReliefField {
+  const size = width * height;
+  const field = new Float32Array(size);
+  const dir = new THREE.Vector3();
+
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      dirForPixel(px, py, width, height, dir);
+      // the *displayed* height (terraced and boosted), not the raw noise —
+      // the wash has to pool along the terrace edges the geometry actually
+      // has, otherwise the paint describes a shape the model doesn't
+      field[py * width + px] = displayHeight(heightAt(dir), dir);
+    }
+  }
+
+  const convexity = new Float32Array(size);
+  const slope = new Float32Array(size);
+
+  for (let py = 0; py < height; py++) {
+    // texel spacing collapses toward the poles; without normalizing by the
+    // ring circumference the wash smears into a solid band at the caps
+    const theta = ((py + 0.5) / height) * Math.PI;
+    const sx = Math.max(Math.sin(theta), 0.15);
+    const py0 = Math.max(py - 1, 0);
+    const py1 = Math.min(py + 1, height - 1);
+
+    for (let px = 0; px < width; px++) {
+      const idx = py * width + px;
+      const c = field[idx];
+      const l = field[py * width + ((px - 1 + width) % width)];
+      const r = field[py * width + ((px + 1) % width)];
+      const u = field[py0 * width + px];
+      const d = field[py1 * width + px];
+
+      const dhdx = (r - l) / (2 * sx);
+      const dhdy = (d - u) / 2;
+      slope[idx] = Math.min(Math.sqrt(dhdx * dhdx + dhdy * dhdy) * SLOPE_GAIN, 1);
+
+      // Laplacian is positive in a pit and negative on a crest; flip it so
+      // the stored value reads directly as "how convex is this point"
+      const laplacian = (l + r - 2 * c) / (sx * sx) + (u + d - 2 * c);
+      convexity[idx] = THREE.MathUtils.clamp(-laplacian * CURVATURE_GAIN, -1, 1);
+    }
+  }
+
+  return { width, height, convexity, slope };
+}
+
+// Both gains are in units of "displayHeight per texel", so they only make
+// sense against the texture resolution the field is built at.
+const CURVATURE_GAIN = 11;
+const SLOPE_GAIN = 7;
+
+function applyReliefPaint(
+  color: THREE.Color,
+  convexity: number,
+  slope: number,
+  snowiness: number,
+): THREE.Color {
+  // bare stone shows through wherever the face is too steep to hold paint —
+  // but snow drapes over a slope instead of sliding off it
+  if (slope > 0.01) color.lerp(cliffColor, slope * 0.7 * (1 - snowiness));
+  const flatness = 1 - slope * 0.8;
+  if (convexity < 0) {
+    // wash: pigment runs downhill and pools, so recesses darken hard
+    const t = Math.min(-convexity, 1) * flatness;
+    color.lerp(washColor, t * 0.42 * (1 - snowiness));
+    color.lerp(snowWashColor, t * 0.5 * snowiness);
+  } else {
+    // drybrush: a much lighter touch, and only on the raised edge itself
+    const t = Math.min(convexity, 1) * flatness;
+    color.lerp(drybrushColor, t * 0.3 * (1 - snowiness));
+    color.lerp(snowDrybrushColor, t * 0.45 * snowiness);
+  }
+  return color;
+}
+
 function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number): THREE.Color {
   const h = height + coastlineJitter(dir);
   const temperature = temperatureAt(dir, terracedElevation(Math.max(h, SEA_LEVEL)));
@@ -437,9 +598,17 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
 
   let color: THREE.Color;
   if (h < SEA_LEVEL - COAST_WIDTH) {
-    // hidden beneath the glass ocean shell almost all the time, but the
-    // shell is very slightly transparent, so keep this in the same family
-    color = outColor.copy(midOceanColor).lerp(iceColor, seaIce);
+    // Real seabed, graded by depth and mottled, because the resin above it
+    // is see-through in the shallows (see buildOceanTexture's alpha ramp).
+    const shelf = smoothstep(h, SEA_LEVEL - 0.06, SEA_LEVEL);
+    const abyss = 1 - smoothstep(h, -0.14, SEA_LEVEL - 0.05);
+    color = outColor.copy(seabedSiltColor).lerp(seabedSandColor, shelf);
+    color.lerp(seabedDeepColor, abyss);
+    // patchy sand/weed mottling, low frequency enough to read as bed
+    // features through the water rather than as noise on the surface
+    const mottle = fbm3(dir.x * 22 + 61, dir.y * 22 + 61, dir.z * 22 + 61, 3);
+    color.offsetHSL(0, 0, mottle * 0.12);
+    color.lerp(iceColor, seaIce);
   } else if (h < SEA_LEVEL + COAST_WIDTH) {
     if (beltCloseness > 0.35) {
       // fjord-style coastline: a mountain range meeting the sea drops
@@ -594,6 +763,7 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
   // rivers computed on a coarser grid — plenty for branching river shapes,
   // and much cheaper than running full hydrology at texture resolution
   const river = computeRiverFlow(384, 192);
+  const relief = buildReliefField(width, height);
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
@@ -602,6 +772,13 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
       const h = heightAt(dir);
       const riverStrength = h >= SEA_LEVEL ? sampleRiverFlow(river, dir) : 0;
       const c = terrainColor(dir, h, riverStrength);
+      // the wash/drybrush passes go on over the finished base coat, exactly
+      // as they do on the workbench — and only on land, since the sea is a
+      // poured surface nobody drybrushes
+      if (h >= SEA_LEVEL) {
+        const ri = py * width + px;
+        applyReliefPaint(c, relief.convexity[ri], relief.slope[ri], snowinessAt(dir, h));
+      }
 
       const idx = (py * width + px) * 4;
       writeSRGBPixel(image.data, idx, c);
@@ -635,6 +812,13 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
 
       const idx = (py * width + px) * 4;
       writeSRGBPixel(image.data, idx, c);
+      // Depth-driven opacity: this is the whole trick. Water is not a
+      // colored surface, it is a colored *volume*, so a hand's depth of it
+      // over a sandbar hides almost nothing while the same pigment over the
+      // shelf edge hides everything. Baking that into the shell's alpha
+      // gives the poured-resin read without paying for real transmission.
+      const depth = 1 - smoothstep(h, -0.13, SEA_LEVEL);
+      image.data[idx + 3] = Math.round(THREE.MathUtils.lerp(0.26, 0.93, depth) * 255);
     }
   }
 
@@ -724,14 +908,16 @@ export function buildBumpTexture(width = 1536, height = 768): THREE.CanvasTextur
         const grain = fbm3(dir.x * 140 + 22, dir.y * 140 + 22, dir.z * 140 + 22, 2);
         v = 0.5 + (clumps * 0.18 + grain * 0.11) * shoreFade;
 
-        // fine crystalline sparkle only on the highest, snowiest ground —
-        // real granular snow/frost catches light in tiny irregular
-        // flecks, not as a single smooth white gradient
-        const elevation = terracedElevation(h);
-        const snowiness = smoothstep(elevation, 0.2, TERRACE_MAX);
+        // Granular snow: a coarse drift lump plus a hard crystalline
+        // sparkle. Modelling snow as *smoother* than rock is the mistake —
+        // scale snow powder up to this size and it is visibly the roughest
+        // material on the model, which is why the flat white cap read as
+        // painted-on rather than as sifted powder.
+        const snowiness = snowinessAt(dir, h);
         if (snowiness > 0) {
-          const sparkle = fbm3(dir.x * 300 + 91, dir.y * 300 + 91, dir.z * 300 + 91, 2);
-          v += sparkle * 0.06 * snowiness;
+          const drifts = fbm3(dir.x * 62 + 41, dir.y * 62 + 41, dir.z * 62 + 41, 3);
+          const sparkle = fbm3(dir.x * 330 + 91, dir.y * 330 + 91, dir.z * 330 + 91, 2);
+          v = v * (1 - snowiness) + (0.5 + drifts * 0.2 + sparkle * 0.16) * snowiness;
         }
       }
 

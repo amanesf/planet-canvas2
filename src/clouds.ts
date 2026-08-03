@@ -1,38 +1,12 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { fbm3 } from './noise';
-import { heightAt, displayHeight } from './terrain';
 import { displaceWithNoise, SpatialHash, mulberry32 } from './spatialHash';
-import { orientShadowDecal } from './shadow';
 
 // Low-frequency "weather system" noise — clouds cluster into patches
 // instead of scattering uniformly, like real cloud cover does.
 function cloudDensityAt(dir: THREE.Vector3): number {
   return fbm3(dir.x * 1.1 + 150, dir.y * 1.1 + 150, dir.z * 1.1 + 150, 2);
-}
-
-// A handful of thin, stretched slivers stabbed outward from random points
-// near a lobe's surface — this is what actually breaks a round silhouette
-// into something that reads as torn/frayed cotton rather than a smooth
-// balloon; no amount of surface bumpiness alone fixes a perfectly round
-// outline, because silhouette shape is the strongest cue the eye uses.
-function addWisps(parts: THREE.BufferGeometry[], center: THREE.Vector3, baseRadius: number, count: number, rand: () => number) {
-  const up = new THREE.Vector3(0, 1, 0);
-  for (let i = 0; i < count; i++) {
-    const dir = new THREE.Vector3(rand() - 0.5, (rand() - 0.5) * 0.6, rand() - 0.5).normalize();
-    const length = baseRadius * (0.4 + rand() * 0.6);
-    const wisp = new THREE.ConeGeometry(baseRadius * (0.1 + rand() * 0.12), length, 5, 1);
-    wisp.translate(0, length / 2, 0);
-    const q = new THREE.Quaternion().setFromUnitVectors(up, dir);
-    wisp.applyQuaternion(q);
-    const originOffset = baseRadius * (0.55 + rand() * 0.35);
-    wisp.translate(
-      center.x + dir.x * originOffset,
-      center.y + dir.y * originOffset,
-      center.z + dir.z * originOffset,
-    );
-    parts.push(wisp);
-  }
 }
 
 // Bakes a simple top-lit/underside-shadowed gradient directly into the
@@ -50,7 +24,7 @@ function bakeVerticalShading(geometry: THREE.BufferGeometry) {
   const colors = new Float32Array(position.count * 3);
   for (let i = 0; i < position.count; i++) {
     const t = THREE.MathUtils.clamp((position.getY(i) - minY) / span, 0, 1);
-    const shade = 0.46 + t * 0.52;
+    const shade = 0.4 + t * 0.6;
     colors[i * 3] = shade;
     colors[i * 3 + 1] = shade;
     colors[i * 3 + 2] = Math.min(1, shade + 0.02); // faint cool tint in the shadowed underside
@@ -64,29 +38,36 @@ function bakeVerticalShading(geometry: THREE.BufferGeometry) {
 // merged into one piece of geometry so hundreds of clouds still cost only
 // one instanced draw call per variant.
 function buildPuffGeometry(rand: () => number): THREE.BufferGeometry {
-  const lumps = 5 + Math.floor(rand() * 3);
+  // A puff's silhouette is the only thing carrying "cotton" at this size,
+  // and there are two ways to get it wrong. A few large smooth spheres give
+  // a clean closed outline that reads as moulded plastic. Modelling actual
+  // fibres fails for the opposite reason: a strand thin enough to be
+  // convincing is well under a pixel wide here, so it does not blur into
+  // fuzz the way a real one does — it aliases into a hard white needle, and
+  // the puff ends up looking like a burr.
+  //
+  // What survives at this scale is the *lump structure*: teased batting is
+  // a cluster of small nodules of widely varying size, dense in the middle
+  // and loose at the edges. Many small lobes give a bumpy, cauliflower-like
+  // outline that reads as cotton without a single sub-pixel detail in it.
   const parts: THREE.BufferGeometry[] = [];
-  const lobeCenters: { center: THREE.Vector3; radius: number }[] = [];
+  const nodules = 16 + Math.floor(rand() * 10);
 
-  for (let i = 0; i < lumps; i++) {
-    const r = 0.4 + rand() * 0.55;
-    const g = new THREE.SphereGeometry(r, 14, 10);
-    displaceWithNoise(g, 0.4, 2.6, rand() * 500);
-    displaceWithNoise(g, 0.16, 8.5, rand() * 500 + 200);
-    g.scale(0.8 + rand() * 0.5, 0.72 + rand() * 0.4, 0.8 + rand() * 0.5);
-    const center = new THREE.Vector3((rand() - 0.5) * 1.0, (rand() - 0.5) * 0.55, (rand() - 0.5) * 0.85);
-    g.translate(center.x, center.y, center.z);
+  for (let i = 0; i < nodules; i++) {
+    // small lobes crowd the fringe, big ones anchor the core, so the mass
+    // has a dense middle and a ragged edge rather than uniform bubbles
+    const t = rand();
+    const r = 0.16 + t * t * 0.5;
+    const g = new THREE.SphereGeometry(r, 10, 8);
+    displaceWithNoise(g, 0.32, 3.4, rand() * 500);
+    g.scale(0.9 + rand() * 0.35, 0.75 + rand() * 0.3, 0.9 + rand() * 0.35);
+    // placed further out the smaller they are — the loose fringe nodules
+    const spread = 0.35 + (1 - t) * 0.75;
+    const dir = new THREE.Vector3(rand() - 0.5, (rand() - 0.5) * 0.5, rand() - 0.5).normalize();
+    g.translate(dir.x * spread, dir.y * spread * 0.7, dir.z * spread * 0.85);
     g.computeVertexNormals();
     parts.push(g);
-    lobeCenters.push({ center, radius: r });
   }
-
-  // frayed wisps scattered across a couple of the lobes, not every one —
-  // real torn cotton has some denser core lumps and some wispier edges
-  const wispyLobes = lobeCenters.filter(() => rand() < 0.6);
-  wispyLobes.forEach(({ center, radius }) => {
-    addWisps(parts, center, radius, 1 + Math.floor(rand() * 2), rand);
-  });
 
   const merged = mergeGeometries(parts, false);
   parts.forEach((p) => p.dispose());
@@ -94,26 +75,12 @@ function buildPuffGeometry(rand: () => number): THREE.BufferGeometry {
   return merged;
 }
 
-function buildSoftDotTexture(): THREE.CanvasTexture {
-  const size = 32;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  gradient.addColorStop(0, 'rgba(40,40,50,0.35)');
-  gradient.addColorStop(0.6, 'rgba(40,40,50,0.18)');
-  gradient.addColorStop(1, 'rgba(40,40,50,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(canvas);
-}
 
 // Fluffy 3D cloud puffs hovering above the terrain, each casting a soft
 // shadow blob onto the ground below — matching the original design memo's
 // "evaporation + rain shadow" sky layer with an actual visible presence,
 // instead of the flat translucent shell this globe started with.
-export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
+export function buildClouds(radius: number): THREE.Group {
   const group = new THREE.Group();
   const rand = mulberry32(4242);
 
@@ -139,11 +106,17 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
   const variantCount = 3;
   const variants = Array.from({ length: variantCount }, () => buildPuffGeometry(rand));
   const cloudMaterial = new THREE.MeshStandardMaterial({
-    color: '#d9d7d6',
+    color: '#d6d4d3',
     vertexColors: true, // baked top-lit/underside-shadow gradient, see bakeVerticalShading
-    roughness: 0.88, // a little sheen — real cotton fiber catches a soft highlight, unlike matte rock
+    roughness: 0.95, // matte fibre, not the soft sheen of a moulded surface
+    // Cotton scatters light through itself, so a thin edge of it glows
+    // rather than going dark the way an opaque edge does. A small constant
+    // emissive stands in for that subsurface term cheaply, and it is what
+    // stops the fibre fringe from reading as dirty grey against the sky.
+    emissive: '#ffffff',
+    emissiveIntensity: 0.09,
     transparent: true,
-    opacity: 0.88,
+    opacity: 0.92,
     envMapIntensity: 0.15,
   });
 
@@ -173,26 +146,9 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
     group.add(mesh);
   });
 
-  // soft shadow blob cast onto the actual terrain surface below each cloud
-  const shadowGeometry = new THREE.PlaneGeometry(1, 1);
-  const shadowMaterial = new THREE.MeshBasicMaterial({
-    map: buildSoftDotTexture(),
-    transparent: true,
-    opacity: 0.6,
-    depthWrite: false,
-  });
-  const shadowMesh = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, points.length);
-
-  points.forEach((p, i) => {
-    const groundRadius = radius + displayHeight(heightAt(p), p) * bumpHeight + 0.003;
-    const basePosition = p.clone().multiplyScalar(groundRadius);
-    const size = 0.3 + rand() * 0.22;
-    orientShadowDecal(dummy, basePosition, p, size, 1.3, rand() * Math.PI * 2);
-    dummy.updateMatrix();
-    shadowMesh.setMatrixAt(i, dummy.matrix);
-  });
-  shadowMesh.instanceMatrix.needsUpdate = true;
-  group.add(shadowMesh);
+  // (cloud shadows are real cast shadows now — see the key light's shadow
+  // camera in main.ts. A decal projected straight down could never land in
+  // the right place anyway, since the light rakes in from the side.)
 
   return group;
 }

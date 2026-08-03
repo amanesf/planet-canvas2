@@ -12,7 +12,7 @@ import {
   terracedElevation,
 } from './terrain';
 import { displaceWithNoise, SpatialHash, mulberry32 } from './spatialHash';
-import { orientShadowDecal } from './shadow';
+import { fbm3 } from './noise';
 
 type Kind = 'tree' | 'rock' | 'dune' | 'desertRock';
 
@@ -150,6 +150,17 @@ function scatterForest(candidateCount: number, minSpacing: number, rand: () => n
     if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // too cold for forest — taiga/tundra instead
     if (badlandsAt(dir) > BADLANDS_THRESHOLD) continue; // bare exposed rock — no canopy
     if (aridityAt(dir) > FOREST_ARIDITY_MAX) continue; // savanna/desert get their own treatment
+
+    // Clumping. Accepting every candidate that passes the biome filters
+    // produces a mathematically even carpet, and an even carpet is the one
+    // thing real applied flock never is — it goes down in dense drifts with
+    // thin, ragged margins and bare patches between. Rejecting candidates
+    // against a mid-frequency density field restores that, and costs one
+    // noise lookup.
+    // fbm3 is signed and centred on zero here, so the acceptance threshold
+    // is biased up rather than scaled from a 0..1 assumption
+    const density = fbm3(dir.x * 7.5 + 404, dir.y * 7.5 + 404, dir.z * 7.5 + 404, 2);
+    if (rand() > density * 2.2 + 0.66) continue;
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
 
@@ -363,7 +374,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       foliageMesh.setMatrixAt(i, dummy.matrix);
       // a little per-tree color variance so a forest doesn't look like one
       // flat-shaded cutout repeated hundreds of times
-      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.46 + rand() * 0.14, 0.3 + rand() * 0.12, THREE.SRGBColorSpace);
+      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.42 + rand() * 0.18, 0.2 + rand() * 0.22, THREE.SRGBColorSpace);
       foliageMesh.setColorAt(i, foliageColor);
     });
     foliageMesh.instanceMatrix.needsUpdate = true;
@@ -399,10 +410,10 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.7, rand() * Math.PI * 2);
-      dummy.scale.set(0.7 + rand() * 0.9, 0.6 + rand() * 0.7, 0.7 + rand() * 0.9);
+      dummy.scale.set(0.5 + rand() * 1.2, 0.35 + rand() * 0.6, 0.5 + rand() * 1.2);
       dummy.updateMatrix();
       rockMesh.setMatrixAt(i, dummy.matrix);
-      rockColor.setHSL(0.09 + rand() * 0.03, 0.12 + rand() * 0.08, 0.5 + rand() * 0.15, THREE.SRGBColorSpace);
+      rockColor.setHSL(0.085 + rand() * 0.035, 0.09 + rand() * 0.09, 0.42 + rand() * 0.26, THREE.SRGBColorSpace);
       rockMesh.setColorAt(i, rockColor);
     });
     rockMesh.instanceMatrix.needsUpdate = true;
@@ -492,7 +503,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   // per clump (each one is several overlapping lobes), but the ground
   // shows through between them the way it does in a real miniature.
 
-  const forestPoints = scatterForest(340000, 0.024, rand);
+  const forestPoints = scatterForest(430000, 0.023, rand);
   const canopyVariantCount = 3;
   const canopyVariants = Array.from({ length: canopyVariantCount }, () => buildCanopyBlob(rand));
   const canopyMaterial = new THREE.MeshStandardMaterial({
@@ -511,14 +522,18 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2);
-      const scale = 0.85 + rand() * 0.55;
+      // squared distribution: a flat random range gives every clump nearly
+      // the same size, which is what made the flock read as moulded beads
+      // laid in rows rather than as scattered material
+      const r0 = rand();
+      const scale = 0.72 + r0 * r0 * 1.25;
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
       // wide lightness spread (not just hue jitter) so neighboring clumps
       // read as light/shadow variation across the canopy, not one flat
       // uniform green — real clump foliage isn't evenly lit all over
-      canopyColor.setHSL(0.22 + rand() * 0.045, 0.46 + rand() * 0.16, 0.3 + rand() * 0.15, THREE.SRGBColorSpace);
+      canopyColor.setHSL(0.2 + rand() * 0.05, 0.42 + rand() * 0.2, 0.24 + rand() * 0.26, THREE.SRGBColorSpace);
       mesh.setColorAt(i, canopyColor);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -545,44 +560,17 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);
     dummy.updateMatrix();
     grassMesh.setMatrixAt(i, dummy.matrix);
-    grassColor.setHSL(0.23 + rand() * 0.045, 0.44 + rand() * 0.14, 0.34 + rand() * 0.1, THREE.SRGBColorSpace);
+    grassColor.setHSL(0.21 + rand() * 0.05, 0.4 + rand() * 0.16, 0.24 + rand() * 0.16, THREE.SRGBColorSpace);
     grassMesh.setColorAt(i, grassColor);
   });
   grassMesh.instanceMatrix.needsUpdate = true;
   if (grassMesh.instanceColor) grassMesh.instanceColor.needsUpdate = true;
   group.add(grassMesh);
 
-  // ---------- fake contact shadows ----------
-  // Real shadow maps are disabled for mobile GPU stability, but without
-  // *any* grounding shade, hundreds of trees/rocks just float on the
-  // surface like stickers. A soft blurred dot decal under each instance,
-  // flat against the terrain, buys most of the same believability for
-  // almost nothing (one extra instanced draw call, no lighting).
-  const shadowGeometry = new THREE.PlaneGeometry(1, 1);
-  const shadowMaterial = new THREE.MeshBasicMaterial({
-    map: buildSoftDotTexture(),
-    transparent: true,
-    opacity: 0.34,
-    depthWrite: false,
-  });
-  const shadowPoints: (ScatterPoint | DesertPoint)[] = [...points, ...desertPoints];
-  const shadowMesh = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, shadowPoints.length);
-
-  shadowPoints.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight + 0.0015;
-    const basePosition = p.dir.clone().multiplyScalar(surfaceRadius);
-    const size =
-      p.kind === 'tree'
-        ? 0.028 + rand() * 0.012
-        : p.kind === 'dune'
-          ? 0.05 + rand() * 0.028
-          : 0.04 + rand() * 0.022;
-    orientShadowDecal(dummy, basePosition, p.dir, size, 1.5, rand() * Math.PI * 2);
-    dummy.updateMatrix();
-    shadowMesh.setMatrixAt(i, dummy.matrix);
-  });
-  shadowMesh.instanceMatrix.needsUpdate = true;
-  group.add(shadowMesh);
+  // (the per-instance blob decals that used to stand in for contact shade
+  // are gone — the key light casts real shadows now, and layering a fake
+  // dark disc under an object that already drops a true shadow just reads
+  // as a smudge offset from its own silhouette.)
 
   return group;
 }
@@ -613,18 +601,3 @@ function buildCanopyBlob(rand: () => number): THREE.BufferGeometry {
   return merged;
 }
 
-function buildSoftDotTexture(): THREE.CanvasTexture {
-  const size = 32;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  gradient.addColorStop(0, 'rgba(50,34,20,0.6)');
-  gradient.addColorStop(0.6, 'rgba(50,34,20,0.3)');
-  gradient.addColorStop(1, 'rgba(50,34,20,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  const texture = new THREE.CanvasTexture(canvas);
-  return texture;
-}
