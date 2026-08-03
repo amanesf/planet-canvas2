@@ -37,7 +37,7 @@ body {
     linear-gradient(115deg, transparent 46%, rgba(210, 210, 205, 0.1) 48%, rgba(210, 210, 205, 0.14) 49.5%, transparent 52%),
     /* cutting-mat hint, lower-left */
     radial-gradient(circle at 6% 80%, rgba(40, 60, 55, 0.3) 0%, rgba(40, 60, 55, 0) 40%),
-    radial-gradient(circle at 55% 34%, #2c2018 0%, #1c1410 55%, #100b08 100%);
+    radial-gradient(circle at 55% 34%, #14100c 0%, #0d0a08 55%, #070505 100%);
 }
 
 #app {

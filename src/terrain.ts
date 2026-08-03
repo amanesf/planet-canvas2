@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { fbm3 } from './noise';
+import { mulberry32 } from './spatialHash';
 
 // Tuned so land covers roughly 30% of the surface, like real Earth's
 // land:sea ≈ 3:7 (verified empirically against heightAt's noise distribution).
@@ -262,7 +263,7 @@ export const BADLANDS_THRESHOLD = 0.28;
 // of the terrain already uses it.
 export function temperatureAt(dir: THREE.Vector3, elevation: number): number {
   const latitude = 1 - Math.abs(dir.y);
-  const wobble = fbm3(dir.x * 1.3 + 700, dir.y * 1.3 + 700, dir.z * 1.3 + 700, 2) * 0.18;
+  const wobble = fbm3(dir.x * 1.1 + 700, dir.y * 1.1 + 700, dir.z * 1.1 + 700, 2) * 0.085;
   const elevationCooling = Math.max(elevation, 0) * 1.6;
   return latitude + wobble - elevationCooling;
 }
@@ -324,10 +325,34 @@ function terraceCurve(t: number): number {
 // Raw elevation above sea level (0..TERRACE_MAX), terraced. Shared by both
 // the mesh displacement and the color banding so a terrace's edge always
 // lines up with a color change, like distinct painted layers.
+// Terracing fades in above the shoreline rather than starting at it. With
+// six steps over TERRACE_MAX, the very first step is a ~0.05 jump, so
+// applying it from sea level up meant *every* coast got a cliff the moment
+// land appeared — a whole planet of fjords. Real coastline is mostly the
+// opposite: a shallow ramp of beach, with cliffs the exception. Blending
+// from the raw height into the terraced one over the first stretch of
+// elevation gives the beach back and keeps the layered look inland.
+const BEACH_RAMP = 0.055;
+
 export function terracedElevation(height: number): number {
   if (height < SEA_LEVEL) return 0;
-  const t = Math.min((height - SEA_LEVEL) / TERRACE_MAX, 1);
-  return terraceCurve(t) * TERRACE_MAX;
+  const above = height - SEA_LEVEL;
+  const t = Math.min(above / TERRACE_MAX, 1);
+  const terraced = terraceCurve(t) * TERRACE_MAX;
+  return THREE.MathUtils.lerp(above, terraced, smoothstep(above, 0, BEACH_RAMP));
+}
+
+// How cliff-like this stretch of coast is. Mountain ranges meeting the sea
+// drop straight into it, and a few other headlands are rocky by their own
+// accord, but most shoreline is not.
+function coastCliffiness(dir: THREE.Vector3): number {
+  const belt = smoothstep(orogenyBeltAt(dir), 0.12, 0.45);
+  const rocky = smoothstep(
+    fbm3(dir.x * 1.7 + 808, dir.y * 1.7 + 808, dir.z * 1.7 + 808, 2),
+    0.05,
+    0.22,
+  );
+  return Math.max(belt, rocky * 0.85);
 }
 
 // dir is needed to look up whether this point sits in a rare "great
@@ -338,13 +363,14 @@ export function terracedElevation(height: number): number {
 export function displayHeight(height: number, dir: THREE.Vector3): number {
   if (height < SEA_LEVEL) return UNDERWATER_HEIGHT;
   const orogenyBoost = 1 + smoothstep(orogenyAt(dir), OROGENY_THRESHOLD, OROGENY_THRESHOLD + 0.12) * 1.3;
-  // A flat step lifting *all* land clear of the resin the instant it
-  // crosses the shoreline. In the reference the continents are carved
-  // plateaus standing proud of the poured sea with a real vertical cliff
-  // at their edge; without this floor, low-lying land tapers to the same
-  // radius as the water and the coastline reads as painted-on, not carved.
-  const COASTAL_STEP = 0.13;
-  return SEA_LEVEL + COASTAL_STEP + terracedElevation(height) * LAND_BOOST * orogenyBoost;
+  // A step lifting land clear of the resin as it crosses the shoreline —
+  // but only where the coast is actually rocky. Applying it everywhere (as
+  // it was) walled every continent with the same vertical cliff, which is
+  // a fjord coastline, and fjords are not what most shoreline looks like.
+  // Gentle coasts get barely any lift and meet the water as a beach; the
+  // glass sea already sits slightly below SEA_LEVEL, so they still emerge.
+  const coastalStep = 0.012 + coastCliffiness(dir) * 0.15;
+  return SEA_LEVEL + coastalStep + terracedElevation(height) * LAND_BOOST * orogenyBoost;
 }
 
 export function seaLevelRadius(radius: number, bumpHeight: number): number {
@@ -396,8 +422,11 @@ function biomeColor(
   beltCloseness: number,
 ): THREE.Color {
   // polar ice caps: cold enough, and it's ice regardless of elevation or
-  // aridity — Antarctica doesn't care if it would otherwise be a beach
-  if (temperature < ICE_TEMPERATURE) {
+  // aridity — Antarctica doesn't care if it would otherwise be a beach.
+  // Graded rather than switched, so the cap has a ragged frozen margin
+  // instead of a hard edge stamped across whatever biome it lands on.
+  const iceAmount = 1 - smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE + 0.13);
+  if (iceAmount > 0.995) {
     return outColor.copy(iceColor);
   }
 
@@ -445,6 +474,8 @@ function biomeColor(
     outColor.lerp(badlandsColor(elevation), badlandsGate * 0.3);
   }
 
+  if (iceAmount > 0) outColor.lerp(iceColor, iceAmount);
+
   return outColor;
 }
 
@@ -469,7 +500,8 @@ export function snowinessAt(dir: THREE.Vector3, height: number): number {
   const elevation = terracedElevation(height);
   const temperature = temperatureAt(dir, elevation);
   const polar = 1 - smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE + 0.14);
-  const alpine = smoothstep(elevation, 0.19, TERRACE_MAX);
+  const alpine =
+    smoothstep(elevation, 0.27, TERRACE_MAX) * (1 - smoothstep(temperature, 0.1, 0.42));
   return Math.max(polar, alpine);
 }
 
@@ -639,6 +671,13 @@ function oceanColor(dir: THREE.Vector3, height: number): THREE.Color {
   } else {
     outColor.copy(midOceanColor).lerp(shallowOceanColor, (t - 0.6) / 0.4);
   }
+  // Large-scale tint variation. A pour of tinted resin is never perfectly
+  // even — pigment settles and swirls as it cures — and without that the
+  // open water was a flawless airbrushed gradient, which is the most
+  // synthetic-looking surface in the whole frame.
+  const swirl = fbm3(dir.x * 4.5 + 611, dir.y * 4.5 + 611, dir.z * 4.5 + 611, 3);
+  outColor.offsetHSL(swirl * 0.02, swirl * 0.1, swirl * 0.07);
+
   // polar pack ice — a real ice cap freezes the sea around it too, not
   // just the land
   const temperature = temperatureAt(dir, 0);
@@ -843,17 +882,16 @@ export function buildWaveTexture(width = 1024, height = 512): THREE.CanvasTextur
   const image = ctx.createImageData(width, height);
   const dir = new THREE.Vector3();
 
+  // Base: a very slight swell, kept low-contrast on purpose. Cured epoxy is
+  // not choppy water — it is a hard, near-flat sheet, and giving it wave
+  // relief is what made the sea read as painted-on ripples rather than as
+  // something poured and set.
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       dirForPixel(px, py, width, height, dir);
-
-      const ridge = Math.sin(dir.x * 42 + dir.z * 17 + dir.y * 9) * 0.5 + 0.5;
+      const swell = Math.sin(dir.x * 42 + dir.z * 17 + dir.y * 9) * 0.5 + 0.5;
       const chop = fbm3(dir.x * 30 + 8, dir.y * 30 + 8, dir.z * 30 + 8, 3);
-      // fine, very-high-frequency speckle — real poured resin often has
-      // tiny embedded glitter/mica or trapped air, which catches the key
-      // light as scattered pinprick sparkle rather than one smooth sheen
-      const sparkle = fbm3(dir.x * 240 + 77, dir.y * 240 + 77, dir.z * 240 + 77, 2);
-      const v = 0.5 + (ridge - 0.5) * 0.24 + chop * 0.14 + sparkle * 0.34;
+      const v = 0.5 + (swell - 0.5) * 0.1 + chop * 0.07;
 
       const gray = Math.round(Math.min(Math.max(v, 0), 1) * 255);
       const idx = (py * width + px) * 4;
@@ -863,11 +901,37 @@ export function buildWaveTexture(width = 1024, height = 512): THREE.CanvasTextur
       image.data[idx + 3] = 255;
     }
   }
-
   ctx.putImageData(image, 0, 0);
+
+  // Droplets. This is the sea's signature detail in the reference and the
+  // one thing no amount of noise reproduces: the resin surface is stippled
+  // with hundreds of tiny beads of water, each a hard little dome that
+  // catches the key light as a discrete pinpoint. Fractal noise can only
+  // ever make a *cloudy* surface — droplets are discrete round objects
+  // with sharp edges and clear space between them, so they get drawn as
+  // literal circles rather than sampled from a field.
+  const rand = mulberry32(31337);
+  const dropletCount = 2600;
+  for (let i = 0; i < dropletCount; i++) {
+    const cx = rand() * width;
+    // bias away from the poles, where the equirectangular map crowds texels
+    // together and a round droplet would be drawn as a long smear
+    const cy = height * (0.08 + rand() * 0.84);
+    const r = 1.5 + rand() * rand() * 6;
+    const g = ctx.createRadialGradient(cx - r * 0.25, cy - r * 0.25, 0, cx, cy, r);
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.55, 'rgba(255,255,255,0.42)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.anisotropy = 4;
   texture.needsUpdate = true;
   return texture;
 }

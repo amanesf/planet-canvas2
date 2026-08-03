@@ -14,7 +14,7 @@ import {
 import { displaceWithNoise, SpatialHash, mulberry32 } from './spatialHash';
 import { fbm3 } from './noise';
 
-type Kind = 'tree' | 'rock' | 'dune' | 'desertRock';
+type Kind = 'tree' | 'rock';
 
 // Below this aridity: lush enough for a real forest canopy mass (handled
 // by scatterForest, not individual trees). Between this and the desert
@@ -61,7 +61,7 @@ function scatterPoints(candidateCount: number, minSpacing: number, rand: () => n
       if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // tundra/ice — stays bare
       if (badlandsAt(dir) > BADLANDS_THRESHOLD) continue; // bare exposed rock — no trees
       const aridity = aridityAt(dir);
-      if (aridity > DESERT_ARIDITY_THRESHOLD) continue; // handled by the denser scatterDesert pass
+      if (aridity > DESERT_ARIDITY_THRESHOLD) continue; // arid ground is sculpt and paint, no props
       if (aridity <= FOREST_ARIDITY_MAX) continue; // lush forest zone — covered by the canopy pass instead
       kind = 'tree'; // savanna: sparse, individually-visible trees
     } else {
@@ -172,44 +172,6 @@ function scatterForest(candidateCount: number, minSpacing: number, rand: () => n
   return placed;
 }
 
-// Dense dune-field coverage — a real desert is a sea of sand shapes, not
-// a few sparse mounds scattered on empty painted ground.
-interface DesertPoint {
-  dir: THREE.Vector3;
-  height: number;
-  kind: 'dune' | 'desertRock';
-}
-
-function scatterDesert(candidateCount: number, minSpacing: number, rand: () => number): DesertPoint[] {
-  const placed: DesertPoint[] = [];
-  const hash = new SpatialHash(minSpacing);
-  const minSpacingSq = minSpacing * minSpacing;
-  const dir = new THREE.Vector3();
-
-  for (let i = 0; i < candidateCount; i++) {
-    const z = rand() * 2 - 1;
-    const t = rand() * Math.PI * 2;
-    const r = Math.sqrt(1 - z * z);
-    dir.set(r * Math.cos(t), z, r * Math.sin(t));
-
-    const height = heightAt(dir);
-    if (height < SEA_LEVEL + 0.015) continue;
-    const elevation = terracedElevation(height);
-    if (elevation > 0.15) continue;
-    if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // cold + dry is tundra, not a sand desert
-    if (badlandsAt(dir) > BADLANDS_THRESHOLD) continue; // badlands gets rock banding, not sand dunes
-    if (aridityAt(dir) <= DESERT_ARIDITY_THRESHOLD) continue;
-
-    if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
-
-    const point = dir.clone();
-    hash.add(point);
-    placed.push({ dir: point, height, kind: rand() < 0.7 ? 'dune' : 'desertRock' });
-  }
-
-  return placed;
-}
-
 // Dense loose scree/rubble covering rocky mountain slopes, on top of the
 // sparser big accent boulders — a bare-painted rock terrace looks like a
 // video-game collision mesh; a slope covered in broken rock fragments
@@ -275,9 +237,6 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
 
   // dense dedicated passes — a sparse handful of dunes/rocks read as
   // "a few objects on empty ground", not "a desert" or "a mountainside"
-  const desertPoints = scatterDesert(70000, 0.045, rand);
-  const dunes = desertPoints.filter((p) => p.kind === 'dune');
-  const desertRocks = desertPoints.filter((p) => p.kind === 'desertRock');
   const screePoints = scatterScree(70000, 0.03, rand);
 
   // ---------- trees: 3 archetypes mixed by pseudo-climate + chance ----------
@@ -386,12 +345,17 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
 
   // ---------- rocks: 2 archetypes — angular boulders + flatter slabs ----------
 
-  const boulderGeometry = new THREE.IcosahedronGeometry(0.038, 0);
-  const slabGeometry = new THREE.IcosahedronGeometry(0.04, 0);
-  slabGeometry.scale(1.3, 0.45, 1.1);
+  const boulderGeometry = new THREE.IcosahedronGeometry(0.026, 0);
+  const slabGeometry = new THREE.IcosahedronGeometry(0.028, 0);
+  slabGeometry.scale(1.15, 0.6, 1.0);
 
   const rockMaterial = new THREE.MeshStandardMaterial({
-    color: '#9b9086',
+    // white on purpose: instanceColor multiplies against this, so a tinted
+    // base here compounds with the per-instance color and darkens it. The
+    // foliage material below already knew that; these did not, which is why
+    // every scattered rock came out several stops darker than the ground it
+    // sits on and read as a chocolate chip stuck to the terrain.
+    color: '#ffffff',
     roughness: 0.95,
     flatShading: true,
     envMapIntensity: 0.1,
@@ -407,13 +371,18 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     if (pts.length === 0) return;
     const rockMesh = new THREE.InstancedMesh(geo, rockMaterial, pts.length);
     pts.forEach((p, i) => {
-      const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
+      // Sunk, not set down. A rock resting *on* smooth ground reads as a
+      // separate object dropped there — which is exactly what made these
+      // look like chocolate chips, and then like almonds once they were
+      // lightened. Real outcrops emerge from the ground, so bury most of
+      // each one and let only its crown break the surface.
+      const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight - 0.016;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.7, rand() * Math.PI * 2);
-      dummy.scale.set(0.5 + rand() * 1.2, 0.35 + rand() * 0.6, 0.5 + rand() * 1.2);
+      dummy.scale.set(0.5 + rand() * 1.0, 0.4 + rand() * 0.5, 0.5 + rand() * 1.0);
       dummy.updateMatrix();
       rockMesh.setMatrixAt(i, dummy.matrix);
-      rockColor.setHSL(0.085 + rand() * 0.035, 0.09 + rand() * 0.09, 0.42 + rand() * 0.26, THREE.SRGBColorSpace);
+      rockColor.setHSL(0.075 + rand() * 0.03, 0.16 + rand() * 0.07, 0.3 + rand() * 0.1, THREE.SRGBColorSpace);
       rockMesh.setColorAt(i, rockColor);
     });
     rockMesh.instanceMatrix.needsUpdate = true;
@@ -421,59 +390,25 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     group.add(rockMesh);
   });
 
-  // ---------- desert: dune mounds + sun-bleached dry rock ----------
-
-  const duneGeometry = new THREE.IcosahedronGeometry(0.032, 1);
-  duneGeometry.scale(1.8, 0.28, 1.15);
-  const duneMaterial = new THREE.MeshStandardMaterial({
-    color: '#c3b190',
-    roughness: 0.92,
-    envMapIntensity: 0.1,
-  });
-  const duneMesh = new THREE.InstancedMesh(duneGeometry, duneMaterial, dunes.length);
-  const duneColor = new THREE.Color();
-  dunes.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
-    const position = p.dir.clone().multiplyScalar(surfaceRadius);
-    orient(position, p.dir, rand() * Math.PI * 2);
-    dummy.scale.set(0.6 + rand() * 1.1, 0.5 + rand() * 0.7, 0.6 + rand() * 1.1);
-    dummy.updateMatrix();
-    duneMesh.setMatrixAt(i, dummy.matrix);
-    duneColor.setHSL(0.105 + rand() * 0.02, 0.2 + rand() * 0.08, 0.54 + rand() * 0.09, THREE.SRGBColorSpace);
-    duneMesh.setColorAt(i, duneColor);
-  });
-  duneMesh.instanceMatrix.needsUpdate = true;
-  if (duneMesh.instanceColor) duneMesh.instanceColor.needsUpdate = true;
-  group.add(duneMesh);
-
-  const desertRockGeometry = new THREE.IcosahedronGeometry(0.034, 0);
-  const desertRockMaterial = new THREE.MeshStandardMaterial({
-    color: '#b3a184',
-    roughness: 0.95,
-    flatShading: true,
-    envMapIntensity: 0.1,
-  });
-  const desertRockMesh = new THREE.InstancedMesh(desertRockGeometry, desertRockMaterial, desertRocks.length);
-  const desertRockColor = new THREE.Color();
-  desertRocks.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
-    const position = p.dir.clone().multiplyScalar(surfaceRadius);
-    orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.6, rand() * Math.PI * 2);
-    dummy.scale.set(0.6 + rand() * 0.8, 0.55 + rand() * 0.6, 0.6 + rand() * 0.8);
-    dummy.updateMatrix();
-    desertRockMesh.setMatrixAt(i, dummy.matrix);
-    desertRockColor.setHSL(0.095 + rand() * 0.02, 0.16 + rand() * 0.07, 0.47 + rand() * 0.1, THREE.SRGBColorSpace);
-    desertRockMesh.setColorAt(i, desertRockColor);
-  });
-  desertRockMesh.instanceMatrix.needsUpdate = true;
-  if (desertRockMesh.instanceColor) desertRockMesh.instanceColor.needsUpdate = true;
-  group.add(desertRockMesh);
+  // (A dune field and scattered desert rock used to be built here. Both
+  // were removed rather than retuned: at this scale a discrete mound laid
+  // on the ground cannot read as anything but an object placed on top of
+  // it — sinking them, flattening them and matching their color to the
+  // terrain each helped and none of it was enough, because a dune is not a
+  // separate object from the ground in the first place. Arid ground now
+  // takes its character from the sculpt and the wash, which is all the
+  // rock in the reference photograph has too.)
 
   // ---------- scree: dense loose rubble covering rocky/mountain slopes ----------
 
   const screeGeometry = new THREE.IcosahedronGeometry(0.016, 0);
   const screeMaterial = new THREE.MeshStandardMaterial({
-    color: '#847a6c',
+    // white on purpose: instanceColor multiplies against this, so a tinted
+    // base here compounds with the per-instance color and darkens it. The
+    // foliage material below already knew that; these did not, which is why
+    // every scattered rock came out several stops darker than the ground it
+    // sits on and read as a chocolate chip stuck to the terrain.
+    color: '#ffffff',
     roughness: 0.97,
     flatShading: true,
     envMapIntensity: 0.08,
@@ -481,13 +416,13 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
   const screeColor = new THREE.Color();
   screePoints.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
+    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight - 0.007;
     const position = p.dir.clone().multiplyScalar(surfaceRadius);
     orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.5, rand() * Math.PI * 2);
     dummy.scale.set(0.6 + rand() * 1.0, 0.5 + rand() * 0.7, 0.6 + rand() * 1.0);
     dummy.updateMatrix();
     screeMesh.setMatrixAt(i, dummy.matrix);
-    screeColor.setHSL(0.08 + rand() * 0.03, 0.14 + rand() * 0.08, 0.42 + rand() * 0.18, THREE.SRGBColorSpace);
+    screeColor.setHSL(0.075 + rand() * 0.03, 0.14 + rand() * 0.06, 0.32 + rand() * 0.1, THREE.SRGBColorSpace);
     screeMesh.setColorAt(i, screeColor);
   });
   screeMesh.instanceMatrix.needsUpdate = true;

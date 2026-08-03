@@ -17,7 +17,8 @@ import {
 } from './terrain';
 import { buildVegetation } from './vegetation';
 import { buildClouds } from './clouds';
-import { TiltShiftShader } from './tiltShift';
+import { DepthOfFieldShader } from './dof';
+import { buildWorkshop } from './setDressing';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
@@ -110,21 +111,39 @@ app.appendChild(renderer.domElement);
 // second full scene render, but still an extra per-frame GPU cost this
 // project doesn't have a great deal of headroom for, so it stays modest
 // on purpose.
-const composer = new EffectComposer(renderer);
+// The composer's own render target carries a depth texture, so the
+// depth-of-field pass below can read scene depth without the second full
+// scene render the stock BokehPass costs. Both ping-pong buffers share the
+// one depth texture: only the RenderPass writes depth, and it runs first
+// every frame, so there is nothing to keep separate.
+const sceneDepth = new THREE.DepthTexture(window.innerWidth, window.innerHeight);
+sceneDepth.type = THREE.UnsignedIntType;
+const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+  depthTexture: sceneDepth,
+  depthBuffer: true,
+});
+const composer = new EffectComposer(renderer, composerTarget);
+composer.renderTarget2.depthTexture = sceneDepth;
 composer.addPass(new RenderPass(scene, camera));
-const tiltShiftPass = new ShaderPass(TiltShiftShader);
-tiltShiftPass.renderToScreen = true;
-composer.addPass(tiltShiftPass);
-tiltShiftPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+const dofPass = new ShaderPass(DepthOfFieldShader);
+dofPass.renderToScreen = true;
+composer.addPass(dofPass);
+dofPass.uniforms.tDepth.value = sceneDepth;
+dofPass.uniforms.uNear.value = camera.near;
+dofPass.uniforms.uFar.value = camera.far;
+dofPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
-// a generic light "room" environment for the glass ocean's reflections/
-// highlights — generated once at startup (PMREM), not a per-frame cost
+// A generic light "room" environment for the resin ocean's reflections,
+// generated once at startup (PMREM), not a per-frame cost. Heavily blurred
+// on purpose: at a sharper setting the room's light panels reflected in the
+// sea as discrete bright ovals, which reads as a mirror with windows in it
+// rather than as a broad softbox sheen across a poured surface.
 const pmremGenerator = new THREE.PMREMGenerator(renderer);
-scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.4).texture;
 // the room map is here to put believable reflections in the resin, not to
 // light the scene — at full strength it acts as a second, shadowless
 // ambient term and flattens everything the key light is doing
-scene.environmentIntensity = 0.3;
+scene.environmentIntensity = 0.42;
 pmremGenerator.dispose();
 
 // if the GPU driver does drop the context, the page can't recover its
@@ -206,7 +225,19 @@ const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.35);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
 
+// The bench lamp itself. Once the surroundings became real geometry they
+// needed a real reason to be visible: the key is aimed at the subject with
+// a shadow frustum wrapped tightly around it, so on its own it left the
+// desk, the bottles and the foreground clutter sitting in near-black. A
+// warm falloff light above the bench lights the room without touching the
+// key-to-fill ratio the globe is lit by.
+const benchLamp = new THREE.PointLight(0xffcf95, 90, 40, 2);
+benchLamp.position.set(-3, 7, 4);
+scene.add(benchLamp);
+
 // ---------- globe: displaced sphere, crisp painted terrain texture ----------
+
+scene.add(buildWorkshop());
 
 const globeGroup = new THREE.Group();
 globeGroup.position.set(0, GLOBE_FLOAT_Y, 0);
@@ -255,13 +286,13 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   // a directional wave pattern, slowly scrolled in the animation loop —
   // gives moving, shimmering highlights instead of a fixed pattern
   bumpMap: waveTexture,
-  bumpScale: 0.0055,
+  bumpScale: 0.012,
   transparent: true,
   // full strength — the per-texel alpha ramp baked into the ocean texture
   // is what varies the transparency now, so a flat material opacity here
   // would only fight it
   opacity: 1,
-  roughness: 0.46,
+  roughness: 0.3,
   metalness: 0,
   // poured-epoxy-resin read: a strong, very smooth clearcoat gives the
   // hard, glassy top layer real resin has, instead of reading as a
@@ -269,12 +300,12 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   // clearcoatRoughness) rather than a soft/wide sheen is what actually
   // sells "smooth cured epoxy" over "wet candy" — that came from the
   // *base* roughness being too low, not the clearcoat itself.
-  clearcoat: 0.45,
-  clearcoatRoughness: 0.22,
+  clearcoat: 0.85,
+  clearcoatRoughness: 0.16,
   ior: 1.5,
   // enough ambient reflection to keep the resin looking wet/glassy
   // without washing the saturated blue out to a flat gray-teal
-  envMapIntensity: 0.16,
+  envMapIntensity: 0.35,
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 // receives only — a translucent resin sheet casting a hard opaque shadow
@@ -458,7 +489,10 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
-  tiltShiftPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+  sceneDepth.image.width = window.innerWidth;
+  sceneDepth.image.height = window.innerHeight;
+  sceneDepth.needsUpdate = true;
+  dofPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
   // rescale the orbit distance (and its clamps) for the new aspect ratio,
   // preserving how zoomed-in the user currently is
@@ -507,6 +541,15 @@ function animate() {
 
   const ringPulse = 0.45 + Math.sin(t * 2.2) * 0.1;
   glowRingMaterial.opacity = ringPulse;
+
+  // keep the focal plane pinned to the front face of the globe as the
+  // viewer orbits or zooms, the way a photographer refocuses on the
+  // subject rather than on a fixed distance
+  const globeCenter = globeGroup.position;
+  dofPass.uniforms.uFocusDistance.value = Math.max(
+    camera.position.distanceTo(globeCenter) - RADIUS * 0.72,
+    0.5,
+  );
 
   controls.update();
   composer.render();
