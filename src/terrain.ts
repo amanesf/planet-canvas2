@@ -935,15 +935,22 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
 
     // Coral reef: warm, shallow, tropical shelf only — real reefs are a
     // narrow band right off a warm coast, not the whole shelf, and they
-    // grow in patches rather than as a uniform crust.
+    // grow in patches rather than as a uniform crust. Cheap checks first:
+    // most of the sphere is deep, cold open ocean, and skipping straight
+    // past those pixels avoids three extra noise lookups apiece over the
+    // majority of the seabed pass.
     const reefShallow = smoothstep(h, SEA_LEVEL - 0.03, SEA_LEVEL - 0.006);
-    const reefWarmth = smoothstep(temperature, 0.58, 0.78);
-    const reefPatch = fbm3(dir.x * 26 + 7070, dir.y * 26 + 7070, dir.z * 26 + 7070, 3);
-    const reefGate = reefShallow * reefWarmth * smoothstep(reefPatch, 0.05, 0.35);
-    if (reefGate > 0.01) {
-      const paletteT = fbm3(dir.x * 60 + 8080, dir.y * 60 + 8080, dir.z * 60 + 8080, 2);
-      const idx = Math.min(coralColors.length - 1, Math.floor(((paletteT + 1) / 2) * coralColors.length));
-      color.lerp(coralColors[idx], reefGate * 0.55);
+    if (reefShallow > 0) {
+      const reefWarmth = smoothstep(temperature, 0.58, 0.78);
+      if (reefWarmth > 0) {
+        const reefPatch = fbm3(dir.x * 26 + 7070, dir.y * 26 + 7070, dir.z * 26 + 7070, 3);
+        const reefGate = reefShallow * reefWarmth * smoothstep(reefPatch, 0.05, 0.35);
+        if (reefGate > 0.01) {
+          const paletteT = fbm3(dir.x * 60 + 8080, dir.y * 60 + 8080, dir.z * 60 + 8080, 2);
+          const idx = Math.min(coralColors.length - 1, Math.floor(((paletteT + 1) / 2) * coralColors.length));
+          color.lerp(coralColors[idx], reefGate * 0.55);
+        }
+      }
     }
 
     color.lerp(iceColor, seaIce);
@@ -1197,54 +1204,6 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
-  texture.needsUpdate = true;
-  return texture;
-}
-
-// A small emissive-only map: black everywhere except inside an active
-// volcano's crater or the glowing cracks in its flank flow, repeating the
-// same pattern terrainColor already painted into the diffuse map (same
-// noise calls, same seeds — dirForPixel keys purely off world direction,
-// so the two line up regardless of this texture's lower resolution).
-// Applied as emissiveMap so the lava genuinely reads as lit from within
-// instead of just being a bright color that goes dark in shadow like
-// everything else on the model.
-export function buildLavaTexture(width = 768, height = 384): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
-  const image = ctx.createImageData(width, height);
-  const dir = new THREE.Vector3();
-  const glow = new THREE.Color();
-
-  for (let py = 0; py < height; py++) {
-    for (let px = 0; px < width; px++) {
-      dirForPixel(px, py, width, height, dir);
-      glow.set(0, 0, 0);
-
-      const volcano = volcanoAt(dir);
-      if (volcano && volcano.active) {
-        if (volcano.crater > 0) {
-          applyLavaGlow(glow, volcano.crater, dir);
-        } else {
-          const flowNoise = fbm3(dir.x * 40 + 6060, dir.y * 40 + 6060, dir.z * 40 + 6060, 3);
-          const flowGate =
-            smoothstep(flowNoise, 0.1, 0.35) *
-            smoothstep(volcano.cone, 0.06, 0.35) *
-            (1 - smoothstep(volcano.cone, 0.55, 0.9));
-          if (flowGate > 0.01) applyLavaGlow(glow, flowGate, dir);
-        }
-      }
-
-      const idx = (py * width + px) * 4;
-      writeSRGBPixel(image.data, idx, glow);
-    }
-  }
-
-  ctx.putImageData(image, 0, 0);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
   texture.needsUpdate = true;
   return texture;
 }

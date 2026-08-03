@@ -7,7 +7,6 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import {
   applyCoastalMeniscus,
   buildBumpTexture,
-  buildLavaTexture,
   buildOceanTexture,
   buildTerrainTexture,
   buildWaveTexture,
@@ -717,11 +716,6 @@ await yieldToBrowser('起伏');
 const terrainBumpTexture = buildBumpTexture(TEX_W, TEX_H);
 await yieldToBrowser('海');
 
-// Black everywhere except a volcano's crater/flank flow — lets that one
-// feature actually glow instead of just being a bright diffuse color that
-// goes dark in shadow like every other material on the model.
-const lavaTexture = buildLavaTexture();
-
 const globeMaterial = new THREE.MeshStandardMaterial({
   map: terrainTexture,
   // fine surface relief via lighting only (no extra geometry) — the
@@ -735,9 +729,6 @@ const globeMaterial = new THREE.MeshStandardMaterial({
   roughness: 0.97,
   metalness: 0,
   envMapIntensity: 0.06,
-  emissiveMap: lavaTexture,
-  emissive: new THREE.Color(0xffffff),
-  emissiveIntensity: 1.1,
 });
 
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
