@@ -15,6 +15,7 @@ import {
   seaLevelRadius,
 } from './terrain';
 import { buildVegetation } from './vegetation';
+import { buildSpecies } from './species';
 import { buildClouds } from './clouds';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
@@ -66,7 +67,7 @@ const SETTINGS = {
 // the elapsed seconds and the quality tier. The tier in particular is the
 // one fact worth having when a device behaves differently from every device
 // it was tested on.
-const BUILD_STEPS = 9;
+const BUILD_STEPS = 10;
 let buildStep = 0;
 const buildStartedAt = performance.now();
 
@@ -798,6 +799,19 @@ vegetation.traverse((child) => {
   }
 });
 globeGroup.add(vegetation);
+
+// The species pass: one scatter classified into fourteen kinds by climate,
+// so that adding a kind costs a branch rather than another sweep of the
+// sphere. See species.ts.
+await yieldToBrowser('生物相');
+const species = buildSpecies(RADIUS, BUMP_HEIGHT);
+species.traverse((child) => {
+  if ((child as THREE.Mesh).isMesh) {
+    child.castShadow = true;
+    child.receiveShadow = true;
+  }
+});
+globeGroup.add(species);
 
 // (A faint white "atmosphere" shell used to sit here, wrapping the whole
 // globe at five percent opacity. On a planet render that reads as air; on a

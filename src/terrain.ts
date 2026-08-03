@@ -1248,3 +1248,4 @@ export function applyCoastalMeniscus(geometry: THREE.SphereGeometry, amount: num
 }
 
 export { badlandsAt };
+export { orogenyBeltAt };
