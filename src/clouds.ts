@@ -114,6 +114,26 @@ function buildNoduleGeometry(rand: () => number): THREE.BufferGeometry {
   displaceWithNoise(g, 0.34, 3.2, rand() * 500);
   g.scale(1, 0.72, 1); // batting settles wider than it is tall
   g.computeVertexNormals();
+
+  // Self-shadowing, baked in. Every nodule is lit as an isolated ball, so a
+  // cloud came out as a heap of separately-lit spheres with nothing darker
+  // where they meet — which is what makes a mass of them read flat however
+  // lumpy the outline is. Real batting is bright on top and progressively
+  // dimmer underneath, because the material above it is in the way. A
+  // vertical gradient in the vertex colours reproduces that for nothing per
+  // frame, and it does the job the shadow map cannot at this scale.
+  const position = g.attributes.position;
+  const colors = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i++) {
+    // -1 at the underside, +1 at the crown
+    const t = THREE.MathUtils.clamp(position.getY(i) / 0.72, -1, 1);
+    const shade = 0.52 + (t * 0.5 + 0.5) * 0.55;
+    colors[i * 3] = shade;
+    colors[i * 3 + 1] = shade;
+    // the shaded underside of white cotton goes cool, not just dark
+    colors[i * 3 + 2] = Math.min(1, shade * 1.04);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   return g;
 }
 
@@ -141,7 +161,8 @@ export function buildClouds(radius: number): THREE.Group {
   const variants = Array.from({ length: variantCount }, () => buildNoduleGeometry(rand));
 
   const coreMaterial = new THREE.MeshStandardMaterial({
-    color: '#e2e0df',
+    color: '#f2f0ee',
+    vertexColors: true, // baked top-lit / underside-shaded gradient, above
     roughness: 0.96, // matte fibre, not the sheen of a moulded surface
     // Cotton scatters light through itself, so its thin edges glow instead
     // of falling off to grey. A small constant emissive stands in for that
@@ -158,6 +179,7 @@ export function buildClouds(radius: number): THREE.Group {
   const haloMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 1,
+    vertexColors: true,
     emissive: '#ffffff',
     emissiveIntensity: 0.14,
     transparent: true,

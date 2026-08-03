@@ -33,10 +33,10 @@ const alpineShadowColor = new THREE.Color('#4e5058');
 const taigaColor = new THREE.Color('#4a5344');
 // Tropical soil: the red laterite that shows through equatorial jungle.
 const tropicalSoilColor = new THREE.Color('#6b5138');
-const snowColor = new THREE.Color('#dde4e6');
+const snowColor = new THREE.Color('#e7eef2');
 const riverColor = new THREE.Color('#3184a0');
 const tundraColor = new THREE.Color('#8b8a6e');
-const iceColor = new THREE.Color('#d3dee1');
+const iceColor = new THREE.Color('#dce8ee');
 // exposed sedimentary rock strata — badlands/canyon country
 const badlandsColorA = new THREE.Color('#6f5b47');
 const badlandsColorB = new THREE.Color('#948269');
@@ -613,7 +613,7 @@ const cliffColor = new THREE.Color('#6a5a49'); // bare stone: paint doesn't hold
 // bouncing between crystals, so they go cool blue-grey, never sepia — a
 // brown wash over snow is the classic way to make a winter model look
 // like it was left out in the mud.
-const snowWashColor = new THREE.Color('#93a8bd');
+const snowWashColor = new THREE.Color('#7e9ac0');
 const snowDrybrushColor = new THREE.Color('#ffffff');
 
 // Every texture below needs the height at each texel, and each one used to
@@ -747,11 +747,19 @@ function applyReliefPaint(
   // but snow drapes over a slope instead of sliding off it
   if (slope > 0.01) color.lerp(cliffColor, slope * 0.7 * (1 - snowiness));
   const flatness = 1 - slope * 0.8;
+
+  // Ridge crests. A drybrush weighted by curvature alone spreads the
+  // highlight over every mildly convex surface, which is why the mountains
+  // came out rounded, like soft clay. On real rock the brightest line is
+  // narrow and sits exactly on the arete — so the top of the curvature range
+  // gets a separate, much harder hit.
+  const crest = smoothstep(convexity, 0.55, 1);
+  if (crest > 0) color.lerp(drybrushColor, crest * 0.45 * (1 - snowiness * 0.4));
   if (convexity < 0) {
     // wash: pigment runs downhill and pools, so recesses darken hard
     const t = Math.min(-convexity, 1) * flatness;
     color.lerp(washColor, t * 0.33 * (1 - snowiness));
-    color.lerp(snowWashColor, t * 0.5 * snowiness);
+    color.lerp(snowWashColor, t * 0.62 * snowiness);
   } else {
     // drybrush: a much lighter touch, and only on the raised edge itself
     const t = Math.min(convexity, 1) * flatness;
@@ -779,6 +787,15 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
     // features through the water rather than as noise on the surface
     const mottle = fbm3(dir.x * 22 + 61, dir.y * 22 + 61, dir.z * 22 + 61, 3);
     color.offsetHSL(0, 0, mottle * 0.12);
+    color.lerp(iceColor, seaIce);
+  } else if (h < SEA_LEVEL + COAST_WIDTH * 0.35) {
+    // The waterline itself. A wide pale band around every coast reads as a
+    // map's shoreline symbol, which is why the beach was narrowed — but the
+    // opposite extreme, land meeting sea at a bare colour boundary, throws
+    // away the one place on the model where the eye most wants detail. A
+    // line only a texel or two across, brighter than either side, reads as
+    // wet sand catching the light.
+    color = outColor.copy(shoreColor).lerp(drybrushColor, 0.55);
     color.lerp(iceColor, seaIce);
   } else if (h < SEA_LEVEL + COAST_WIDTH) {
     if (beltCloseness > 0.35) {

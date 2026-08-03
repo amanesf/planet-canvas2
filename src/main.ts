@@ -449,23 +449,45 @@ const baseMaterial = new THREE.MeshPhysicalMaterial({
   envMapIntensity: 0.35,
 });
 
-const baseBottom = new THREE.Mesh(
-  new THREE.CylinderGeometry(1.65, 1.85, 0.35, 48),
-  baseMaterial,
-);
-baseBottom.position.y = -1.9;
-baseBottom.receiveShadow = true;
-baseBottom.castShadow = true;
-standGroup.add(baseBottom);
+// Turned wood has no sharp arris on it: every edge is eased, and that
+// eased edge is what catches a bright line under a lamp. A cylinder with a
+// hard 90-degree rim gets one dark seam instead, which is a large part of
+// why the pedestal read as a stacked primitive rather than as something
+// made on a lathe. Each tier is built as a short chamfer, the body, and
+// another chamfer.
+function turnedTier(
+  bottomRadius: number,
+  topRadius: number,
+  height: number,
+  bevel = 0.035,
+): THREE.CylinderGeometry[] {
+  const body = new THREE.CylinderGeometry(topRadius, bottomRadius, height - bevel * 2, 48);
+  const lowerChamfer = new THREE.CylinderGeometry(bottomRadius, bottomRadius - bevel, bevel, 48);
+  lowerChamfer.translate(0, -(height - bevel) / 2, 0);
+  const upperChamfer = new THREE.CylinderGeometry(topRadius - bevel, topRadius, bevel, 48);
+  upperChamfer.translate(0, (height - bevel) / 2, 0);
+  return [body, lowerChamfer, upperChamfer];
+}
 
-const baseTop = new THREE.Mesh(
-  new THREE.CylinderGeometry(1.3, 1.65, 0.25, 48),
-  baseMaterial,
-);
-baseTop.position.y = -1.65;
-baseTop.receiveShadow = true;
-baseTop.castShadow = true;
-standGroup.add(baseTop);
+function addTurnedTier(
+  group: THREE.Group,
+  material: THREE.Material,
+  bottomRadius: number,
+  topRadius: number,
+  height: number,
+  y: number,
+): void {
+  turnedTier(bottomRadius, topRadius, height).forEach((geometry) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.y = y;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  });
+}
+
+addTurnedTier(standGroup, baseMaterial, 1.85, 1.65, 0.35, -1.9);
+addTurnedTier(standGroup, baseMaterial, 1.65, 1.3, 0.25, -1.65);
 
 // small brass nameplate on the front of the pedestal
 function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
@@ -474,11 +496,17 @@ function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = 'rgba(38, 24, 8, 0.92)';
   ctx.font = '600 56px "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('箱庭プラネット', width / 2, height / 2 + 2);
+  // Engraved, not printed. A letter cut into brass has a shadow on the side
+  // the light comes from and a bright burr on the far side; drawing the
+  // glyph three times, offset, is enough to fake that at this size and is
+  // the difference between a sticker and a machined plate.
+  ctx.fillStyle = 'rgba(255, 236, 190, 0.5)';
+  ctx.fillText('箱庭プラネット', width / 2, height / 2 + 4);
+  ctx.fillStyle = 'rgba(28, 16, 4, 0.95)';
+  ctx.fillText('箱庭プラネット', width / 2, height / 2 + 1);
   const texture = new THREE.CanvasTexture(canvas);
   return texture;
 }
@@ -505,6 +533,22 @@ const plaqueTextMaterial = new THREE.MeshBasicMaterial({
 const plaqueText = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.29), plaqueTextMaterial);
 plaqueText.position.set(0, -1.86, 1.797);
 standGroup.add(plaqueText);
+
+// The four screws holding the plate on. Tiny — a couple of pixels each at
+// this framing — and exactly the sort of thing that separates a fitting
+// from a decal: a real plate is fixed to the wood by something.
+const screwGeometry = new THREE.CylinderGeometry(0.018, 0.018, 0.012, 10);
+screwGeometry.rotateX(Math.PI / 2);
+[
+  [-0.5, -1.955],
+  [0.5, -1.955],
+  [-0.5, -1.765],
+  [0.5, -1.765],
+].forEach(([x, y]) => {
+  const screw = new THREE.Mesh(screwGeometry, plaqueMaterial);
+  screw.position.set(x, y, 1.797);
+  standGroup.add(screw);
+});
 
 // a thin brass trim ring right at the seam between the two wood tiers —
 // the "museum trophy base" detail that reads as a real display stand
