@@ -2,7 +2,7 @@ import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { buildTerrainTexture, displaceSphere, rippleSphere, seaLevelRadius } from './terrain';
+import { buildOceanTexture, buildTerrainTexture, displaceSphere, rippleSphere, seaLevelRadius } from './terrain';
 import { buildVegetation } from './vegetation';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -106,9 +106,9 @@ controls.target.set(0, TARGET_Y, 0);
 
 // ---------- lighting ----------
 
-scene.add(new THREE.AmbientLight(0xfff1e0, 0.5));
+scene.add(new THREE.AmbientLight(0xfff1e0, 0.62));
 
-const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.15);
+const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.3);
 keyLight.position.set(4, 5, 3);
 scene.add(keyLight);
 
@@ -148,7 +148,7 @@ globeGroup.add(globeMesh);
 const oceanGeometry = new THREE.SphereGeometry(seaLevelRadius(RADIUS, BUMP_HEIGHT), 96, 56);
 rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
 const oceanMaterial = new THREE.MeshPhysicalMaterial({
-  color: 0x2f9fd0,
+  map: buildOceanTexture(),
   transparent: true,
   opacity: 0.95,
   roughness: 0.35,
