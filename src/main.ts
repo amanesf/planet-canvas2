@@ -22,7 +22,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 `;
 
 const RADIUS = 2;
-const BUMP_HEIGHT = 0.22; // exaggerated on purpose — cute over accurate, but sphere reads as round first
+const BUMP_HEIGHT = 0.34; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
 const GLOBE_FLOAT_Y = 1.15; // resting height, leaves a visible gap above the stand
 
 // ---------- renderer / scene / camera ----------

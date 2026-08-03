@@ -7,8 +7,11 @@ export const SEA_LEVEL = 0.095;
 const COAST_WIDTH = 0.012;
 
 const shoreColor = new THREE.Color('#f0d98a');
-const landColor = new THREE.Color('#5fae52');
-const desertColor = new THREE.Color('#dcc07a');
+// muted/soil-toned on purpose — the vivid green now comes from actually
+// covering the ground in grass/tree instances, not from painting the
+// terrain itself bright green underneath them
+const landColor = new THREE.Color('#7a9257');
+const desertColor = new THREE.Color('#d2b06e');
 const rockColor = new THREE.Color('#8f8272');
 const snowColor = new THREE.Color('#f4f8fb');
 const riverColor = new THREE.Color('#3fa9c9');
@@ -53,9 +56,14 @@ export function heightAt(dir: THREE.Vector3): number {
 // forest. Frequency needs to be higher than the continent-scale terrain
 // noise, or a whole continent can land inside one lobe of "dry" and read
 // as entirely desert instead of having patches within it.
-function aridityAt(dir: THREE.Vector3): number {
+export function aridityAt(dir: THREE.Vector3): number {
   return fbm3(dir.x * 2.6 + 51.3, dir.y * 2.6 + 51.3, dir.z * 2.6 + 51.3, 3);
 }
+
+// same threshold biomeColor uses to start blending toward desert — shared
+// so vegetation placement (dunes/dry rock vs. grass/trees) agrees with
+// what the paint underneath actually looks like
+export const DESERT_ARIDITY_THRESHOLD = 0.14;
 
 // water is flattened to sea level on the mesh so it doesn't visibly
 // inherit the terrain noise as bumpy waves — only land pokes up. Land is
@@ -63,7 +71,7 @@ function aridityAt(dir: THREE.Vector3): number {
 // mountain look; since the ocean (~70% of the surface) stays perfectly
 // flat regardless, this doesn't reintroduce the "potato" whole-sphere
 // distortion from earlier — only the 30% landmass gets dramatic.
-const LAND_BOOST = 2.0;
+const LAND_BOOST = 2.5;
 // a bigger drop than a purely cosmetic clamp needs — real relief globes
 // have a visible carved "step" right at the coastline instead of land
 // gently sloping into the water, and this is what makes that step read
