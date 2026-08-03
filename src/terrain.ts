@@ -130,6 +130,15 @@ function biomeColor(height: number, aridity: number): THREE.Color {
   return outColor.copy(snowColor);
 }
 
+// Real shadow maps are off (mobile GPU stability), so the coastline's
+// geometric "step" never actually casts a shadow onto the beach — without
+// this the carved edge just looks like a color boundary, not a relief.
+// Baking a fake AO crease directly into the paint fakes the same read.
+function coastalAO(height: number): number {
+  const t = smoothstep(height, SEA_LEVEL, SEA_LEVEL + 0.05);
+  return -0.16 * (1 - t);
+}
+
 function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number): THREE.Color {
   const h = height + coastlineJitter(dir);
 
@@ -143,6 +152,7 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
   } else {
     color = biomeColor(h, aridityAt(dir));
     if (riverStrength > 0) color.lerp(riverColor, riverStrength);
+    color.offsetHSL(0, 0, coastalAO(h));
   }
 
   return color.offsetHSL(0, 0, paintGrain(dir));
@@ -246,7 +256,7 @@ function sampleRiverFlow(river: { flow: Float32Array; width: number; height: num
 // Renders terrain color to a canvas once, matching the exact UV formula
 // THREE.SphereGeometry uses internally, so the crisp texture lines up with
 // the (much lower-poly) displaced mesh without any seams or misalignment.
-export function buildTerrainTexture(width = 1024, height = 512): THREE.CanvasTexture {
+export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -285,7 +295,7 @@ export function buildTerrainTexture(width = 1024, height = 512): THREE.CanvasTex
 // A depth-graded teal texture for the ocean shell — deep water reads
 // darker, shading up to a lighter turquoise near the coast, instead of a
 // single flat color.
-export function buildOceanTexture(width = 1024, height = 512): THREE.CanvasTexture {
+export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -310,6 +320,56 @@ export function buildOceanTexture(width = 1024, height = 512): THREE.CanvasTextu
   ctx.putImageData(image, 0, 0);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+// Fine-grained surface relief baked into a grayscale map and applied as a
+// bumpMap — this is the single biggest lever for "sculpted miniature" vs.
+// "smooth painted ball": the mesh itself stays cheap and low-poly, but
+// per-pixel lighting reacts to fake micro-terrain, giving the impression
+// of actual carved texture (individual clumps of foliage, rock grain,
+// sand ripples) at zoom levels the real geometry could never afford.
+export function buildBumpTexture(width = 1536, height = 768): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  const image = ctx.createImageData(width, height);
+  const dir = new THREE.Vector3();
+
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      dirForPixel(px, py, width, height, dir);
+
+      const h = heightAt(dir);
+      let v: number;
+      if (h < SEA_LEVEL) {
+        // fine ripple texture on the (mostly hidden) seabed — cheap
+        // insurance in case it peeks through the glass shell
+        v = 0.5 + fbm3(dir.x * 90, dir.y * 90, dir.z * 90, 2) * 0.08;
+      } else {
+        // layered detail: coarse clumps (foliage/boulder clusters), fine
+        // grain (rock/sand texture), scaled down near the coast so the
+        // beach itself still reads smooth
+        const shoreFade = smoothstep(h, SEA_LEVEL, SEA_LEVEL + 0.03);
+        const clumps = fbm3(dir.x * 45 + 8, dir.y * 45 + 8, dir.z * 45 + 8, 2);
+        const grain = fbm3(dir.x * 140 + 22, dir.y * 140 + 22, dir.z * 140 + 22, 2);
+        v = 0.5 + (clumps * 0.14 + grain * 0.07) * shoreFade;
+      }
+
+      const gray = Math.round(Math.min(Math.max(v, 0), 1) * 255);
+      const idx = (py * width + px) * 4;
+      image.data[idx] = gray;
+      image.data[idx + 1] = gray;
+      image.data[idx + 2] = gray;
+      image.data[idx + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
   texture.anisotropy = 4;
   texture.needsUpdate = true;
   return texture;

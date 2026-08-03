@@ -2,7 +2,14 @@ import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { buildOceanTexture, buildTerrainTexture, displaceSphere, rippleSphere, seaLevelRadius } from './terrain';
+import {
+  buildBumpTexture,
+  buildOceanTexture,
+  buildTerrainTexture,
+  displaceSphere,
+  rippleSphere,
+  seaLevelRadius,
+} from './terrain';
 import { buildVegetation } from './vegetation';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -136,6 +143,11 @@ const terrainTexture = buildTerrainTexture();
 
 const globeMaterial = new THREE.MeshStandardMaterial({
   map: terrainTexture,
+  // fine surface relief via lighting only (no extra geometry) — the
+  // single biggest lever for "sculpted miniature" vs. "smooth painted
+  // ball" once you actually zoom in on it
+  bumpMap: buildBumpTexture(),
+  bumpScale: 0.004,
   roughness: 0.88,
   metalness: 0.02,
   envMapIntensity: 0.15, // painted-clay matte, not shiny/rubbery
