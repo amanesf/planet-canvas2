@@ -74,6 +74,25 @@ export function displaceWithNoise(geometry: THREE.BufferGeometry, amount: number
   position.needsUpdate = true;
 }
 
+export function smoothstep(x: number, edge0: number, edge1: number): number {
+  const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
+// A spatial multiplier for scatter acceptance probability, so a whole scan
+// doesn't come out as an even blue-noise lattice — real ground cover
+// (cactus stands, boulder fields, scree, forest floor) sits in clusters
+// with bare gaps between, not as individually-spaced specimens on a grid.
+// One noise sample, mapped so the average across the sphere stays near 1
+// (total instance counts land in the same ballpark as an ungated scan) —
+// only *where* they land changes, from even spacing to drifts and gaps.
+// Different seeds per species/layer keep their clusters from all forming
+// in the same places.
+export function clumpDensity(dir: THREE.Vector3, seed: number, frequency = 3): number {
+  const n = fbm3(dir.x * frequency + seed, dir.y * frequency + seed, dir.z * frequency + seed, 3);
+  return Math.max(0, 1 + n * 1.6);
+}
+
 // deterministic RNG so scatter patterns look the same every reload
 export function mulberry32(seed: number) {
   let a = seed;

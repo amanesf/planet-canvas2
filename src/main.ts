@@ -14,7 +14,6 @@ import {
   rippleSphere,
   seaLevelRadius,
 } from './terrain';
-import { buildVegetation } from './vegetation';
 import { buildSpecies } from './species';
 import { buildClouds } from './clouds';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -67,7 +66,7 @@ const SETTINGS = {
 // the elapsed seconds and the quality tier. The tier in particular is the
 // one fact worth having when a device behaves differently from every device
 // it was tested on.
-const BUILD_STEPS = 10;
+const BUILD_STEPS = 9;
 let buildStep = 0;
 const buildStartedAt = performance.now();
 
@@ -787,22 +786,12 @@ const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 oceanMesh.receiveShadow = true;
 globeGroup.add(oceanMesh);
 
-// scattered trees and rocks — discrete miniature objects standing on the
-// terrain are what actually reads as "diorama", not just a smooth
-// colored/shiny surface
-await yieldToBrowser('植生');
-const vegetation = buildVegetation(RADIUS, BUMP_HEIGHT);
-vegetation.traverse((child) => {
-  if ((child as THREE.Mesh).isMesh) {
-    child.castShadow = true;
-    child.receiveShadow = true;
-  }
-});
-globeGroup.add(vegetation);
-
-// The species pass: one scatter classified into fourteen kinds by climate,
-// so that adding a kind costs a branch rather than another sweep of the
-// sphere. See species.ts.
+// Ground cover and scattered miniature objects — discrete things standing
+// on the terrain are what actually reads as "diorama", not just a smooth
+// colored/shiny surface. One scatter walks the sphere once and classifies
+// every candidate into whatever belongs there — forest, grass, savanna
+// trees, mountain rocks, scree, or one of fourteen further species — so
+// adding a kind costs a branch, not another sweep. See species.ts.
 await yieldToBrowser('生物相');
 const species = buildSpecies(RADIUS, BUMP_HEIGHT);
 species.traverse((child) => {
