@@ -151,5 +151,51 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   if (rockMesh.instanceColor) rockMesh.instanceColor.needsUpdate = true;
   group.add(rockMesh);
 
+  // ---------- fake contact shadows ----------
+  // Real shadow maps are disabled for mobile GPU stability, but without
+  // *any* grounding shade, hundreds of trees/rocks just float on the
+  // surface like stickers. A soft blurred dot decal under each instance,
+  // flat against the terrain, buys most of the same believability for
+  // almost nothing (one extra instanced draw call, no lighting).
+  const shadowGeometry = new THREE.PlaneGeometry(1, 1);
+  const shadowMaterial = new THREE.MeshBasicMaterial({
+    map: buildSoftDotTexture(),
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+  });
+  const shadowMesh = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, points.length);
+  const planeNormal = new THREE.Vector3(0, 0, 1);
+
+  points.forEach((p, i) => {
+    const surfaceRadius = radius + displayHeight(p.height) * bumpHeight + 0.0015;
+    dummy.position.copy(p.dir).multiplyScalar(surfaceRadius);
+    const align = new THREE.Quaternion().setFromUnitVectors(planeNormal, p.dir);
+    const spinQ = new THREE.Quaternion().setFromAxisAngle(p.dir, rand() * Math.PI * 2);
+    dummy.quaternion.copy(spinQ).multiply(align);
+    const size = p.kind === 'tree' ? 0.045 + rand() * 0.02 : 0.05 + rand() * 0.03;
+    dummy.scale.setScalar(size);
+    dummy.updateMatrix();
+    shadowMesh.setMatrixAt(i, dummy.matrix);
+  });
+  shadowMesh.instanceMatrix.needsUpdate = true;
+  group.add(shadowMesh);
+
   return group;
+}
+
+function buildSoftDotTexture(): THREE.CanvasTexture {
+  const size = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, 'rgba(50,34,20,0.6)');
+  gradient.addColorStop(0.6, 'rgba(50,34,20,0.3)');
+  gradient.addColorStop(1, 'rgba(50,34,20,0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  return texture;
 }

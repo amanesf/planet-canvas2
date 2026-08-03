@@ -2,11 +2,12 @@ import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { buildTerrainTexture, displaceSphere, seaLevelRadius } from './terrain';
+import { buildTerrainTexture, displaceSphere, rippleSphere, seaLevelRadius } from './terrain';
 import { buildVegetation } from './vegetation';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
+  <div class="vignette"></div>
   <div class="ui">
     <button id="mode-toggle" class="mode-button">⏸ 停止する</button>
   </div>
@@ -37,7 +38,23 @@ function cameraDistanceForViewport() {
   if (aspect >= 1) return BASE_CAMERA_DISTANCE;
   return BASE_CAMERA_DISTANCE / Math.max(aspect, 0.45);
 }
-camera.position.set(0, 1.4, cameraDistanceForViewport());
+
+// The single biggest thing separating "a planet floating in space" from
+// "a miniature sitting on my desk" is camera angle, not material tweaks —
+// real diorama/miniature photography looks down at roughly 25-35° above
+// the horizon, not near eye level. Aim the default view that way.
+const CAMERA_POLAR_ANGLE = Math.PI * 0.36; // ~65° from vertical = ~25° above horizon
+const TARGET_Y = 1.0;
+function cameraStartPosition() {
+  const dist = cameraDistanceForViewport();
+  return new THREE.Vector3(
+    0,
+    TARGET_Y + dist * Math.cos(CAMERA_POLAR_ANGLE),
+    dist * Math.sin(CAMERA_POLAR_ANGLE),
+  );
+}
+const startPos = cameraStartPosition();
+camera.position.set(startPos.x, startPos.y, startPos.z);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -78,11 +95,14 @@ controls.enableRotate = true;
 let viewportScale = cameraDistanceForViewport() / BASE_CAMERA_DISTANCE;
 controls.minDistance = 5 * viewportScale;
 controls.maxDistance = 14 * viewportScale;
-controls.minPolarAngle = Math.PI * 0.15;
-controls.maxPolarAngle = Math.PI * 0.85;
+// keep the user inside "looking down at a diorama" territory — never let
+// them drop to a flat eye-level view (which reads as "planet in space"
+// again) or flip to looking sharply up from underneath the stand
+controls.minPolarAngle = Math.PI * 0.22;
+controls.maxPolarAngle = Math.PI * 0.55;
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.target.set(0, 0.7, 0);
+controls.target.set(0, TARGET_Y, 0);
 
 // ---------- lighting ----------
 
@@ -126,6 +146,7 @@ globeGroup.add(globeMesh);
 // as poured diorama resin; the earlier more-transparent/liquid version
 // read as a soft gummy-candy jelly instead of a solid miniature material.
 const oceanGeometry = new THREE.SphereGeometry(seaLevelRadius(RADIUS, BUMP_HEIGHT), 96, 56);
+rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
 const oceanMaterial = new THREE.MeshPhysicalMaterial({
   color: 0x2f9fd0,
   transparent: true,

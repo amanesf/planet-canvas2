@@ -58,19 +58,38 @@ export function seaLevelRadius(radius: number, bumpHeight: number): number {
 }
 
 const outColor = new THREE.Color();
-function terrainColor(height: number): THREE.Color {
-  if (height < SEA_LEVEL - COAST_WIDTH) {
-    return outColor.copy(deepColor);
+
+// Purely cosmetic: perturbs where a pixel's color band boundary falls,
+// without touching the height value used for geometry, sea level, or
+// vegetation placement. Perfectly smooth, mathematically clean coastlines
+// read as vector art; a hand-cut miniature's coastline has a bit of
+// irregularity to it.
+function coastlineJitter(dir: THREE.Vector3): number {
+  return fbm3(dir.x * 55 + 71, dir.y * 55 + 71, dir.z * 55 + 71, 2) * 0.008;
+}
+
+// A little per-pixel brightness grain so painted terrain reads as a
+// matte, slightly textured surface (like painted resin/flock) instead of
+// a flawless digital gradient — real miniatures are never perfectly smooth.
+function paintGrain(dir: THREE.Vector3): number {
+  return fbm3(dir.x * 180 + 13, dir.y * 180 + 13, dir.z * 180 + 13, 1) * 0.05;
+}
+
+function terrainColor(dir: THREE.Vector3, height: number): THREE.Color {
+  const h = height + coastlineJitter(dir);
+
+  if (h < SEA_LEVEL - COAST_WIDTH) {
+    outColor.copy(deepColor);
+  } else if (h < SEA_LEVEL + COAST_WIDTH) {
+    outColor.copy(deepColor).lerp(shoreColor, (h - (SEA_LEVEL - COAST_WIDTH)) / (COAST_WIDTH * 2));
+  } else if (h < SEA_LEVEL + 0.08) {
+    outColor.copy(shoreColor).lerp(landColor, (h - SEA_LEVEL) / 0.08);
+  } else {
+    outColor.copy(landColor).lerp(peakColor, Math.min((h - (SEA_LEVEL + 0.08)) / 0.25, 1));
   }
-  if (height < SEA_LEVEL + COAST_WIDTH) {
-    return outColor
-      .copy(deepColor)
-      .lerp(shoreColor, (height - (SEA_LEVEL - COAST_WIDTH)) / (COAST_WIDTH * 2));
-  }
-  if (height < SEA_LEVEL + 0.08) {
-    return outColor.copy(shoreColor).lerp(landColor, (height - SEA_LEVEL) / 0.08);
-  }
-  return outColor.copy(landColor).lerp(peakColor, Math.min((height - (SEA_LEVEL + 0.08)) / 0.25, 1));
+
+  const grain = paintGrain(dir);
+  return outColor.offsetHSL(0, 0, grain);
 }
 
 // Renders terrain color to a canvas once, matching the exact UV formula
@@ -95,7 +114,7 @@ export function buildTerrainTexture(width = 1024, height = 512): THREE.CanvasTex
       dir.set(-Math.cos(phi) * sinTheta, cosTheta, Math.sin(phi) * sinTheta);
 
       const h = heightAt(dir);
-      const c = terrainColor(h);
+      const c = terrainColor(dir, h);
 
       const idx = (py * width + px) * 4;
       image.data[idx] = Math.round(c.r * 255);
@@ -122,6 +141,21 @@ export function displaceSphere(geometry: THREE.SphereGeometry, radius: number, b
     dir.fromBufferAttribute(positionAttr, i).normalize();
     const h = displayHeight(heightAt(dir));
     const displaced = dir.multiplyScalar(radius + h * bumpHeight);
+    positionAttr.setXYZ(i, displaced.x, displaced.y, displaced.z);
+  }
+  geometry.computeVertexNormals();
+}
+
+// A perfectly smooth sphere reads as a billiard ball, not water — a tiny
+// bit of gentle undulation breaks up specular highlights into something
+// closer to real (if idealized/toy-like) water texture.
+export function rippleSphere(geometry: THREE.SphereGeometry, radius: number, amplitude: number) {
+  const positionAttr = geometry.attributes.position;
+  const dir = new THREE.Vector3();
+  for (let i = 0; i < positionAttr.count; i++) {
+    dir.fromBufferAttribute(positionAttr, i).normalize();
+    const ripple = fbm3(dir.x * 26 + 5.5, dir.y * 26 + 5.5, dir.z * 26 + 5.5, 2);
+    const displaced = dir.clone().multiplyScalar(radius + ripple * amplitude);
     positionAttr.setXYZ(i, displaced.x, displaced.y, displaced.z);
   }
   geometry.computeVertexNormals();
