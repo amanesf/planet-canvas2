@@ -46,6 +46,26 @@ export class SpatialHash {
   }
 }
 
+// Perturbs each vertex of an origin-centered geometry radially by a random
+// factor before it's translated/merged into a larger shape — a perfectly
+// smooth icosahedron/sphere reads as a rubber ball; scaling every vertex
+// by a slightly different amount breaks that up into the lumpy, irregular
+// silhouette of a real clumped material (foliage clusters, rolled cotton),
+// which is what actually reads as "handmade from a physical material"
+// instead of "geometric primitive".
+export function jitterGeometry(geometry: THREE.BufferGeometry, amount: number, rand: () => number) {
+  const position = geometry.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < position.count; i++) {
+    v.fromBufferAttribute(position, i);
+    const factor = 1 + (rand() - 0.5) * 2 * amount;
+    v.multiplyScalar(factor);
+    position.setXYZ(i, v.x, v.y, v.z);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+}
+
 // deterministic RNG so scatter patterns look the same every reload
 export function mulberry32(seed: number) {
   let a = seed;

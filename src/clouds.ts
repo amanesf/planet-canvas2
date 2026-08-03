@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { fbm3 } from './noise';
 import { heightAt, displayHeight } from './terrain';
-import { SpatialHash, mulberry32 } from './spatialHash';
+import { jitterGeometry, SpatialHash, mulberry32 } from './spatialHash';
+import { orientShadowDecal } from './shadow';
 
 // Low-frequency "weather system" noise — clouds cluster into patches
 // instead of scattering uniformly, like real cloud cover does.
@@ -19,6 +20,7 @@ function buildPuffGeometry(rand: () => number): THREE.BufferGeometry {
   for (let i = 0; i < lumps; i++) {
     const r = 0.45 + rand() * 0.5;
     const g = new THREE.SphereGeometry(r, 8, 6);
+    jitterGeometry(g, 0.16, rand); // hand-rolled cotton texture, not a smooth balloon
     g.translate((rand() - 0.5) * 1.5, (rand() - 0.5) * 0.35, (rand() - 0.5) * 0.7);
     parts.push(g);
   }
@@ -112,15 +114,12 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
     depthWrite: false,
   });
   const shadowMesh = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, points.length);
-  const planeNormal = new THREE.Vector3(0, 0, 1);
 
   points.forEach((p, i) => {
     const groundRadius = radius + displayHeight(heightAt(p), p) * bumpHeight + 0.003;
-    dummy.position.copy(p).multiplyScalar(groundRadius);
-    const align = new THREE.Quaternion().setFromUnitVectors(planeNormal, p);
-    const spin = new THREE.Quaternion().setFromAxisAngle(p, rand() * Math.PI * 2);
-    dummy.quaternion.copy(spin).multiply(align);
-    dummy.scale.setScalar(0.3 + rand() * 0.22);
+    const basePosition = p.clone().multiplyScalar(groundRadius);
+    const size = 0.3 + rand() * 0.22;
+    orientShadowDecal(dummy, basePosition, p, size, 1.3, rand() * Math.PI * 2);
     dummy.updateMatrix();
     shadowMesh.setMatrixAt(i, dummy.matrix);
   });

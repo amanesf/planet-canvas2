@@ -690,11 +690,24 @@ export function buildBumpTexture(width = 1536, height = 768): THREE.CanvasTextur
       } else {
         // layered detail: coarse clumps (foliage/boulder clusters), fine
         // grain (rock/sand texture), scaled down near the coast so the
-        // beach itself still reads smooth
+        // beach itself still reads smooth. Grain is pushed harder than a
+        // purely cosmetic touch-up would need — at this strength, raking
+        // light catches the raised specks and reads as a dry-brushed/
+        // textured-paste surface instead of a smooth painted gradient.
         const shoreFade = smoothstep(h, SEA_LEVEL, SEA_LEVEL + 0.03);
         const clumps = fbm3(dir.x * 45 + 8, dir.y * 45 + 8, dir.z * 45 + 8, 2);
         const grain = fbm3(dir.x * 140 + 22, dir.y * 140 + 22, dir.z * 140 + 22, 2);
-        v = 0.5 + (clumps * 0.14 + grain * 0.07) * shoreFade;
+        v = 0.5 + (clumps * 0.18 + grain * 0.11) * shoreFade;
+
+        // fine crystalline sparkle only on the highest, snowiest ground —
+        // real granular snow/frost catches light in tiny irregular
+        // flecks, not as a single smooth white gradient
+        const elevation = terracedElevation(h);
+        const snowiness = smoothstep(elevation, 0.2, TERRACE_MAX);
+        if (snowiness > 0) {
+          const sparkle = fbm3(dir.x * 300 + 91, dir.y * 300 + 91, dir.z * 300 + 91, 2);
+          v += sparkle * 0.06 * snowiness;
+        }
       }
 
       const gray = Math.round(Math.min(Math.max(v, 0), 1) * 255);
@@ -737,6 +750,34 @@ export function rippleSphere(geometry: THREE.SphereGeometry, radius: number, amp
     dir.fromBufferAttribute(positionAttr, i).normalize();
     const ripple = fbm3(dir.x * 26 + 5.5, dir.y * 26 + 5.5, dir.z * 26 + 5.5, 2);
     const displaced = dir.clone().multiplyScalar(radius + ripple * amplitude);
+    positionAttr.setXYZ(i, displaced.x, displaced.y, displaced.z);
+  }
+  geometry.computeVertexNormals();
+}
+
+// Real poured resin (or real water, via surface tension) doesn't meet a
+// solid edge as a flat plane — it climbs very slightly up against it. A
+// thin raised lip right where the ocean shell nears the coastline reads
+// as that meniscus instead of water looking like a flat sheet dropped on
+// top of the land. Reads the *land* height field to find "how close to
+// the coast is this ocean vertex", so it hugs the actual jagged coastline
+// rather than being a uniform ring at a fixed radius. Composes on top of
+// whatever radial displacement the geometry already has (rippleSphere,
+// etc.) instead of overwriting it, since it reads the vertex's current
+// radius rather than assuming a base one.
+export function applyCoastalMeniscus(geometry: THREE.SphereGeometry, amount: number) {
+  const positionAttr = geometry.attributes.position;
+  const dir = new THREE.Vector3();
+  const pos = new THREE.Vector3();
+  const coastReach = 0.03;
+  for (let i = 0; i < positionAttr.count; i++) {
+    pos.fromBufferAttribute(positionAttr, i);
+    const currentRadius = pos.length();
+    dir.copy(pos).normalize();
+    const distFromCoast = SEA_LEVEL - heightAt(dir);
+    if (distFromCoast < 0 || distFromCoast >= coastReach) continue;
+    const bump = (1 - distFromCoast / coastReach) * amount;
+    const displaced = dir.multiplyScalar(currentRadius + bump);
     positionAttr.setXYZ(i, displaced.x, displaced.y, displaced.z);
   }
   geometry.computeVertexNormals();

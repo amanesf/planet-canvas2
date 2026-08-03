@@ -11,7 +11,8 @@ import {
   temperatureAt,
   terracedElevation,
 } from './terrain';
-import { SpatialHash, mulberry32 } from './spatialHash';
+import { jitterGeometry, SpatialHash, mulberry32 } from './spatialHash';
+import { orientShadowDecal } from './shadow';
 
 type Kind = 'tree' | 'rock' | 'dune' | 'desertRock';
 
@@ -549,21 +550,17 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   });
   const shadowPoints: (ScatterPoint | DesertPoint)[] = [...points, ...desertPoints];
   const shadowMesh = new THREE.InstancedMesh(shadowGeometry, shadowMaterial, shadowPoints.length);
-  const planeNormal = new THREE.Vector3(0, 0, 1);
 
   shadowPoints.forEach((p, i) => {
     const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight + 0.0015;
-    dummy.position.copy(p.dir).multiplyScalar(surfaceRadius);
-    const align = new THREE.Quaternion().setFromUnitVectors(planeNormal, p.dir);
-    const spinQ = new THREE.Quaternion().setFromAxisAngle(p.dir, rand() * Math.PI * 2);
-    dummy.quaternion.copy(spinQ).multiply(align);
+    const basePosition = p.dir.clone().multiplyScalar(surfaceRadius);
     const size =
       p.kind === 'tree'
         ? 0.05 + rand() * 0.02
         : p.kind === 'dune'
           ? 0.09 + rand() * 0.05
           : 0.07 + rand() * 0.04;
-    dummy.scale.setScalar(size);
+    orientShadowDecal(dummy, basePosition, p.dir, size, 1.5, rand() * Math.PI * 2);
     dummy.updateMatrix();
     shadowMesh.setMatrixAt(i, dummy.matrix);
   });
@@ -582,6 +579,7 @@ function buildCanopyBlob(rand: () => number): THREE.BufferGeometry {
   for (let i = 0; i < lobes; i++) {
     const r = 0.024 + rand() * 0.022;
     const g = new THREE.IcosahedronGeometry(r, 1);
+    jitterGeometry(g, 0.22, rand); // irregular foliage-clump silhouette, not a smooth ball
     g.translate((rand() - 0.5) * 0.07, rand() * 0.02, (rand() - 0.5) * 0.07);
     parts.push(g);
   }

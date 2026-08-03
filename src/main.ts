@@ -2,7 +2,11 @@ import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import {
+  applyCoastalMeniscus,
   buildBumpTexture,
   buildOceanTexture,
   buildTerrainTexture,
@@ -13,18 +17,22 @@ import {
 } from './terrain';
 import { buildVegetation } from './vegetation';
 import { buildClouds } from './clouds';
+import { TiltShiftShader } from './tiltShift';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
   <div class="vignette"></div>
   <div class="ui">
-    <button id="mode-toggle" class="mode-button">⏸ 停止する</button>
+    <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
   </div>
 `;
 
 const RADIUS = 2;
 const BUMP_HEIGHT = 0.34; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
-const GLOBE_FLOAT_Y = 1.15; // resting height, leaves a visible gap above the stand
+// A real wood pedestal reads as the dominant, grounded object; the globe
+// should hover just slightly above it (a hint of the magnetic-levitation
+// idea), not float high overhead like a sci-fi prop.
+const GLOBE_FLOAT_Y = 0.95;
 
 // ---------- renderer / scene / camera ----------
 
@@ -76,6 +84,19 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.shadowMap.enabled = false;
 app.appendChild(renderer.domElement);
 
+// Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
+// shader rather than the stock, much heavier BokehPass). One extra
+// full-screen pass with a fixed 8-tap kernel — nowhere near the cost of a
+// second full scene render, but still an extra per-frame GPU cost this
+// project doesn't have a great deal of headroom for, so it stays modest
+// on purpose.
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const tiltShiftPass = new ShaderPass(TiltShiftShader);
+tiltShiftPass.renderToScreen = true;
+composer.addPass(tiltShiftPass);
+tiltShiftPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+
 // a generic light "room" environment for the glass ocean's reflections/
 // highlights — generated once at startup (PMREM), not a per-frame cost
 const pmremGenerator = new THREE.PMREMGenerator(renderer);
@@ -115,18 +136,20 @@ controls.target.set(0, TARGET_Y, 0);
 
 // ---------- lighting ----------
 
-// less ambient / more key-light contrast gives the surface a visible
-// light/shadow terminator again — flattening everything to fix the earlier
-// "gummy" glossiness also flattened the sense of form, and clearcoat (the
-// real source of that gumminess) is already dialed way down, so there's
-// room to bring contrast back without the candy highlights returning
-scene.add(new THREE.AmbientLight(0xfff1e0, 0.48));
+// A real diorama sits under one strong, slightly-raking desk lamp, not
+// flat, even studio light — low ambient + a punchy single key light is
+// what gives every surface a visible sharp light/shadow terminator
+// instead of the flat "everything is equally lit" CG read. The fake
+// contact-shadow decals (shadow.ts) point along this exact same light
+// direction, so the two reinforce each other as "one consistent light
+// source" instead of looking like unrelated effects.
+scene.add(new THREE.AmbientLight(0xfff1e0, 0.32));
 
-const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.6);
+const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.95);
 keyLight.position.set(4, 5, 3);
 scene.add(keyLight);
 
-const rimLight = new THREE.DirectionalLight(0xbfe0ff, 0.5);
+const rimLight = new THREE.DirectionalLight(0xbfe0ff, 0.38);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
 
@@ -166,6 +189,10 @@ globeGroup.add(globeMesh);
 // read as a soft gummy-candy jelly instead of a solid miniature material.
 const oceanGeometry = new THREE.SphereGeometry(seaLevelRadius(RADIUS, BUMP_HEIGHT), 96, 56);
 rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
+// a thin raised lip hugging the actual coastline, like poured resin (or
+// real water) climbing slightly against the land instead of meeting it
+// as a flat sheet
+applyCoastalMeniscus(oceanGeometry, 0.006);
 const waveTexture = buildWaveTexture();
 const oceanMaterial = new THREE.MeshPhysicalMaterial({
   map: buildOceanTexture(),
@@ -175,14 +202,18 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   bumpScale: 0.006,
   transparent: true,
   opacity: 0.95,
-  roughness: 0.35,
+  roughness: 0.3,
   metalness: 0,
-  // a strong clearcoat is what was reading as a hard candy-shell/gummy
-  // highlight regardless of the base roughness — dial it way back so
-  // sheen comes from soft, diffuse-ish reflections instead
-  clearcoat: 0.2,
-  clearcoatRoughness: 0.4,
-  envMapIntensity: 0.35,
+  // poured-epoxy-resin read: a strong, very smooth clearcoat gives the
+  // hard, glassy top layer real resin has, instead of reading as a
+  // painted-flat "lake" surface. Sharper clearcoat highlights (low
+  // clearcoatRoughness) rather than a soft/wide sheen is what actually
+  // sells "smooth cured epoxy" over "wet candy" — that came from the
+  // *base* roughness being too low, not the clearcoat itself.
+  clearcoat: 0.75,
+  clearcoatRoughness: 0.1,
+  ior: 1.5,
+  envMapIntensity: 0.4,
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 globeGroup.add(oceanMesh);
@@ -208,16 +239,60 @@ globeGroup.add(hazeMesh);
 // "evaporation + rain shadow" sky layer with an actual visible presence
 globeGroup.add(buildClouds(RADIUS, BUMP_HEIGHT));
 
-// ---------- stand: base + magnetic-looking glow ring, no axis ----------
+// ---------- stand: real wood pedestal + nameplate, globe hovers just
+// slightly above it (a hint of "magnetic levitation" kept, but the wood
+// itself — not a glowing ring — is now the dominant, grounded object) ----------
 
 const standGroup = new THREE.Group();
 scene.add(standGroup);
 
-const baseMaterial = new THREE.MeshStandardMaterial({
-  color: 0xe7cdb0,
-  roughness: 0.7,
-  metalness: 0.05,
-  envMapIntensity: 0.3, // the room env map was blowing the stand out to near-white
+// Simple procedural wood grain: a warm base tone with streaky darker
+// fibers running around the cylinder, plus a glossy clearcoat for the
+// "varnished tabletop display stand" read rather than flat painted wood.
+function buildWoodTexture(width = 512, height = 512): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+
+  const base = ctx.createLinearGradient(0, 0, width, 0);
+  base.addColorStop(0, '#7c5330');
+  base.addColorStop(0.5, '#9c6b3e');
+  base.addColorStop(1, '#7c5330');
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, width, height);
+
+  for (let i = 0; i < 46; i++) {
+    const y = Math.random() * height;
+    ctx.strokeStyle = `rgba(50, 28, 12, ${0.05 + Math.random() * 0.13})`;
+    ctx.lineWidth = 1 + Math.random() * 2.5;
+    ctx.beginPath();
+    let x = 0;
+    let yy = y;
+    ctx.moveTo(x, yy);
+    while (x < width) {
+      x += 16 + Math.random() * 26;
+      yy += (Math.random() - 0.5) * 16;
+      ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(3, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+const baseMaterial = new THREE.MeshPhysicalMaterial({
+  map: buildWoodTexture(),
+  roughness: 0.5,
+  metalness: 0.04,
+  clearcoat: 0.55,
+  clearcoatRoughness: 0.22,
+  envMapIntensity: 0.35,
 });
 
 const baseBottom = new THREE.Mesh(
@@ -237,13 +312,48 @@ baseTop.position.y = -1.65;
 baseTop.receiveShadow = true;
 standGroup.add(baseTop);
 
-// glowing ring hinting at the magnetic field holding the globe up,
-// floating in the gap between the stand and the globe
-const glowRingGeometry = new THREE.TorusGeometry(1.05, 0.05, 16, 64);
+// small brass nameplate on the front of the pedestal
+function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = 'rgba(60, 42, 16, 0.65)';
+  ctx.font = '600 56px "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('箱庭プラネット', width / 2, height / 2 + 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  return texture;
+}
+
+const plaqueMaterial = new THREE.MeshStandardMaterial({
+  color: 0xcda45e,
+  metalness: 0.85,
+  roughness: 0.32,
+  envMapIntensity: 0.6,
+});
+const plaqueBacking = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.32, 0.03), plaqueMaterial);
+plaqueBacking.position.set(0, -1.86, 1.78);
+standGroup.add(plaqueBacking);
+
+const plaqueTextMaterial = new THREE.MeshBasicMaterial({
+  map: buildPlaqueTexture(),
+  transparent: true,
+});
+const plaqueText = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.29), plaqueTextMaterial);
+plaqueText.position.set(0, -1.86, 1.797);
+standGroup.add(plaqueText);
+
+// A thin, understated glow ring — just a hint of the magnetic-levitation
+// idea now that the wood pedestal itself is the dominant grounded object,
+// not the sci-fi centerpiece it was before
+const glowRingGeometry = new THREE.TorusGeometry(1.05, 0.028, 16, 64);
 const glowRingMaterial = new THREE.MeshBasicMaterial({
   color: 0xffe5b8,
   transparent: true,
-  opacity: 0.55,
+  opacity: 0.3,
 });
 const glowRing = new THREE.Mesh(glowRingGeometry, glowRingMaterial);
 glowRing.rotation.x = Math.PI / 2;
@@ -253,9 +363,9 @@ standGroup.add(glowRing);
 // soft contact shadow blob cast onto the stand by the floating globe
 const shadowGeometry = new THREE.CircleGeometry(1.1, 48);
 const shadowMaterial = new THREE.MeshBasicMaterial({
-  color: 0x6b4a36,
+  color: 0x40281a,
   transparent: true,
-  opacity: 0.18,
+  opacity: 0.22,
 });
 const contactShadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
 contactShadow.rotation.x = -Math.PI / 2;
@@ -268,6 +378,8 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
+  tiltShiftPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
   // rescale the orbit distance (and its clamps) for the new aspect ratio,
   // preserving how zoomed-in the user currently is
@@ -288,7 +400,10 @@ let spinning = true;
 const toggleButton = document.querySelector<HTMLButtonElement>('#mode-toggle')!;
 toggleButton.addEventListener('click', () => {
   spinning = !spinning;
-  toggleButton.textContent = spinning ? '⏸ 停止する' : '▶ 回転する';
+  toggleButton.textContent = spinning ? '⏸' : '▶';
+  const label = spinning ? '回転を止める' : '回転を再開する';
+  toggleButton.title = label;
+  toggleButton.setAttribute('aria-label', label);
 });
 
 // ---------- animation loop ----------
@@ -302,8 +417,9 @@ function animate() {
     globeGroup.rotation.y += 0.0025 * 60 * (1 / 60);
   }
 
-  // gentle magnetic-levitation bob + a touch of tilt
-  globeGroup.position.y = GLOBE_FLOAT_Y + Math.sin(t * 1.1) * 0.06;
+  // gentle magnetic-levitation bob + a touch of tilt — subtler now that
+  // the wood pedestal (not the floating effect) is the visual anchor
+  globeGroup.position.y = GLOBE_FLOAT_Y + Math.sin(t * 1.1) * 0.035;
   globeGroup.rotation.z = Math.sin(t * 0.6) * 0.02;
 
   hazeMesh.rotation.y += 0.0006;
@@ -315,7 +431,7 @@ function animate() {
   contactShadow.scale.setScalar(1 + Math.sin(t * 1.1) * 0.03);
 
   controls.update();
-  renderer.render(scene, camera);
+  composer.render();
   requestAnimationFrame(animate);
 }
 
