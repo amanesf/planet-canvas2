@@ -248,7 +248,7 @@ export function buildVegetation(
   // real forest canopy is handled separately below as a dense connected
   // mass, not as individually-spaced trees, so savanna can stay properly
   // sparse without looking like "not enough trees yet"
-  const points = scatterPoints(budget(60000), spacing(0.09), rand);
+  const points = scatterPoints(budget(60000), spacing(0.115), rand);
   const trees = points.filter((p) => p.kind === 'tree');
   const rocks = points.filter((p) => p.kind === 'rock');
 
@@ -399,7 +399,7 @@ export function buildVegetation(
       dummy.scale.set(0.5 + rand() * 1.0, 0.4 + rand() * 0.5, 0.5 + rand() * 1.0);
       dummy.updateMatrix();
       rockMesh.setMatrixAt(i, dummy.matrix);
-      rockColor.setHSL(0.075 + rand() * 0.03, 0.16 + rand() * 0.07, 0.3 + rand() * 0.1, THREE.SRGBColorSpace);
+      rockColor.setHSL(0.08 + rand() * 0.03, 0.13 + rand() * 0.06, 0.36 + rand() * 0.1, THREE.SRGBColorSpace);
       rockMesh.setColorAt(i, rockColor);
     });
     rockMesh.instanceMatrix.needsUpdate = true;
@@ -455,7 +455,7 @@ export function buildVegetation(
   // per clump (each one is several overlapping lobes), but the ground
   // shows through between them the way it does in a real miniature.
 
-  const forestPoints = scatterForest(budget(260000), spacing(0.026), rand);
+  const forestPoints = scatterForest(budget(300000), spacing(0.021), rand);
   const canopyVariantCount = 3;
   const canopyVariants = Array.from({ length: canopyVariantCount }, () =>
     buildCanopyBlob(rand, canopyDetail),
@@ -480,7 +480,7 @@ export function buildVegetation(
       // the same size, which is what made the flock read as moulded beads
       // laid in rows rather than as scattered material
       const r0 = rand();
-      const scale = 0.72 + r0 * r0 * 1.25;
+      const scale = 0.6 + r0 * r0 * 1.0;
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);

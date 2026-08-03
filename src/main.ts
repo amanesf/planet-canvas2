@@ -41,20 +41,60 @@ const QUALITY = settingsFor(TIER);
 //
 // Yielding between steps does not make the work any smaller, but it hands
 // the browser back often enough to stay alive and to show progress.
-// Yielding also gives the loading text a chance to say where it has got
-// to. Twenty seconds of an unchanging "組み立て中…" is indistinguishable
-// from a page that has hung, which is exactly how it was read.
-const BUILD_STEPS = 8;
+// Yielding also gives the loading caption a chance to say where it has got
+// to. An unchanging "組み立て中…" is indistinguishable from a page that has
+// hung, which is exactly how it was read — so the caption carries the step,
+// the elapsed seconds and the quality tier. The tier in particular is the
+// one fact worth having when a device behaves differently from every device
+// it was tested on.
+const BUILD_STEPS = 9;
 let buildStep = 0;
+const buildStartedAt = performance.now();
+
+function setStatus(text: string): void {
+  const el = document.querySelector<HTMLDivElement>('#loading');
+  if (el) el.textContent = text;
+}
+
+// The build advances on whichever comes first: the next animation frame,
+// or a short timer.
+//
+// requestAnimationFrame alone was a real trap. Browsers do not fire it for
+// a hidden tab — so switching away from a page that takes fifteen seconds
+// to assemble suspends the build at whatever step it had reached, and it
+// never resumes even when you come back, because the promise that step is
+// waiting on has already been abandoned. The caption sits there forever.
+// The same happens wherever rAF is throttled hard. The timer guarantees
+// progress; the frame callback is still preferred when the page is visible,
+// because it means each step gets painted.
 const yieldToBrowser = (label?: string) =>
   new Promise<void>((resolve) => {
     if (label) {
       buildStep++;
-      const el = document.querySelector<HTMLDivElement>('#loading');
-      if (el) el.textContent = `組み立て中… ${label} (${buildStep}/${BUILD_STEPS})`;
+      const seconds = ((performance.now() - buildStartedAt) / 1000).toFixed(1);
+      setStatus(`組み立て中… ${label} (${buildStep}/${BUILD_STEPS}) ${seconds}s · ${TIER}`);
     }
-    requestAnimationFrame(() => resolve());
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(finish);
+    window.setTimeout(finish, 40);
   });
+
+// A build that throws used to leave the caption up forever, with no way to
+// tell a failure from a slow phone. Anything unhandled now says so on
+// screen — including the case where the GPU drops the context and there is
+// no cheaper tier left to retry at, which otherwise ends as a dead canvas
+// under a caption that never changes.
+window.addEventListener('error', (event) => {
+  setStatus(`読み込みに失敗しました: ${event.message}`);
+});
+window.addEventListener('unhandledrejection', (event) => {
+  setStatus(`読み込みに失敗しました: ${String(event.reason)}`);
+});
 
 const RADIUS = 2;
 const BUMP_HEIGHT = 0.36; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
@@ -204,7 +244,9 @@ pmremGenerator.dispose();
 
 // A lost context now comes back at a cheaper tier rather than rebuilding
 // the scene that lost it — see quality.ts.
-installContextLossRecovery(renderer.domElement, TIER);
+installContextLossRecovery(renderer.domElement, TIER, () =>
+  setStatus('この端末では表示できませんでした（WebGL が停止しました）'),
+);
 
 // ---------- controls: pinch / wheel zoom, drag to look around ----------
 
@@ -284,6 +326,7 @@ scene.add(benchLamp);
 
 // ---------- globe: displaced sphere, crisp painted terrain texture ----------
 
+await yieldToBrowser('作業台');
 scene.add(buildWorkshop());
 
 const globeGroup = new THREE.Group();

@@ -71,7 +71,11 @@ function downgrade(tier: QualityTier): QualityTier | null {
  * there is nothing left to give up, so stop reloading and leave the canvas
  * as it is rather than trapping the page in a loop.
  */
-export function installContextLossRecovery(canvas: HTMLCanvasElement, tier: QualityTier): void {
+export function installContextLossRecovery(
+  canvas: HTMLCanvasElement,
+  tier: QualityTier,
+  onGaveUp?: () => void,
+): void {
   canvas.addEventListener(
     'webglcontextlost',
     (event) => {
@@ -79,6 +83,7 @@ export function installContextLossRecovery(canvas: HTMLCanvasElement, tier: Qual
       const next = downgrade(tier);
       if (!next) {
         console.warn('WebGL context lost at the lowest quality tier — not reloading again');
+        onGaveUp?.();
         return;
       }
       console.warn(`WebGL context lost — reloading at "${next}" quality`);

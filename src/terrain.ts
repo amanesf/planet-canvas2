@@ -33,7 +33,7 @@ const badlandsColorC = new THREE.Color('#5e463a');
 // whole sea.
 const deepOceanColor = new THREE.Color('#0e3a5c');
 const midOceanColor = new THREE.Color('#186a95');
-const shallowOceanColor = new THREE.Color('#43b6c9');
+const shallowOceanColor = new THREE.Color('#3ba3b6');
 
 // The seabed, which until now was painted one flat blue on the assumption
 // that nothing would ever see it. In the reference photograph the resin is
@@ -770,11 +770,16 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
 }
 
 function oceanColor(dir: THREE.Vector3, height: number): THREE.Color {
+  // Turquoise belongs to the last stretch of the shelf, not to most of the
+  // sea. Splitting the ramp at 0.6 put the pale colour over everything
+  // within reach of a continent and left a broad milky ring around every
+  // landmass; in the reference the bright water is a narrow rim and the
+  // basin behind it stays a deep blue.
   const t = smoothstep(height, -0.2, SEA_LEVEL);
-  if (t < 0.6) {
-    outColor.copy(deepOceanColor).lerp(midOceanColor, t / 0.6);
+  if (t < 0.86) {
+    outColor.copy(deepOceanColor).lerp(midOceanColor, t / 0.86);
   } else {
-    outColor.copy(midOceanColor).lerp(shallowOceanColor, (t - 0.6) / 0.4);
+    outColor.copy(midOceanColor).lerp(shallowOceanColor, (t - 0.86) / 0.14);
   }
   // Large-scale tint variation. A pour of tinted resin is never perfectly
   // even — pigment settles and swirls as it cures — and without that the
