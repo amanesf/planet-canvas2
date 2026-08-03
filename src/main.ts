@@ -85,9 +85,9 @@ controls.target.set(0, 0.7, 0);
 
 // ---------- lighting ----------
 
-scene.add(new THREE.AmbientLight(0xfff1e0, 0.4));
+scene.add(new THREE.AmbientLight(0xfff1e0, 0.5));
 
-const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.7);
+const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.15);
 keyLight.position.set(4, 5, 3);
 scene.add(keyLight);
 
@@ -110,9 +110,9 @@ const terrainTexture = buildTerrainTexture();
 
 const globeMaterial = new THREE.MeshStandardMaterial({
   map: terrainTexture,
-  roughness: 0.65,
+  roughness: 0.88,
   metalness: 0.02,
-  envMapIntensity: 0.25, // land should read matte, not shiny
+  envMapIntensity: 0.15, // painted-clay matte, not shiny/rubbery
 });
 
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
@@ -120,19 +120,23 @@ globeMesh.castShadow = true;
 globeMesh.receiveShadow = true;
 globeGroup.add(globeMesh);
 
-// glassy ocean shell sitting right at sea level, covering the flattened
-// seabed below — glossy + semi-transparent + env-reflective reads as
-// "glass water" without the expensive transmission render pass
+// glossy resin-like ocean shell sitting right at sea level, covering the
+// flattened seabed below. Mostly opaque with a hard glassy clearcoat reads
+// as poured diorama resin; the earlier more-transparent/liquid version
+// read as a soft gummy-candy jelly instead of a solid miniature material.
 const oceanGeometry = new THREE.SphereGeometry(seaLevelRadius(RADIUS, BUMP_HEIGHT), 96, 56);
 const oceanMaterial = new THREE.MeshPhysicalMaterial({
-  color: 0x4fc3e8,
+  color: 0x2f9fd0,
   transparent: true,
-  opacity: 0.8,
-  roughness: 0.08,
+  opacity: 0.95,
+  roughness: 0.35,
   metalness: 0,
-  clearcoat: 1,
-  clearcoatRoughness: 0.06,
-  envMapIntensity: 1.2,
+  // a strong clearcoat is what was reading as a hard candy-shell/gummy
+  // highlight regardless of the base roughness — dial it way back so
+  // sheen comes from soft, diffuse-ish reflections instead
+  clearcoat: 0.2,
+  clearcoatRoughness: 0.4,
+  envMapIntensity: 0.35,
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 globeGroup.add(oceanMesh);
@@ -156,8 +160,8 @@ scene.add(standGroup);
 
 const baseMaterial = new THREE.MeshStandardMaterial({
   color: 0xe7cdb0,
-  roughness: 0.55,
-  metalness: 0.15,
+  roughness: 0.7,
+  metalness: 0.05,
   envMapIntensity: 0.3, // the room env map was blowing the stand out to near-white
 });
 
