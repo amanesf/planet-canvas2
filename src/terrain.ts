@@ -19,6 +19,8 @@ const desertColor = new THREE.Color('#bd9a5f');
 const rockColor = new THREE.Color('#7d7264');
 const snowColor = new THREE.Color('#e9eef0');
 const riverColor = new THREE.Color('#3184a0');
+const tundraColor = new THREE.Color('#8b8a6e');
+const iceColor = new THREE.Color('#dce8ea');
 
 const deepOceanColor = new THREE.Color('#0c4a5e');
 const midOceanColor = new THREE.Color('#1c6f7f');
@@ -54,20 +56,47 @@ export function heightAt(dir: THREE.Vector3): number {
   return Math.max(n, -0.2); // flatten the deep ocean floor a bit
 }
 
-// An independent noise field for climate variety — patches of desert amid
-// the greenery, the way the reference photo shows a tan Sahara next to
-// green elsewhere in the *same* continent, instead of every lowland being
-// forest. Frequency needs to be higher than the continent-scale terrain
-// noise, or a whole continent can land inside one lobe of "dry" and read
-// as entirely desert instead of having patches within it.
+// Climate variety, in two layers: a broad, low-frequency "climate belt"
+// (so a real Sahara-scale desert can span a huge stretch of a continent,
+// not just a patch) blended with finer noise for patchy edges within it —
+// the way the reference photo shows a tan Sahara next to green elsewhere
+// in the *same* continent, but the Sahara itself is enormous, not a spot.
 export function aridityAt(dir: THREE.Vector3): number {
-  return fbm3(dir.x * 2.6 + 51.3, dir.y * 2.6 + 51.3, dir.z * 2.6 + 51.3, 3);
+  const belt = fbm3(dir.x * 0.7 + 400, dir.y * 0.7 + 400, dir.z * 0.7 + 400, 2);
+  const local = fbm3(dir.x * 2.6 + 51.3, dir.y * 2.6 + 51.3, dir.z * 2.6 + 51.3, 3);
+  return belt * 0.65 + local * 0.35;
 }
 
 // same threshold biomeColor uses to start blending toward desert — shared
 // so vegetation placement (dunes/dry rock vs. grass/trees) agrees with
 // what the paint underneath actually looks like
-export const DESERT_ARIDITY_THRESHOLD = 0.14;
+export const DESERT_ARIDITY_THRESHOLD = 0.1;
+
+// Latitude-driven climate (Whittaker's temperature axis), like the design
+// memo originally called for: hot at the equator, cold at the poles, and
+// colder again with elevation — with a little noise so the ice line isn't
+// a perfect circle. dir.y stands in for latitude, matching how the rest
+// of the terrain already uses it.
+export function temperatureAt(dir: THREE.Vector3, elevation: number): number {
+  const latitude = 1 - Math.abs(dir.y);
+  const wobble = fbm3(dir.x * 1.3 + 700, dir.y * 1.3 + 700, dir.z * 1.3 + 700, 2) * 0.18;
+  const elevationCooling = Math.max(elevation, 0) * 1.6;
+  return latitude + wobble - elevationCooling;
+}
+
+export const ICE_TEMPERATURE = -0.14;
+const TUNDRA_TEMPERATURE = 0.09;
+
+// A rare, huge-scale bump that pushes one or two regions dramatically
+// higher than everywhere else — real mountain building isn't evenly
+// distributed the way plain elevation noise implies; a couple of specific
+// belts (Himalaya, Andes) tower over everything else on the planet.
+// Frequency is low enough that only a small fraction of the sphere ever
+// sees a high value here at all.
+function orogenyAt(dir: THREE.Vector3): number {
+  return fbm3(dir.x * 0.6 + 900, dir.y * 0.6 + 900, dir.z * 0.6 + 900, 2);
+}
+const OROGENY_THRESHOLD = 0.32;
 
 // water is flattened to sea level on the mesh so it doesn't visibly
 // inherit the terrain noise as bumpy waves — only land pokes up. Land is
@@ -118,9 +147,15 @@ export function terracedElevation(height: number): number {
   return terraceCurve(t) * TERRACE_MAX;
 }
 
-export function displayHeight(height: number): number {
+// dir is needed to look up whether this point sits in a rare "great
+// range" (Himalaya-scale) zone — see orogenyAt above. Paint/coloring
+// still uses plain terracedElevation, so a dramatic peak still gets
+// colored by its normal elevation percentile (naturally reads as rock/
+// snow already); only the geometry shoots up further.
+export function displayHeight(height: number, dir: THREE.Vector3): number {
   if (height < SEA_LEVEL) return UNDERWATER_HEIGHT;
-  return SEA_LEVEL + terracedElevation(height) * LAND_BOOST;
+  const orogenyBoost = 1 + smoothstep(orogenyAt(dir), OROGENY_THRESHOLD, OROGENY_THRESHOLD + 0.12) * 2.4;
+  return SEA_LEVEL + terracedElevation(height) * LAND_BOOST * orogenyBoost;
 }
 
 export function seaLevelRadius(radius: number, bumpHeight: number): number {
@@ -154,10 +189,24 @@ function paintGrain(dir: THREE.Vector3): number {
 // Takes the already-terraced elevation (0..TERRACE_MAX) so each color
 // band's edge lines up exactly with a geometric terrace edge — the
 // "layers are individually painted" read this is going for.
-function biomeColor(elevation: number, aridity: number): THREE.Color {
+function biomeColor(elevation: number, aridity: number, temperature: number): THREE.Color {
+  // polar ice caps: cold enough, and it's ice regardless of elevation or
+  // aridity — Antarctica doesn't care if it would otherwise be a beach
+  if (temperature < ICE_TEMPERATURE) {
+    return outColor.copy(iceColor);
+  }
+
   const desertAmount = smoothstep(aridity, 0.12, 0.26);
 
   if (elevation < 0.15) {
+    // cold + dry lowland reads as bare tundra instead of green — being
+    // *cold* isn't the same as being *dry*, so this stacks with (and can
+    // override) the desert blend below rather than replacing it outright
+    if (temperature < TUNDRA_TEMPERATURE) {
+      const coldness = smoothstep(temperature, TUNDRA_TEMPERATURE, ICE_TEMPERATURE);
+      outColor.copy(landColor).lerp(tundraColor, coldness);
+      return outColor.lerp(desertColor, desertAmount * (1 - coldness));
+    }
     // sand only right at the coast — being *low* elevation isn't the same
     // as being *dry*. A wide shore→green transition was tying the two
     // together, so any low flat continent read as one giant beach
@@ -189,16 +238,19 @@ function coastalAO(height: number): number {
 
 function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number): THREE.Color {
   const h = height + coastlineJitter(dir);
+  const temperature = temperatureAt(dir, terracedElevation(Math.max(h, SEA_LEVEL)));
+  const seaIce = smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE - 0.08);
 
   let color: THREE.Color;
   if (h < SEA_LEVEL - COAST_WIDTH) {
     // hidden beneath the glass ocean shell almost all the time, but the
     // shell is very slightly transparent, so keep this in the same family
-    color = outColor.copy(midOceanColor);
+    color = outColor.copy(midOceanColor).lerp(iceColor, seaIce);
   } else if (h < SEA_LEVEL + COAST_WIDTH) {
     color = outColor.copy(midOceanColor).lerp(shoreColor, (h - (SEA_LEVEL - COAST_WIDTH)) / (COAST_WIDTH * 2));
+    color.lerp(iceColor, seaIce);
   } else {
-    color = biomeColor(terracedElevation(h), aridityAt(dir));
+    color = biomeColor(terracedElevation(h), aridityAt(dir), temperature);
     if (riverStrength > 0) color.lerp(riverColor, riverStrength);
     color.offsetHSL(0, 0, coastalAO(h));
   }
@@ -213,6 +265,11 @@ function oceanColor(dir: THREE.Vector3, height: number): THREE.Color {
   } else {
     outColor.copy(midOceanColor).lerp(shallowOceanColor, (t - 0.6) / 0.4);
   }
+  // polar pack ice — a real ice cap freezes the sea around it too, not
+  // just the land
+  const temperature = temperatureAt(dir, 0);
+  const seaIce = smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE - 0.08);
+  outColor.lerp(iceColor, seaIce);
   return outColor.offsetHSL(0, 0, paintGrain(dir) * 0.6);
 }
 
@@ -468,7 +525,7 @@ export function displaceSphere(geometry: THREE.SphereGeometry, radius: number, b
   const dir = new THREE.Vector3();
   for (let i = 0; i < positionAttr.count; i++) {
     dir.fromBufferAttribute(positionAttr, i).normalize();
-    const h = displayHeight(heightAt(dir));
+    const h = displayHeight(heightAt(dir), dir);
     const displaced = dir.multiplyScalar(radius + h * bumpHeight);
     positionAttr.setXYZ(i, displaced.x, displaced.y, displaced.z);
   }

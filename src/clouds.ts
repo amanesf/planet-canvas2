@@ -115,7 +115,7 @@ export function buildClouds(radius: number, bumpHeight: number): THREE.Group {
   const planeNormal = new THREE.Vector3(0, 0, 1);
 
   points.forEach((p, i) => {
-    const groundRadius = radius + displayHeight(heightAt(p)) * bumpHeight + 0.003;
+    const groundRadius = radius + displayHeight(heightAt(p), p) * bumpHeight + 0.003;
     dummy.position.copy(p).multiplyScalar(groundRadius);
     const align = new THREE.Quaternion().setFromUnitVectors(planeNormal, p);
     const spin = new THREE.Quaternion().setFromAxisAngle(p, rand() * Math.PI * 2);

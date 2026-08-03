@@ -6,6 +6,7 @@ import {
   displayHeight,
   heightAt,
   SEA_LEVEL,
+  temperatureAt,
   terracedElevation,
 } from './terrain';
 import { SpatialHash, mulberry32 } from './spatialHash';
@@ -17,6 +18,11 @@ type Kind = 'tree' | 'rock' | 'dune' | 'desertRock';
 // threshold: savanna — sparse, individually-visible trees are correct
 // there, not a mistake to "fix" with more density.
 const FOREST_ARIDITY_MAX = 0.05;
+
+// Below this temperature it's tundra/ice country — too cold for forest,
+// savanna, or desert dressing; those zones stay bare (the paint itself
+// already reads as tundra/ice, see terrain.ts's biomeColor).
+const COLD_TEMPERATURE_LIMIT = 0.09;
 
 interface ScatterPoint {
   dir: THREE.Vector3;
@@ -46,8 +52,10 @@ function scatterPoints(candidateCount: number, minSpacing: number, rand: () => n
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
 
+    const elevation = terracedElevation(height);
     let kind: Kind;
-    if (terracedElevation(height) < 0.15) {
+    if (elevation < 0.15) {
+      if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // tundra/ice — stays bare
       const aridity = aridityAt(dir);
       if (aridity > DESERT_ARIDITY_THRESHOLD) continue; // handled by the denser scatterDesert pass
       if (aridity <= FOREST_ARIDITY_MAX) continue; // lush forest zone — covered by the canopy pass instead
@@ -91,7 +99,9 @@ function scatterGrass(candidateCount: number, minSpacing: number, rand: () => nu
 
     const height = heightAt(dir);
     if (height < SEA_LEVEL + 0.012) continue; // keep the shoreline clear
-    if (terracedElevation(height) > 0.16) continue; // grass, not alpine scrub
+    const elevation = terracedElevation(height);
+    if (elevation > 0.16) continue; // grass, not alpine scrub
+    if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // tundra/ice — stays bare
     const aridity = aridityAt(dir);
     if (aridity > DESERT_ARIDITY_THRESHOLD) continue; // no grass in the desert
     if (aridity <= FOREST_ARIDITY_MAX) continue; // forest floor is covered by canopy instead
@@ -130,7 +140,9 @@ function scatterForest(candidateCount: number, minSpacing: number, rand: () => n
 
     const height = heightAt(dir);
     if (height < SEA_LEVEL + 0.02) continue; // clear shoreline
-    if (terracedElevation(height) > 0.15) continue; // canopy stays off the rocky slopes
+    const elevation = terracedElevation(height);
+    if (elevation > 0.15) continue; // canopy stays off the rocky slopes
+    if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // too cold for forest — taiga/tundra instead
     if (aridityAt(dir) > FOREST_ARIDITY_MAX) continue; // savanna/desert get their own treatment
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
@@ -165,7 +177,9 @@ function scatterDesert(candidateCount: number, minSpacing: number, rand: () => n
 
     const height = heightAt(dir);
     if (height < SEA_LEVEL + 0.015) continue;
-    if (terracedElevation(height) > 0.15) continue;
+    const elevation = terracedElevation(height);
+    if (elevation > 0.15) continue;
+    if (temperatureAt(dir, elevation) < COLD_TEMPERATURE_LIMIT) continue; // cold + dry is tundra, not a sand desert
     if (aridityAt(dir) <= DESERT_ARIDITY_THRESHOLD) continue;
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
@@ -319,7 +333,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     if (pts.length === 0) return;
     const foliageMesh = new THREE.InstancedMesh(variant.geometry, foliageMaterial, pts.length);
     pts.forEach((p, i) => {
-      const surfaceRadius = radius + displayHeight(p.height) * bumpHeight;
+      const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       const scale = 0.6 + rand() * 0.75;
       orient(position, p.dir, rand() * Math.PI * 2);
@@ -362,7 +376,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     if (pts.length === 0) return;
     const rockMesh = new THREE.InstancedMesh(geo, rockMaterial, pts.length);
     pts.forEach((p, i) => {
-      const surfaceRadius = radius + displayHeight(p.height) * bumpHeight;
+      const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.7, rand() * Math.PI * 2);
       dummy.scale.set(0.7 + rand() * 0.9, 0.6 + rand() * 0.7, 0.7 + rand() * 0.9);
@@ -388,7 +402,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const duneMesh = new THREE.InstancedMesh(duneGeometry, duneMaterial, dunes.length);
   const duneColor = new THREE.Color();
   dunes.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height) * bumpHeight;
+    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
     const position = p.dir.clone().multiplyScalar(surfaceRadius);
     orient(position, p.dir, rand() * Math.PI * 2);
     dummy.scale.set(0.6 + rand() * 1.1, 0.5 + rand() * 0.7, 0.6 + rand() * 1.1);
@@ -411,7 +425,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const desertRockMesh = new THREE.InstancedMesh(desertRockGeometry, desertRockMaterial, desertRocks.length);
   const desertRockColor = new THREE.Color();
   desertRocks.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height) * bumpHeight;
+    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
     const position = p.dir.clone().multiplyScalar(surfaceRadius);
     orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.6, rand() * Math.PI * 2);
     dummy.scale.set(0.6 + rand() * 0.8, 0.55 + rand() * 0.6, 0.6 + rand() * 0.8);
@@ -436,7 +450,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
   const screeColor = new THREE.Color();
   screePoints.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height) * bumpHeight;
+    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
     const position = p.dir.clone().multiplyScalar(surfaceRadius);
     orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.5, rand() * Math.PI * 2);
     dummy.scale.set(0.6 + rand() * 1.0, 0.5 + rand() * 0.7, 0.6 + rand() * 1.0);
@@ -473,7 +487,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     if (pts.length === 0) return;
     const mesh = new THREE.InstancedMesh(canopyVariants[vi], canopyMaterial, pts.length);
     pts.forEach((p, i) => {
-      const surfaceRadius = radius + displayHeight(p.height) * bumpHeight;
+      const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2);
       const scale = 0.85 + rand() * 0.6;
@@ -501,7 +515,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const grassMesh = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassPoints.length);
   const grassColor = new THREE.Color();
   grassPoints.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height) * bumpHeight;
+    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight;
     const position = p.dir.clone().multiplyScalar(surfaceRadius);
     orient(position, p.dir, rand() * Math.PI * 2);
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);
@@ -532,7 +546,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const planeNormal = new THREE.Vector3(0, 0, 1);
 
   shadowPoints.forEach((p, i) => {
-    const surfaceRadius = radius + displayHeight(p.height) * bumpHeight + 0.0015;
+    const surfaceRadius = radius + displayHeight(p.height, p.dir) * bumpHeight + 0.0015;
     dummy.position.copy(p.dir).multiplyScalar(surfaceRadius);
     const align = new THREE.Quaternion().setFromUnitVectors(planeNormal, p.dir);
     const spinQ = new THREE.Quaternion().setFromAxisAngle(p.dir, rand() * Math.PI * 2);
