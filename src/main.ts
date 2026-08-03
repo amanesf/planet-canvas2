@@ -11,7 +11,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 `;
 
 const RADIUS = 2;
-const BUMP_HEIGHT = 0.3; // exaggerated on purpose — cute over accurate
+const BUMP_HEIGHT = 0.22; // exaggerated on purpose — cute over accurate, but sphere reads as round first
 const GLOBE_FLOAT_Y = 1.15; // resting height, leaves a visible gap above the stand
 
 // ---------- renderer / scene / camera ----------
@@ -26,7 +26,16 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   100,
 );
-camera.position.set(0, 1.4, 9.5);
+
+// on a narrow portrait screen the globe + stand need more breathing room
+// horizontally, so pull the camera back as the viewport gets taller than wide
+const BASE_CAMERA_DISTANCE = 9.5;
+function cameraDistanceForViewport() {
+  const aspect = window.innerWidth / window.innerHeight;
+  if (aspect >= 1) return BASE_CAMERA_DISTANCE;
+  return BASE_CAMERA_DISTANCE / Math.max(aspect, 0.45);
+}
+camera.position.set(0, 1.4, cameraDistanceForViewport());
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -41,8 +50,9 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enablePan = false;
 controls.enableZoom = true;
 controls.enableRotate = true;
-controls.minDistance = 5;
-controls.maxDistance = 14;
+let viewportScale = cameraDistanceForViewport() / BASE_CAMERA_DISTANCE;
+controls.minDistance = 5 * viewportScale;
+controls.maxDistance = 14 * viewportScale;
 controls.minPolarAngle = Math.PI * 0.15;
 controls.maxPolarAngle = Math.PI * 0.85;
 controls.enableDamping = true;
@@ -51,9 +61,9 @@ controls.target.set(0, 0.7, 0);
 
 // ---------- lighting ----------
 
-scene.add(new THREE.AmbientLight(0xfff1e0, 0.55));
+scene.add(new THREE.AmbientLight(0xfff1e0, 0.4));
 
-const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.4);
+const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.7);
 keyLight.position.set(4, 5, 3);
 keyLight.castShadow = true;
 keyLight.shadow.mapSize.set(1024, 1024);
@@ -69,35 +79,50 @@ const globeGroup = new THREE.Group();
 globeGroup.position.set(0, GLOBE_FLOAT_Y, 0);
 scene.add(globeGroup);
 
-const geometry = new THREE.IcosahedronGeometry(RADIUS, 24);
+const geometry = new THREE.IcosahedronGeometry(RADIUS, 44);
 const positionAttr = geometry.attributes.position;
 const colors = new Float32Array(positionAttr.count * 3);
 
-const deepColor = new THREE.Color('#8fd3e8'); // pastel sea
-const shoreColor = new THREE.Color('#f6ecc9'); // sandy
-const landColor = new THREE.Color('#b7dfa0'); // meadow
-const peakColor = new THREE.Color('#f4c9d8'); // sugar-pink peak
+const deepColor = new THREE.Color('#3fb6e0'); // saturated sea
+const shoreColor = new THREE.Color('#ffe58a'); // warm sand
+const landColor = new THREE.Color('#6bcf5a'); // vivid meadow
+const peakColor = new THREE.Color('#ff8fc2'); // candy-pink peak
 
 const tmp = new THREE.Vector3();
 for (let i = 0; i < positionAttr.count; i++) {
   tmp.fromBufferAttribute(positionAttr, i).normalize();
 
-  // low-frequency, low-octave noise only — big rounded landforms, no wrinkles
+  // higher frequency so bumps read as continents/mountains, not a
+  // whole-sphere ovoid distortion (that's what was making it look like
+  // a potato) — the low-frequency term is now just a mild base wobble
   const n =
-    fbm3(tmp.x * 0.8, tmp.y * 0.8, tmp.z * 0.8, 3) * 0.75 +
-    fbm3(tmp.x * 1.7 + 9.2, tmp.y * 1.7 + 9.2, tmp.z * 1.7 + 9.2, 2) * 0.25;
+    fbm3(tmp.x * 2.4, tmp.y * 2.4, tmp.z * 2.4, 4) * 0.65 +
+    fbm3(tmp.x * 5 + 9.2, tmp.y * 5 + 9.2, tmp.z * 5 + 9.2, 3) * 0.25 +
+    fbm3(tmp.x * 1.1 + 3.7, tmp.y * 1.1 + 3.7, tmp.z * 1.1 + 3.7, 2) * 0.1;
 
   const height = Math.max(n, -0.2); // flatten deep ocean floor a bit
-  const displaced = tmp.clone().multiplyScalar(RADIUS + height * BUMP_HEIGHT);
+
+  // sea level sits well above the noise midpoint so oceans dominate,
+  // and the coastline itself is a near-hard cutoff (a real map doesn't
+  // fade gradually from water to sand over a wide band)
+  const SEA_LEVEL = 0.16;
+  const COAST_WIDTH = 0.012;
+
+  // water is a flat shell — only land pokes up above sea level, so the
+  // ocean doesn't visibly inherit the terrain noise as bumpy waves
+  const displayHeight = height < SEA_LEVEL ? SEA_LEVEL - 0.02 : height;
+  const displaced = tmp.clone().multiplyScalar(RADIUS + displayHeight * BUMP_HEIGHT);
   positionAttr.setXYZ(i, displaced.x, displaced.y, displaced.z);
 
   const c = new THREE.Color();
-  if (height < 0.05) {
-    c.copy(deepColor).lerp(shoreColor, (height + 0.2) / 0.25);
-  } else if (height < 0.22) {
-    c.copy(shoreColor).lerp(landColor, height / 0.22);
+  if (height < SEA_LEVEL - COAST_WIDTH) {
+    c.copy(deepColor);
+  } else if (height < SEA_LEVEL + COAST_WIDTH) {
+    c.copy(deepColor).lerp(shoreColor, (height - (SEA_LEVEL - COAST_WIDTH)) / (COAST_WIDTH * 2));
+  } else if (height < SEA_LEVEL + 0.08) {
+    c.copy(shoreColor).lerp(landColor, (height - SEA_LEVEL) / 0.08);
   } else {
-    c.copy(landColor).lerp(peakColor, Math.min((height - 0.22) / 0.2, 1));
+    c.copy(landColor).lerp(peakColor, Math.min((height - (SEA_LEVEL + 0.08)) / 0.25, 1));
   }
   colors[i * 3] = c.r;
   colors[i * 3 + 1] = c.g;
@@ -108,7 +133,7 @@ geometry.computeVertexNormals();
 
 const globeMaterial = new THREE.MeshStandardMaterial({
   vertexColors: true,
-  roughness: 0.85,
+  roughness: 0.65,
   metalness: 0.02,
   flatShading: false,
 });
@@ -123,7 +148,7 @@ const cloudGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
 const cloudMaterial = new THREE.MeshStandardMaterial({
   color: 0xffffff,
   transparent: true,
-  opacity: 0.12,
+  opacity: 0.05,
   roughness: 1,
   depthWrite: false,
 });
@@ -189,6 +214,18 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+
+  // rescale the orbit distance (and its clamps) for the new aspect ratio,
+  // preserving how zoomed-in the user currently is
+  const newScale = cameraDistanceForViewport() / BASE_CAMERA_DISTANCE;
+  const zoomRatio = newScale / viewportScale;
+  const offset = camera.position.clone().sub(controls.target);
+  offset.setLength(offset.length() * zoomRatio);
+  camera.position.copy(controls.target).add(offset);
+  controls.minDistance = 5 * newScale;
+  controls.maxDistance = 14 * newScale;
+  viewportScale = newScale;
+  controls.update();
 });
 
 // ---------- rotate / stop toggle ----------
