@@ -536,6 +536,45 @@ const cliffColor = new THREE.Color('#6a5a49'); // bare stone: paint doesn't hold
 const snowWashColor = new THREE.Color('#93a8bd');
 const snowDrybrushColor = new THREE.Color('#ffffff');
 
+// Every texture below needs the height at each texel, and each one used to
+// work it out for itself: the terrain paint, the ocean paint, the bump map
+// and the relief field each ran heightAt over all 1.18M texels, at roughly
+// fourteen noise evaluations apiece. Four passes over the same function with
+// the same arguments — about eight seconds of blocked main thread on a
+// desktop, and enough to get the tab killed on a phone before it ever drew a
+// frame. Computed once and shared.
+interface SharedHeightField {
+  width: number;
+  height: number;
+  /** raw terrain height, as heightAt returns it */
+  raw: Float32Array;
+  /** the displaced radius offset actually used for geometry */
+  display: Float32Array;
+}
+
+let sharedHeightCache: SharedHeightField | null = null;
+
+function sharedHeightField(width: number, height: number): SharedHeightField {
+  if (sharedHeightCache && sharedHeightCache.width === width && sharedHeightCache.height === height) {
+    return sharedHeightCache;
+  }
+  const size = width * height;
+  const raw = new Float32Array(size);
+  const display = new Float32Array(size);
+  const dir = new THREE.Vector3();
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      dirForPixel(px, py, width, height, dir);
+      const h = heightAt(dir);
+      const idx = py * width + px;
+      raw[idx] = h;
+      display[idx] = displayHeight(h, dir);
+    }
+  }
+  sharedHeightCache = { width, height, raw, display };
+  return sharedHeightCache;
+}
+
 export interface ReliefField {
   width: number;
   height: number;
@@ -547,18 +586,10 @@ export interface ReliefField {
 
 export function buildReliefField(width: number, height: number): ReliefField {
   const size = width * height;
-  const field = new Float32Array(size);
-  const dir = new THREE.Vector3();
-
-  for (let py = 0; py < height; py++) {
-    for (let px = 0; px < width; px++) {
-      dirForPixel(px, py, width, height, dir);
-      // the *displayed* height (terraced and boosted), not the raw noise —
-      // the wash has to pool along the terrace edges the geometry actually
-      // has, otherwise the paint describes a shape the model doesn't
-      field[py * width + px] = displayHeight(heightAt(dir), dir);
-    }
-  }
+  // the *displayed* height (terraced and boosted), not the raw noise — the
+  // wash has to pool along the terrace edges the geometry actually has,
+  // otherwise the paint describes a shape the model doesn't
+  const field = sharedHeightField(width, height).display;
 
   const convexity = new Float32Array(size);
   const slope = new Float32Array(size);
@@ -803,12 +834,13 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
   // and much cheaper than running full hydrology at texture resolution
   const river = computeRiverFlow(384, 192);
   const relief = buildReliefField(width, height);
+  const heights = sharedHeightField(width, height).raw;
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       dirForPixel(px, py, width, height, dir);
 
-      const h = heightAt(dir);
+      const h = heights[py * width + px];
       const riverStrength = h >= SEA_LEVEL ? sampleRiverFlow(river, dir) : 0;
       const c = terrainColor(dir, h, riverStrength);
       // the wash/drybrush passes go on over the finished base coat, exactly
@@ -842,11 +874,12 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
   const ctx = canvas.getContext('2d')!;
   const image = ctx.createImageData(width, height);
   const dir = new THREE.Vector3();
+  const heights = sharedHeightField(width, height).raw;
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       dirForPixel(px, py, width, height, dir);
-      const h = heightAt(dir);
+      const h = heights[py * width + px];
       const c = oceanColor(dir, h);
 
       const idx = (py * width + px) * 4;
@@ -949,12 +982,13 @@ export function buildBumpTexture(width = 1536, height = 768): THREE.CanvasTextur
   const ctx = canvas.getContext('2d')!;
   const image = ctx.createImageData(width, height);
   const dir = new THREE.Vector3();
+  const heights = sharedHeightField(width, height).raw;
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       dirForPixel(px, py, width, height, dir);
 
-      const h = heightAt(dir);
+      const h = heights[py * width + px];
       let v: number;
       if (h < SEA_LEVEL) {
         // fine ripple texture on the (mostly hidden) seabed — cheap

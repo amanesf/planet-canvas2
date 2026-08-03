@@ -58,7 +58,7 @@ function buildPuffGeometry(rand: () => number): THREE.BufferGeometry {
     // has a dense middle and a ragged edge rather than uniform bubbles
     const t = rand();
     const r = 0.16 + t * t * 0.5;
-    const g = new THREE.SphereGeometry(r, 10, 8);
+    const g = new THREE.SphereGeometry(r, 8, 6);
     displaceWithNoise(g, 0.32, 3.4, rand() * 500);
     g.scale(0.9 + rand() * 0.35, 0.75 + rand() * 0.3, 0.9 + rand() * 0.35);
     // placed further out the smaller they are — the loose fringe nodules

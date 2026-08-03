@@ -19,6 +19,7 @@ import { buildVegetation } from './vegetation';
 import { buildClouds } from './clouds';
 import { DepthOfFieldShader } from './dof';
 import { buildWorkshop } from './setDressing';
+import { currentTier, installContextLossRecovery, settingsFor } from './quality';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
@@ -26,7 +27,24 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="ui">
     <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
   </div>
+  <div class="loading" id="loading" role="status">組み立て中…</div>
 `;
+
+const TIER = currentTier();
+const QUALITY = settingsFor(TIER);
+
+// Building the model blocks the main thread for seconds: the terrain paint
+// alone evaluates noise over a million texels, and the scatter passes test
+// hundreds of thousands of candidate positions. Done in one go, the tab is
+// frozen for the whole of it — no paint, no input, and on a phone a real
+// risk of being killed outright before the first frame ever appears.
+//
+// Yielding between steps does not make the work any smaller, but it hands
+// the browser back often enough to stay alive and to show progress.
+const yieldToBrowser = () =>
+  new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
 
 const RADIUS = 2;
 const BUMP_HEIGHT = 0.36; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
@@ -81,7 +99,7 @@ camera.position.set(startPos.x, startPos.y, startPos.z);
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 // capping pixel ratio keeps this from overloading weaker mobile GPUs
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY.maxPixelRatio));
 // Real cast shadows, and they are not optional for this subject. What
 // separates the reference photograph from a rendered planet is not its
 // palette — it is that the clouds throw soft shadows down onto the sea,
@@ -91,7 +109,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 // cue the eye actually reads as "these things share one physical space".
 // Only the key light casts (one shadow pass), and the map is sized for a
 // subject that occupies a fixed, known volume.
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = QUALITY.shadowMapSize > 0;
 // PCFSoftShadowMap is deprecated in this three version and silently falls
 // back to PCF anyway; VSM was tried for a softer edge and produced no
 // visible shadow at all here (its light-bleeding term washes out contact
@@ -103,7 +121,6 @@ renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.25;
 app.appendChild(renderer.domElement);
-(window as any).__dbg = { THREE, renderer, scene, camera };
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
 // shader rather than the stock, much heavier BokehPass). One extra
@@ -116,48 +133,58 @@ app.appendChild(renderer.domElement);
 // scene render the stock BokehPass costs. Both ping-pong buffers share the
 // one depth texture: only the RenderPass writes depth, and it runs first
 // every frame, so there is nothing to keep separate.
-const sceneDepth = new THREE.DepthTexture(window.innerWidth, window.innerHeight);
-sceneDepth.type = THREE.UnsignedIntType;
-const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
-  depthTexture: sceneDepth,
-  depthBuffer: true,
-});
+const sceneDepth = QUALITY.depthOfField
+  ? new THREE.DepthTexture(window.innerWidth, window.innerHeight)
+  : null;
+if (sceneDepth) sceneDepth.type = THREE.UnsignedIntType;
+// the depthTexture key is omitted rather than passed as undefined: the
+// render target treats the key's presence as "attach one"
+const composerTarget = new THREE.WebGLRenderTarget(
+  window.innerWidth,
+  window.innerHeight,
+  sceneDepth ? { depthTexture: sceneDepth, depthBuffer: true } : { depthBuffer: true },
+);
 const composer = new EffectComposer(renderer, composerTarget);
-composer.renderTarget2.depthTexture = sceneDepth;
-composer.addPass(new RenderPass(scene, camera));
-const dofPass = new ShaderPass(DepthOfFieldShader);
-dofPass.renderToScreen = true;
-composer.addPass(dofPass);
-dofPass.uniforms.tDepth.value = sceneDepth;
-dofPass.uniforms.uNear.value = camera.near;
-dofPass.uniforms.uFar.value = camera.far;
-dofPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+if (sceneDepth) composer.renderTarget2.depthTexture = sceneDepth;
+
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
+
+// At the lowest tier the blur is dropped rather than cheapened: it is the
+// most expensive pass per pixel in the frame (every tap costs a color fetch
+// *and* a depth fetch), and a device that cannot hold the context is better
+// served by a sharp frame than by a soft one it cannot draw. The render pass
+// then has to go straight to the screen, since the composer only presents
+// through its final enabled pass.
+let dofPass: ShaderPass | null = null;
+if (sceneDepth) {
+  dofPass = new ShaderPass(DepthOfFieldShader);
+  dofPass.renderToScreen = true;
+  dofPass.material.defines = { ...dofPass.material.defines, RINGS: QUALITY.dofRings };
+  composer.addPass(dofPass);
+  dofPass.uniforms.tDepth.value = sceneDepth;
+  dofPass.uniforms.uNear.value = camera.near;
+  dofPass.uniforms.uFar.value = camera.far;
+  dofPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+} else {
+  renderPass.renderToScreen = true;
+}
 
 // A generic light "room" environment for the resin ocean's reflections,
-// generated once at startup (PMREM), not a per-frame cost. Heavily blurred
-// on purpose: at a sharper setting the room's light panels reflected in the
-// sea as discrete bright ovals, which reads as a mirror with windows in it
-// rather than as a broad softbox sheen across a poured surface.
+// generated once at startup (PMREM), not a per-frame cost. Softening the
+// reflection is the ocean material's job via its roughness — raising the
+// PMREM blur instead only trips its sample cap and gets clamped anyway.
 const pmremGenerator = new THREE.PMREMGenerator(renderer);
-scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.4).texture;
+scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
 // the room map is here to put believable reflections in the resin, not to
 // light the scene — at full strength it acts as a second, shadowless
 // ambient term and flattens everything the key light is doing
 scene.environmentIntensity = 0.42;
 pmremGenerator.dispose();
 
-// if the GPU driver does drop the context, the page can't recover its
-// uploaded textures/geometry on its own — reload rather than leaving a
-// permanently blank canvas
-renderer.domElement.addEventListener(
-  'webglcontextlost',
-  (event) => {
-    event.preventDefault();
-    console.warn('WebGL context lost — reloading to recover');
-    window.setTimeout(() => window.location.reload(), 300);
-  },
-  false,
-);
+// A lost context now comes back at a cheaper tier rather than rebuilding
+// the scene that lost it — see quality.ts.
+installContextLossRecovery(renderer.domElement, TIER);
 
 // ---------- controls: pinch / wheel zoom, drag to look around ----------
 
@@ -194,8 +221,8 @@ scene.add(new THREE.AmbientLight(0xffe9c2, 0.16));
 
 const keyLight = new THREE.DirectionalLight(0xffe0b4, 3.4);
 keyLight.position.set(-3.2, 4.6, 4.2);
-keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.castShadow = QUALITY.shadowMapSize > 0;
+keyLight.shadow.mapSize.set(QUALITY.shadowMapSize || 1, QUALITY.shadowMapSize || 1);
 // the subject is a 2-unit globe floating at a known height on a 1.85-unit
 // stand, so the shadow frustum can be wrapped tightly around it instead of
 // wasting depth precision on empty scene
@@ -246,16 +273,24 @@ scene.add(globeGroup);
 // terrain color is painted once onto a texture (crisp, cheap to sample)
 // instead of interpolated per-vertex (which read as blurry) — geometry
 // only needs to be smooth enough to carry the displacement + lighting
-const geometry = new THREE.SphereGeometry(RADIUS, 420, 236);
+const geometry = new THREE.SphereGeometry(RADIUS, QUALITY.globeSegments[0], QUALITY.globeSegments[1]);
 displaceSphere(geometry, RADIUS, BUMP_HEIGHT);
-const terrainTexture = buildTerrainTexture();
+await yieldToBrowser();
+const TEX_W = QUALITY.textureWidth;
+const TEX_H = TEX_W / 2;
+await yieldToBrowser();
+const terrainTexture = buildTerrainTexture(TEX_W, TEX_H);
+await yieldToBrowser();
+
+const terrainBumpTexture = buildBumpTexture(TEX_W, TEX_H);
+await yieldToBrowser();
 
 const globeMaterial = new THREE.MeshStandardMaterial({
   map: terrainTexture,
   // fine surface relief via lighting only (no extra geometry) — the
   // single biggest lever for "sculpted miniature" vs. "smooth painted
   // ball" once you actually zoom in on it
-  bumpMap: buildBumpTexture(),
+  bumpMap: terrainBumpTexture,
   bumpScale: 0.005,
   // pushed to fully matte — the whole point of the glossy ocean resin is
   // that it's the *only* shiny thing in the scene; any gloss on the rock
@@ -274,15 +309,22 @@ globeGroup.add(globeMesh);
 // flattened seabed below. Mostly opaque with a hard glassy clearcoat reads
 // as poured diorama resin; the earlier more-transparent/liquid version
 // read as a soft gummy-candy jelly instead of a solid miniature material.
-const oceanGeometry = new THREE.SphereGeometry(seaLevelRadius(RADIUS, BUMP_HEIGHT), 96, 56);
+const oceanGeometry = new THREE.SphereGeometry(
+  seaLevelRadius(RADIUS, BUMP_HEIGHT),
+  QUALITY.oceanSegments[0],
+  QUALITY.oceanSegments[1],
+);
 rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
 // a thin raised lip hugging the actual coastline, like poured resin (or
 // real water) climbing slightly against the land instead of meeting it
 // as a flat sheet
 applyCoastalMeniscus(oceanGeometry, 0.006);
+const oceanTexture = buildOceanTexture(TEX_W, TEX_H);
+await yieldToBrowser();
 const waveTexture = buildWaveTexture();
+await yieldToBrowser();
 const oceanMaterial = new THREE.MeshPhysicalMaterial({
-  map: buildOceanTexture(),
+  map: oceanTexture,
   // a directional wave pattern, slowly scrolled in the animation loop —
   // gives moving, shimmering highlights instead of a fixed pattern
   bumpMap: waveTexture,
@@ -316,7 +358,8 @@ globeGroup.add(oceanMesh);
 // scattered trees and rocks — discrete miniature objects standing on the
 // terrain are what actually reads as "diorama", not just a smooth
 // colored/shiny surface
-const vegetation = buildVegetation(RADIUS, BUMP_HEIGHT);
+await yieldToBrowser();
+const vegetation = buildVegetation(RADIUS, BUMP_HEIGHT, QUALITY.canopyDetail, QUALITY.scatterBudget);
 vegetation.traverse((child) => {
   if ((child as THREE.Mesh).isMesh) {
     child.castShadow = true;
@@ -339,6 +382,7 @@ globeGroup.add(hazeMesh);
 
 // real puffy 3D clouds with cast shadows — matches the design memo's
 // "evaporation + rain shadow" sky layer with an actual visible presence
+await yieldToBrowser();
 const clouds = buildClouds(RADIUS);
 clouds.traverse((child) => {
   if ((child as THREE.Mesh).isMesh) child.castShadow = true;
@@ -489,10 +533,12 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
-  sceneDepth.image.width = window.innerWidth;
-  sceneDepth.image.height = window.innerHeight;
-  sceneDepth.needsUpdate = true;
-  dofPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+  if (sceneDepth) {
+    sceneDepth.image.width = window.innerWidth;
+    sceneDepth.image.height = window.innerHeight;
+    sceneDepth.needsUpdate = true;
+  }
+  dofPass?.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
   // rescale the orbit distance (and its clamps) for the new aspect ratio,
   // preserving how zoomed-in the user currently is
@@ -545,15 +591,19 @@ function animate() {
   // keep the focal plane pinned to the front face of the globe as the
   // viewer orbits or zooms, the way a photographer refocuses on the
   // subject rather than on a fixed distance
-  const globeCenter = globeGroup.position;
-  dofPass.uniforms.uFocusDistance.value = Math.max(
-    camera.position.distanceTo(globeCenter) - RADIUS * 0.72,
-    0.5,
-  );
+  if (dofPass) {
+    const globeCenter = globeGroup.position;
+    dofPass.uniforms.uFocusDistance.value = Math.max(
+      camera.position.distanceTo(globeCenter) - RADIUS * 0.72,
+      0.5,
+    );
+  }
 
   controls.update();
   composer.render();
   requestAnimationFrame(animate);
 }
+
+document.querySelector<HTMLDivElement>('#loading')?.remove();
 
 animate();

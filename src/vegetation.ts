@@ -223,21 +223,33 @@ function orient(position: THREE.Vector3, normal: THREE.Vector3, spin: number, ti
   }
 }
 
-export function buildVegetation(radius: number, bumpHeight: number): THREE.Group {
+export function buildVegetation(
+  radius: number,
+  bumpHeight: number,
+  canopyDetail: number,
+  scatterBudget = 1,
+): THREE.Group {
   const group = new THREE.Group();
   const rand = mulberry32(20260803);
+  // Candidates are the startup cost here: each one evaluates the terrain
+  // height before the spacing test gets a chance to throw it away, and the
+  // forest pass alone was testing 430,000 of them to keep about 1,500.
+  // Spacing widens with the budget so a cheaper pass thins out evenly
+  // instead of leaving bald patches where candidates ran out.
+  const budget = (n: number) => Math.round(n * scatterBudget);
+  const spacing = (s: number) => s / Math.sqrt(scatterBudget);
 
   // this pass covers savanna trees, mountain rocks, and desert dressing —
   // real forest canopy is handled separately below as a dense connected
   // mass, not as individually-spaced trees, so savanna can stay properly
   // sparse without looking like "not enough trees yet"
-  const points = scatterPoints(60000, 0.09, rand);
+  const points = scatterPoints(budget(60000), spacing(0.09), rand);
   const trees = points.filter((p) => p.kind === 'tree');
   const rocks = points.filter((p) => p.kind === 'rock');
 
   // dense dedicated passes — a sparse handful of dunes/rocks read as
   // "a few objects on empty ground", not "a desert" or "a mountainside"
-  const screePoints = scatterScree(70000, 0.03, rand);
+  const screePoints = scatterScree(budget(70000), spacing(0.03), rand);
 
   // ---------- trees: 3 archetypes mixed by pseudo-climate + chance ----------
   // (a tall pointy cone looked fine from directly above, but at the
@@ -438,9 +450,11 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   // per clump (each one is several overlapping lobes), but the ground
   // shows through between them the way it does in a real miniature.
 
-  const forestPoints = scatterForest(430000, 0.023, rand);
+  const forestPoints = scatterForest(budget(260000), spacing(0.026), rand);
   const canopyVariantCount = 3;
-  const canopyVariants = Array.from({ length: canopyVariantCount }, () => buildCanopyBlob(rand));
+  const canopyVariants = Array.from({ length: canopyVariantCount }, () =>
+    buildCanopyBlob(rand, canopyDetail),
+  );
   const canopyMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.92,
@@ -478,7 +492,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
 
   // ---------- grass: dense tiny tufts covering the (non-desert) ground ----------
 
-  const grassPoints = scatterGrass(220000, 0.024, rand);
+  const grassPoints = scatterGrass(budget(140000), spacing(0.028), rand);
   const grassGeometry = new THREE.ConeGeometry(0.008, 0.016, 5);
   grassGeometry.translate(0, 0.008, 0);
   const grassMaterial = new THREE.MeshStandardMaterial({
@@ -519,12 +533,17 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
 // faceted potato at this poly count. Sized to be a real visible mass on
 // its own (bare rock shows between clumps at the scatter level, see
 // buildVegetation), not a tiny piece of a wall-to-wall speckle blanket.
-function buildCanopyBlob(rand: () => number): THREE.BufferGeometry {
+function buildCanopyBlob(rand: () => number, detail: number): THREE.BufferGeometry {
   const lobes = 4 + Math.floor(rand() * 3);
   const parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < lobes; i++) {
     const r = 0.022 + rand() * 0.016;
-    const g = new THREE.IcosahedronGeometry(r, 2);
+    // Detail 2 is 320 triangles per lobe and, at five or six lobes across
+    // fifteen hundred clumps, was 1.4 million triangles of foliage on its
+    // own — more than four fifths of the entire frame, for shapes a few
+    // pixels across that get their form from the noise displacement below
+    // rather than from their tessellation.
+    const g = new THREE.IcosahedronGeometry(r, detail);
     displaceWithNoise(g, 0.32, 3.2, rand() * 500);
     displaceWithNoise(g, 0.14, 9, rand() * 500 + 300);
     g.computeVertexNormals();

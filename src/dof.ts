@@ -81,11 +81,16 @@ export const DepthOfFieldShader = {
       vec4 sum = texture2D(tDiffuse, vUv);
       float weight = 1.0;
 
-      // two rings, offset from each other, so the bokeh reads as a round
-      // aperture rather than an octagon at large radii
+      // RINGS is set per quality tier: two rings read as a round aperture
+      // at large radii, one is cheaper and enough at small ones. Each tap
+      // costs a color fetch and a depth fetch, so this count is the single
+      // biggest lever on the cost of the frame.
+      #ifndef RINGS
+      #define RINGS 2
+      #endif
       const int RING_TAPS = 8;
-      for (int ring = 1; ring <= 2; ring++) {
-        float ringRadius = radius * (float(ring) / 2.0);
+      for (int ring = 1; ring <= RINGS; ring++) {
+        float ringRadius = radius * (float(ring) / float(RINGS));
         float ringOffset = float(ring) * 0.4;
         for (int i = 0; i < RING_TAPS; i++) {
           float angle = (float(i) + ringOffset) / float(RING_TAPS) * 6.28318530718;
