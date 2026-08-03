@@ -73,9 +73,42 @@ const UNDERWATER_HEIGHT = SEA_LEVEL - 0.045;
 // without z-fighting the coastline
 export const GLASS_SEA_HEIGHT = SEA_LEVEL - 0.015;
 
+// Land elevation is quantized into flat terraces with a small beveled
+// transition at each edge — like a laser-cut layered topographic model —
+// instead of one continuous smooth slope. This reads as "hand-built model"
+// far more strongly than smoothness or color ever could, independent of
+// how photoreal anything else is.
+export const TERRACE_STEPS = 6;
+const TERRACE_MAX = 0.3;
+const TERRACE_BEVEL = 0.32;
+
+function terraceCurve(t: number): number {
+  const scaled = t * TERRACE_STEPS;
+  const i = Math.floor(scaled);
+  const f = scaled - i;
+  let localT: number;
+  if (f < TERRACE_BEVEL) {
+    localT = 0.5 * smoothstep(f / TERRACE_BEVEL, 0, 1);
+  } else if (f > 1 - TERRACE_BEVEL) {
+    localT = 0.5 + 0.5 * smoothstep((f - (1 - TERRACE_BEVEL)) / TERRACE_BEVEL, 0, 1);
+  } else {
+    localT = 0.5;
+  }
+  return (Math.min(i, TERRACE_STEPS - 1) + localT) / TERRACE_STEPS;
+}
+
+// Raw elevation above sea level (0..TERRACE_MAX), terraced. Shared by both
+// the mesh displacement and the color banding so a terrace's edge always
+// lines up with a color change, like distinct painted layers.
+export function terracedElevation(height: number): number {
+  if (height < SEA_LEVEL) return 0;
+  const t = Math.min((height - SEA_LEVEL) / TERRACE_MAX, 1);
+  return terraceCurve(t) * TERRACE_MAX;
+}
+
 export function displayHeight(height: number): number {
   if (height < SEA_LEVEL) return UNDERWATER_HEIGHT;
-  return SEA_LEVEL + (height - SEA_LEVEL) * LAND_BOOST;
+  return SEA_LEVEL + terracedElevation(height) * LAND_BOOST;
 }
 
 export function seaLevelRadius(radius: number, bumpHeight: number): number {
@@ -106,25 +139,28 @@ function paintGrain(dir: THREE.Vector3): number {
 // Thresholds were picked by sampling the actual height/aridity noise
 // distributions so bands land at sensible percentiles of land area:
 // rock starts ~p80, full snow ~p97, desert patches cover ~top 20%.
-function biomeColor(height: number, aridity: number): THREE.Color {
+// Takes the already-terraced elevation (0..TERRACE_MAX) so each color
+// band's edge lines up exactly with a geometric terrace edge — the
+// "layers are individually painted" read this is going for.
+function biomeColor(elevation: number, aridity: number): THREE.Color {
   const desertAmount = smoothstep(aridity, 0.12, 0.26);
 
-  if (height < SEA_LEVEL + 0.14) {
+  if (elevation < 0.15) {
     // sand only right at the coast — being *low* elevation isn't the same
     // as being *dry*. A wide shore→green transition was tying the two
     // together, so any low flat continent read as one giant beach
     // regardless of its actual (independent) aridity value.
-    const t = (height - SEA_LEVEL) / 0.035;
+    const t = elevation / 0.035;
     outColor.copy(shoreColor).lerp(landColor, Math.min(Math.max(t, 0), 1));
     return outColor.lerp(desertColor, desertAmount);
   }
-  if (height < SEA_LEVEL + 0.21) {
-    const t = (height - (SEA_LEVEL + 0.14)) / 0.07;
+  if (elevation < 0.22) {
+    const t = (elevation - 0.15) / 0.07;
     outColor.copy(landColor).lerp(rockColor, t);
     return outColor.lerp(desertColor, desertAmount * (1 - t) * 0.5);
   }
-  if (height < SEA_LEVEL + 0.28) {
-    const t = (height - (SEA_LEVEL + 0.21)) / 0.07;
+  if (elevation < TERRACE_MAX) {
+    const t = (elevation - 0.22) / (TERRACE_MAX - 0.22);
     return outColor.copy(rockColor).lerp(snowColor, t);
   }
   return outColor.copy(snowColor);
@@ -150,7 +186,7 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
   } else if (h < SEA_LEVEL + COAST_WIDTH) {
     color = outColor.copy(midOceanColor).lerp(shoreColor, (h - (SEA_LEVEL - COAST_WIDTH)) / (COAST_WIDTH * 2));
   } else {
-    color = biomeColor(h, aridityAt(dir));
+    color = biomeColor(terracedElevation(h), aridityAt(dir));
     if (riverStrength > 0) color.lerp(riverColor, riverStrength);
     color.offsetHSL(0, 0, coastalAO(h));
   }

@@ -11,6 +11,7 @@ import {
   seaLevelRadius,
 } from './terrain';
 import { buildVegetation } from './vegetation';
+import { buildClouds } from './clouds';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
@@ -185,17 +186,21 @@ globeGroup.add(oceanMesh);
 // colored/shiny surface
 globeGroup.add(buildVegetation(RADIUS, BUMP_HEIGHT));
 
-// soft cloud shell, purely decorative for now
-const cloudGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
-const cloudMaterial = new THREE.MeshStandardMaterial({
+// faint atmospheric haze shell, purely decorative
+const hazeGeometry = new THREE.SphereGeometry(RADIUS + 0.16, 48, 32);
+const hazeMaterial = new THREE.MeshStandardMaterial({
   color: 0xffffff,
   transparent: true,
   opacity: 0.05,
   roughness: 1,
   depthWrite: false,
 });
-const cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
-globeGroup.add(cloudMesh);
+const hazeMesh = new THREE.Mesh(hazeGeometry, hazeMaterial);
+globeGroup.add(hazeMesh);
+
+// real puffy 3D clouds with cast shadows — matches the design memo's
+// "evaporation + rain shadow" sky layer with an actual visible presence
+globeGroup.add(buildClouds(RADIUS, BUMP_HEIGHT));
 
 // ---------- stand: base + magnetic-looking glow ring, no axis ----------
 
@@ -295,7 +300,7 @@ function animate() {
   globeGroup.position.y = GLOBE_FLOAT_Y + Math.sin(t * 1.1) * 0.06;
   globeGroup.rotation.z = Math.sin(t * 0.6) * 0.02;
 
-  cloudMesh.rotation.y += 0.0006;
+  hazeMesh.rotation.y += 0.0006;
 
   const ringPulse = 0.45 + Math.sin(t * 2.2) * 0.1;
   glowRingMaterial.opacity = ringPulse;
