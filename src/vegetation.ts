@@ -163,8 +163,16 @@ function scatterForest(candidateCount: number, minSpacing: number, rand: () => n
     // noise lookup.
     // fbm3 is signed and centred on zero here, so the acceptance threshold
     // is biased up rather than scaled from a 0..1 assumption
-    const density = fbm3(dir.x * 7.5 + 404, dir.y * 7.5 + 404, dir.z * 7.5 + 404, 2);
-    if (rand() > density * 2.2 + 0.66) continue;
+    // Two scales of clumping. The single mid-frequency field gave an even
+    // stipple with soft edges — everywhere lightly wooded, nowhere either
+    // closed forest or open plain. A broad field decides which *regions* are
+    // wooded at all, and a finer one breaks up the margins within them, so
+    // the planting has somewhere dense to be dense and somewhere bare to be
+    // bare.
+    const region = fbm3(dir.x * 2.6 + 404, dir.y * 2.6 + 404, dir.z * 2.6 + 404, 2);
+    const patch = fbm3(dir.x * 9 + 77, dir.y * 9 + 77, dir.z * 9 + 77, 2);
+    const density = smoothstep(region, -0.22, 0.02) * (1.15 + patch * 1.5);
+    if (rand() > density) continue;
 
     if (hash.hasNeighborWithin(dir, minSpacingSq)) continue;
 
@@ -495,7 +503,7 @@ export function buildVegetation(
   // per clump (each one is several overlapping lobes), but the ground
   // shows through between them the way it does in a real miniature.
 
-  const forestPoints = scatterForest(budget(300000), spacing(0.021), rand);
+  const forestPoints = scatterForest(budget(340000), spacing(0.02), rand);
   const canopyVariantCount = 3;
   const canopyVariants = Array.from({ length: canopyVariantCount }, () =>
     buildCanopyBlob(rand, canopyDetail),
@@ -516,11 +524,14 @@ export function buildVegetation(
       const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
       orient(position, p.dir, rand() * Math.PI * 2);
-      // squared distribution: a flat random range gives every clump nearly
-      // the same size, which is what made the flock read as moulded beads
-      // laid in rows rather than as scattered material
+      // Measured, the old distribution put the middle half of all clumps
+      // between 0.66 and 1.17 — a third either side of the median, which the
+      // eye cannot tell from a single size. Real applied flock has a genuine
+      // range: mostly small stuff, a good spread of mid-sized clumps, and
+      // the occasional mass several times the size of its neighbours. A cube
+      // gives that long tail where a square did not.
       const r0 = rand();
-      const scale = 0.6 + r0 * r0 * 1.0;
+      const scale = 0.45 + r0 * r0 * 1.9;
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);

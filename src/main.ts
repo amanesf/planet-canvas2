@@ -1,7 +1,6 @@
 import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -234,7 +233,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 // the same exposure the cheap tier came out visibly brighter and flatter
 // than the others: not a lower-detail version of the same picture, a
 // different one. Pulled back to match.
-renderer.toneMappingExposure = QUALITY.shadowMapSize > 0 ? 1.4 : 1.1;
+renderer.toneMappingExposure = QUALITY.shadowMapSize > 0 ? 1.55 : 1.2;
 app.appendChild(renderer.domElement);
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
@@ -285,17 +284,44 @@ if (sceneDepth) {
   renderPass.renderToScreen = true;
 }
 
-// A generic light "room" environment for the resin ocean's reflections,
-// generated once at startup (PMREM), not a per-frame cost. Softening the
-// reflection is the ocean material's job via its roughness — raising the
-// PMREM blur instead only trips its sample cap and gets clamped anyway.
+// The environment the resin reflects.
+//
+// This used three's RoomEnvironment, and the sea paid for it: that scene is
+// a box with several bright rectangular light panels in it, and a smooth
+// glossy sphere reflects them as two or three hard, discrete ovals. Read as
+// a material, that is a glass marble catching windows — not a poured resin
+// surface under a softbox. What is wanted instead is a single broad
+// gradient: bright overhead, falling off to the dark bench below, with no
+// shape in it to be reflected as an object.
+function buildStudioEnvironment(): THREE.Texture {
+  const width = 64;
+  const height = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, height);
+  sky.addColorStop(0, '#fdf6e8'); // the softbox directly above
+  sky.addColorStop(0.42, '#b8ab98');
+  sky.addColorStop(0.62, '#4a3b2e'); // horizon: the dim far wall
+  sky.addColorStop(1, '#1a120c'); // the bench underneath
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, width, height);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 const pmremGenerator = new THREE.PMREMGenerator(renderer);
-scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
-// the room map is here to put believable reflections in the resin, not to
-// light the scene — at full strength it acts as a second, shadowless
-// ambient term and flattens everything the key light is doing
-scene.environmentIntensity = 0.42;
+const studioEnvironment = buildStudioEnvironment();
+scene.environment = pmremGenerator.fromEquirectangular(studioEnvironment).texture;
+studioEnvironment.dispose();
 pmremGenerator.dispose();
+scene.environmentIntensity = 0.9;
 
 // A lost context now comes back at a cheaper tier rather than rebuilding
 // the scene that lost it — see quality.ts.
@@ -336,10 +362,18 @@ controls.target.set(0, TARGET_Y, 0);
 // shadows were rendering correctly and were simply drowned. A shadow is
 // only as legible as the fraction of the light it removes, so the key has
 // to actually dominate before any of this is visible.
-scene.add(new THREE.AmbientLight(0xffe9c2, 0.16));
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.26));
 
 const keyLight = new THREE.DirectionalLight(0xfff1dc, QUALITY.shadowMapSize > 0 ? 3.4 : 2.6);
-keyLight.position.set(-3.2, 4.6, 4.2);
+// Raking, not frontal. This sat at (-3.2, 4.6, 4.2) with the camera at
+// roughly (0, 3.9, 13), which put the light barely off the lens axis — and
+// a light near the lens axis casts every shadow directly behind the thing
+// casting it, where the camera cannot see it. Measured, the clouds were
+// darkening under one percent of the frame. Swinging the key round to the
+// side costs some fill on the right of the globe and buys shadows that
+// land *across* the visible face, which is what makes the clouds read as
+// floating above the surface rather than stuck to it.
+keyLight.position.set(-5.0, 4.4, 3.2);
 keyLight.castShadow = QUALITY.shadowMapSize > 0;
 keyLight.shadow.mapSize.set(QUALITY.shadowMapSize || 1, QUALITY.shadowMapSize || 1);
 // the subject is a 2-unit globe floating at a known height on a 1.85-unit
