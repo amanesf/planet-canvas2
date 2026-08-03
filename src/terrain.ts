@@ -26,9 +26,12 @@ const badlandsColorA = new THREE.Color('#b5652f');
 const badlandsColorB = new THREE.Color('#dba15c');
 const badlandsColorC = new THREE.Color('#823f28');
 
-const deepOceanColor = new THREE.Color('#0c4a5e');
-const midOceanColor = new THREE.Color('#1c6f7f');
-const shallowOceanColor = new THREE.Color('#4fa8ad');
+// Deep and saturated, almost black in shadow — a real poured-resin ocean
+// over dark blue paint reads as near-black except right where a light
+// actually hits it, not as an evenly bright teal swimming pool.
+const deepOceanColor = new THREE.Color('#040e1c');
+const midOceanColor = new THREE.Color('#0c3450');
+const shallowOceanColor = new THREE.Color('#1c5f76');
 
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);

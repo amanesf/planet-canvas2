@@ -15,13 +15,16 @@ function cloudDensityAt(dir: THREE.Vector3): number {
 // merged into one piece of geometry, so hundreds of clouds still cost only
 // one instanced draw call each variant.
 function buildPuffGeometry(rand: () => number): THREE.BufferGeometry {
-  const lumps = 4 + Math.floor(rand() * 2);
+  const lumps = 5 + Math.floor(rand() * 3);
   const parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < lumps; i++) {
-    const r = 0.45 + rand() * 0.5;
+    const r = 0.4 + rand() * 0.55;
     const g = new THREE.SphereGeometry(r, 8, 6);
-    jitterGeometry(g, 0.16, rand); // hand-rolled cotton texture, not a smooth balloon
-    g.translate((rand() - 0.5) * 1.5, (rand() - 0.5) * 0.35, (rand() - 0.5) * 0.7);
+    // heavier jitter + a non-uniform stretch per lobe — real cotton
+    // batting is torn and wispy, not a cluster of smooth round balloons
+    jitterGeometry(g, 0.32, rand);
+    g.scale(0.7 + rand() * 0.7, 0.55 + rand() * 0.5, 0.7 + rand() * 0.7);
+    g.translate((rand() - 0.5) * 1.6, (rand() - 0.5) * 0.4, (rand() - 0.5) * 0.75);
     parts.push(g);
   }
   const merged = mergeGeometries(parts, false);

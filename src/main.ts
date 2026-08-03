@@ -82,6 +82,11 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 // fake blob shadow under the globe (contactShadow, below) does the same
 // visual job for a fraction of the cost, so skip real shadows entirely
 renderer.shadowMap.enabled = false;
+// filmic contrast/highlight rolloff — a bright resin highlight should
+// roll off smoothly toward white like a real photo, not clip to a flat
+// disc the way plain linear output does
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.92;
 app.appendChild(renderer.domElement);
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
@@ -136,20 +141,20 @@ controls.target.set(0, TARGET_Y, 0);
 
 // ---------- lighting ----------
 
-// A real diorama sits under one strong, slightly-raking desk lamp, not
-// flat, even studio light — low ambient + a punchy single key light is
-// what gives every surface a visible sharp light/shadow terminator
-// instead of the flat "everything is equally lit" CG read. The fake
-// contact-shadow decals (shadow.ts) point along this exact same light
-// direction, so the two reinforce each other as "one consistent light
-// source" instead of looking like unrelated effects.
-scene.add(new THREE.AmbientLight(0xfff1e0, 0.32));
+// A real diorama sits under one strong, warm, slightly-raking desk lamp
+// in an otherwise dim room — low ambient + a punchy, warm-toned single
+// key light is what gives every surface a visible sharp light/shadow
+// terminator and that moody workshop-photo read, instead of the flat
+// "everything is equally lit" bright CG look. The fake contact-shadow
+// decals (shadow.ts) point along this exact same light direction, so the
+// two reinforce each other as "one consistent light source".
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.22));
 
-const keyLight = new THREE.DirectionalLight(0xfff6e6, 1.95);
+const keyLight = new THREE.DirectionalLight(0xffd9a0, 2.1);
 keyLight.position.set(4, 5, 3);
 scene.add(keyLight);
 
-const rimLight = new THREE.DirectionalLight(0xbfe0ff, 0.38);
+const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.3);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
 
@@ -213,7 +218,10 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   clearcoat: 0.75,
   clearcoatRoughness: 0.1,
   ior: 1.5,
-  envMapIntensity: 0.4,
+  // kept low on purpose — too much ambient room-reflection washes the
+  // dark resin color out to a flat gray-teal; the highlight should come
+  // from the key light itself, not from bounced ambient light
+  envMapIntensity: 0.2,
 });
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 globeGroup.add(oceanMesh);
@@ -255,16 +263,18 @@ function buildWoodTexture(width = 512, height = 512): THREE.CanvasTexture {
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
 
+  // dark walnut/espresso, not a light honey oak — a real display pedestal
+  // for something like this is a rich, near-black-brown stained hardwood
   const base = ctx.createLinearGradient(0, 0, width, 0);
-  base.addColorStop(0, '#7c5330');
-  base.addColorStop(0.5, '#9c6b3e');
-  base.addColorStop(1, '#7c5330');
+  base.addColorStop(0, '#2c1a0f');
+  base.addColorStop(0.5, '#3e2617');
+  base.addColorStop(1, '#2c1a0f');
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, width, height);
 
   for (let i = 0; i < 46; i++) {
     const y = Math.random() * height;
-    ctx.strokeStyle = `rgba(50, 28, 12, ${0.05 + Math.random() * 0.13})`;
+    ctx.strokeStyle = `rgba(18, 10, 5, ${0.08 + Math.random() * 0.16})`;
     ctx.lineWidth = 1 + Math.random() * 2.5;
     ctx.beginPath();
     let x = 0;
@@ -345,6 +355,16 @@ const plaqueTextMaterial = new THREE.MeshBasicMaterial({
 const plaqueText = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.29), plaqueTextMaterial);
 plaqueText.position.set(0, -1.86, 1.797);
 standGroup.add(plaqueText);
+
+// a thin brass trim ring right at the seam between the two wood tiers —
+// the "museum trophy base" detail that reads as a real display stand
+// rather than a plain stacked block of wood
+const trimRing = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.655, 1.655, 0.045, 48, 1, true),
+  plaqueMaterial,
+);
+trimRing.position.y = -1.75;
+standGroup.add(trimRing);
 
 // A thin, understated glow ring — just a hint of the magnetic-levitation
 // idea now that the wood pedestal itself is the dominant grounded object,

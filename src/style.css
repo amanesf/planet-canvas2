@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 * {
@@ -14,28 +14,30 @@ body {
   height: 100%;
   overflow: hidden;
   font-family: "Hiragino Maru Gothic ProN", "Rounded Mplus 1c", "Yu Gothic", sans-serif;
-  /* Suggests an out-of-focus craft desk behind the globe — soft blurred
-     shapes standing in for a potted plant, a window's light, glass jars
-     of paint/brushes, a cutting mat — without any 3D rendering cost (this
-     is just the page background showing through the transparent canvas,
-     not a rendered scene). Elongated vertical blobs read as "bottle on a
-     shelf" once softened; a plain circle just reads as an abstract blob,
-     which is why these are stretched/offset rather than perfect circles. */
+  /* A real diorama photo is shot in a dim workshop under one warm lamp,
+     not on a bright pastel seamless — a light cream background was one of
+     the strongest remaining "digital mockup" cues regardless of what the
+     globe itself looked like. Soft blurred shapes stand in for a potted
+     plant, glass paint bottles catching a rim light, a hobby knife, a
+     cutting mat — all dim and warm against a near-black desk, without any
+     3D rendering cost (this is the page background showing through the
+     transparent canvas, not a rendered scene). */
   background:
-    /* a plant, low-left */
-    radial-gradient(circle at 10% 20%, rgba(110, 175, 110, 0.42) 0%, rgba(110, 175, 110, 0.2) 14%, rgba(110, 175, 110, 0) 30%),
-    radial-gradient(ellipse 60px 130px at 9% 30%, rgba(90, 130, 70, 0.32) 0%, rgba(90, 130, 70, 0) 90%),
-    /* window light, upper right */
-    radial-gradient(circle at 84% 10%, rgba(255, 244, 214, 0.78) 0%, rgba(255, 244, 214, 0.32) 22%, rgba(255, 244, 214, 0) 48%),
-    /* a couple of jars/bottles, lower right — tall thin ellipses read as
-       glassware once blurred, unlike a round blob */
-    radial-gradient(ellipse 48px 150px at 90% 86%, rgba(150, 110, 60, 0.34) 0%, rgba(150, 110, 60, 0.12) 60%, rgba(150, 110, 60, 0) 92%),
-    radial-gradient(ellipse 34px 110px at 79% 90%, rgba(120, 170, 175, 0.3) 0%, rgba(120, 170, 175, 0) 90%),
-    /* a craft knife: a thin bright diagonal streak */
-    linear-gradient(115deg, transparent 46%, rgba(230, 230, 225, 0.28) 48%, rgba(230, 230, 225, 0.35) 49.5%, transparent 52%),
+    /* a plant, low-left, dim */
+    radial-gradient(circle at 8% 18%, rgba(70, 110, 60, 0.35) 0%, rgba(70, 110, 60, 0.14) 16%, rgba(70, 110, 60, 0) 32%),
+    radial-gradient(ellipse 55px 130px at 7% 28%, rgba(50, 80, 45, 0.4) 0%, rgba(50, 80, 45, 0) 90%),
+    /* a warm lamp glow, upper area — the single light source, not a flat
+       bright fill */
+    radial-gradient(circle at 68% 8%, rgba(255, 200, 120, 0.32) 0%, rgba(255, 190, 110, 0.14) 24%, rgba(255, 190, 110, 0) 50%),
+    /* glass paint bottles, lower right — catching a dim rim light against
+       the dark desk rather than glowing brightly themselves */
+    radial-gradient(ellipse 46px 150px at 91% 85%, rgba(210, 180, 140, 0.22) 0%, rgba(150, 120, 80, 0.1) 55%, rgba(150, 120, 80, 0) 90%),
+    radial-gradient(ellipse 32px 108px at 80% 90%, rgba(140, 190, 195, 0.16) 0%, rgba(140, 190, 195, 0) 88%),
+    /* a hobby knife: a thin dim diagonal glint */
+    linear-gradient(115deg, transparent 46%, rgba(210, 210, 205, 0.1) 48%, rgba(210, 210, 205, 0.14) 49.5%, transparent 52%),
     /* cutting-mat hint, lower-left */
-    radial-gradient(circle at 8% 82%, rgba(80, 110, 95, 0.22) 0%, rgba(80, 110, 95, 0) 40%),
-    radial-gradient(circle at 50% 30%, #fdf6ec 0%, #f3e6d8 55%, #e8d5c4 100%);
+    radial-gradient(circle at 6% 80%, rgba(40, 60, 55, 0.3) 0%, rgba(40, 60, 55, 0) 40%),
+    radial-gradient(circle at 55% 34%, #2c2018 0%, #1c1410 55%, #100b08 100%);
 }
 
 #app {
@@ -119,10 +121,10 @@ canvas {
   position: absolute;
   top: calc(20px + env(safe-area-inset-top, 0px));
   left: 20px;
-  color: #8a6a52;
+  color: #cbab7e;
   font-size: 13px;
   letter-spacing: 0.08em;
-  opacity: 0.75;
+  opacity: 0.8;
   pointer-events: none;
 }
 

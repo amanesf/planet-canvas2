@@ -312,16 +312,23 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     roughness: 0.95,
     envMapIntensity: 0.1,
   });
+  // left white on purpose — instanceColor below multiplies against this,
+  // so a tinted base color here would compound with (and mute/darken) the
+  // per-instance hue instead of showing it cleanly
   const foliageMaterial = new THREE.MeshStandardMaterial({
-    color: '#3f9c4e',
+    color: '#ffffff',
     roughness: 0.9,
     envMapIntensity: 0.1,
   });
 
+  // real diorama foliage ("clump foliage" flock/lichen material) is a
+  // distinctly bright, saturated yellow-green — noticeably more lime than
+  // an ordinary tree green, and part of what makes a miniature's
+  // vegetation read as a real physical material instead of rendered grass
   const treeVariants: { geometry: THREE.BufferGeometry; hue: [number, number] }[] = [
-    { geometry: bushGeometry, hue: [0.3, 0.06] },
-    { geometry: coniferGeometry, hue: [0.36, 0.03] },
-    { geometry: clumpGeometry, hue: [0.28, 0.06] },
+    { geometry: bushGeometry, hue: [0.235, 0.045] },
+    { geometry: coniferGeometry, hue: [0.28, 0.025] },
+    { geometry: clumpGeometry, hue: [0.225, 0.04] },
   ];
   const treeByVariant: ScatterPoint[][] = treeVariants.map(() => []);
   trees.forEach((p) => {
@@ -350,7 +357,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       foliageMesh.setMatrixAt(i, dummy.matrix);
       // a little per-tree color variance so a forest doesn't look like one
       // flat-shaded cutout repeated hundreds of times
-      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.32 + rand() * 0.13, 0.3 + rand() * 0.13);
+      foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.55 + rand() * 0.16, 0.38 + rand() * 0.12);
       foliageMesh.setColorAt(i, foliageColor);
     });
     foliageMesh.instanceMatrix.needsUpdate = true;
@@ -482,7 +489,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const canopyVariantCount = 3;
   const canopyVariants = Array.from({ length: canopyVariantCount }, () => buildCanopyBlob(rand));
   const canopyMaterial = new THREE.MeshStandardMaterial({
-    color: '#4c9c4a',
+    color: '#ffffff',
     roughness: 0.92,
     envMapIntensity: 0.1,
   });
@@ -501,7 +508,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
-      canopyColor.setHSL(0.3 + rand() * 0.08, 0.36 + rand() * 0.15, 0.28 + rand() * 0.13);
+      canopyColor.setHSL(0.225 + rand() * 0.05, 0.58 + rand() * 0.15, 0.4 + rand() * 0.12);
       mesh.setColorAt(i, canopyColor);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -515,7 +522,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
   const grassGeometry = new THREE.ConeGeometry(0.008, 0.016, 5);
   grassGeometry.translate(0, 0.008, 0);
   const grassMaterial = new THREE.MeshStandardMaterial({
-    color: '#4fa64f',
+    color: '#ffffff',
     roughness: 0.9,
     envMapIntensity: 0.08,
   });
@@ -528,7 +535,7 @@ export function buildVegetation(radius: number, bumpHeight: number): THREE.Group
     dummy.scale.set(0.7 + rand() * 0.9, 0.5 + rand() * 1.0, 0.7 + rand() * 0.9);
     dummy.updateMatrix();
     grassMesh.setMatrixAt(i, dummy.matrix);
-    grassColor.setHSL(0.28 + rand() * 0.08, 0.38 + rand() * 0.16, 0.3 + rand() * 0.15);
+    grassColor.setHSL(0.235 + rand() * 0.05, 0.55 + rand() * 0.15, 0.42 + rand() * 0.12);
     grassMesh.setColorAt(i, grassColor);
   });
   grassMesh.instanceMatrix.needsUpdate = true;
