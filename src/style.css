@@ -1,0 +1,77 @@
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 30%, #fdf6ec 0%, #f3e6d8 55%, #e8d5c4 100%);
+  font-family: "Hiragino Maru Gothic ProN", "Rounded Mplus 1c", "Yu Gothic", sans-serif;
+}
+
+#app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+canvas {
+  display: block;
+  touch-action: none;
+}
+
+.ui {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 28px;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.mode-button {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 22px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 16px rgba(120, 90, 60, 0.18);
+  color: #6b4a36;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mode-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(120, 90, 60, 0.24);
+}
+
+.mode-button:active {
+  transform: translateY(0);
+}
+
+.title {
+  position: absolute;
+  top: 22px;
+  left: 24px;
+  color: #8a6a52;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+  pointer-events: none;
+}
