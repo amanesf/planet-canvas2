@@ -484,30 +484,63 @@ export const PLATE_LIVE_ELEVATION_GLSL = /* glsl */ `
 
     vec3 dir0 = plateDirFromUv(uv);
     float h0 = elevMin + texture2D(uColorSim, uv).a * elevRange;
-    plateLivePosition = dir0 * (uRadius + h0 * uBumpHeight);
 
-    vec2 uvU = uv + vec2(epsU, 0.0);
+    // fract() wraps the U sample back around at the seam (u=0/u=1 are
+    // the same meridian) — without it, a vertex whose u sits within one
+    // epsilon of either edge samples off the end of the texture instead
+    // of the content that's actually its neighbour there, since the
+    // render target's default clamp-to-edge just repeats the edge texel
+    // rather than wrapping.
+    vec2 uvU = vec2(fract(uv.x + epsU), uv.y);
     vec3 dirU = plateDirFromUv(uvU);
     float hU = elevMin + texture2D(uColorSim, uvU).a * elevRange;
-    vec3 posU = dirU * (uRadius + hU * uBumpHeight);
 
-    vec2 uvV = uv + vec2(0.0, epsV);
+    vec2 uvV = vec2(uv.x, uv.y + epsV);
     vec3 dirV = plateDirFromUv(uvV);
     float hV = elevMin + texture2D(uColorSim, uvV).a * elevRange;
+
+    // The equirectangular UV parameterization is singular in two places
+    // on a standard UV-sphere: at both poles (every longitude converges
+    // on the same 3D point, so vertices that are genuinely close
+    // together in object space can carry very different u, and
+    // therefore sample very different elevation), and at the seam where
+    // u wraps from 1 back to 0 (the sphere's own duplicated seam
+    // vertices carry u=0 on one side and u=1 on the other for the same
+    // 3D position, and the render target's texture sampling doesn't
+    // itself wrap the way the fract() above only partly compensates
+    // for). Independent per-vertex displacement amplifies either
+    // mismatch into badly distorted geometry right at that line —
+    // visible as an actual hole (the surface briefly not forming a
+    // closed shape, so whatever's behind it — the pedestal — shows
+    // through) or a bright discontinuous seam, not merely a bad normal;
+    // this is a genuine limitation of driving displacement from a
+    // lat/long texture on a UV-sphere, not a bug with one clean fix.
+    // Fading the live displacement back to the mesh's own original
+    // static position/normal (both already sitting right there in the
+    // position/normal attributes, untouched) over the last stretch of
+    // latitude before each pole, and the last stretch of longitude on
+    // both sides of the seam, sidesteps both singularities entirely in
+    // the one place each is unavoidable — at the cost of a small pole
+    // cap and a thin seam band that don't visibly drift, the same kind
+    // of scoped trade-off already accepted elsewhere in this simulation.
+    float poleFade = 1.0 - smoothstep(0.0, 0.05, min(uv.y, 1.0 - uv.y));
+    float seamFade = 1.0 - smoothstep(0.0, 0.02, min(uv.x, 1.0 - uv.x));
+    float singularityFade = max(poleFade, seamFade);
+
+    vec3 liveRadial = dir0 * (uRadius + h0 * uBumpHeight);
+    plateLivePosition = mix(liveRadial, position, singularityFade);
+
+    vec3 posU = dirU * (uRadius + hU * uBumpHeight);
     vec3 posV = dirV * (uRadius + hV * uBumpHeight);
 
     // normalize() of a near-zero-length vector is undefined per spec —
     // some drivers hand back NaN rather than something merely wrong, and
     // a NaN vertex position makes the primitive's rasterization
-    // undefined too, which on at least one real device this project
-    // tests against read as the mesh going invisible/transparent rather
-    // than glitching visibly. The cross product can get arbitrarily
-    // small right at the equirectangular UV seam and near the poles
-    // (where moving in u barely changes the actual 3D direction at
-    // all), so guard the divide instead of assuming it's always safe:
+    // undefined too. The cross product can still get arbitrarily small
+    // right at the fade zones' own edges even with the fades above, so
     // fall back to the known-good outward radial direction rather than
     // ever calling normalize() on something that might be ~0.
-    vec3 liveCross = cross(posU - plateLivePosition, posV - plateLivePosition);
+    vec3 liveCross = cross(posU - liveRadial, posV - liveRadial);
     float liveCrossLen = length(liveCross);
     vec3 liveNormal = liveCrossLen > 0.00001 ? liveCross / liveCrossLen : dir0;
     // Cross-product winding depends on which of the two tangent
@@ -516,7 +549,7 @@ export const PLATE_LIVE_ELEVATION_GLSL = /* glsl */ `
     // check against the known-outward radial direction and flip than to
     // reason it out from the equirectangular parameterization's winding.
     if (dot(liveNormal, dir0) < 0.0) liveNormal = -liveNormal;
-    objectNormal = liveNormal;
+    objectNormal = normalize(mix(liveNormal, normal, singularityFade));
   }
 `;
 
@@ -722,6 +755,14 @@ function makeColorRenderTarget(): THREE.WebGLRenderTarget {
     generateMipmaps: false,
   });
   rt.texture.flipY = false;
+  // The default (ClampToEdge) means bilinear sampling right at the u=0/1
+  // seam blends toward the edge texel instead of the content that's
+  // actually its neighbour on the other side — every consumer of this
+  // texture (the advection shader's own backward-trace, the color
+  // display, and PLATE_LIVE_ELEVATION_GLSL's finite-difference sampling)
+  // needs the map to genuinely wrap in longitude. Latitude (T) is a real
+  // edge at each pole, not a wraparound, so that stays clamped.
+  rt.texture.wrapS = THREE.RepeatWrapping;
   return rt;
 }
 
