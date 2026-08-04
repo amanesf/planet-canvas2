@@ -385,8 +385,12 @@ const FOREST_ARIDITY_MAX = 0.44;
 
 // Below this temperature it's tundra/ice country — too cold for forest,
 // savanna, or desert dressing; those zones stay bare (the paint itself
-// already reads as tundra/ice, see terrain.ts's biomeColor).
-const COLD_TEMPERATURE_LIMIT = 0.09;
+// already reads as tundra/ice, see terrain.ts's biomeColor). Lowered from
+// the original 0.09: with dir now real latitude (not fictional noise),
+// that cutoff excluded most of the real boreal forest belt (Canada,
+// Siberia) as "too cold" — real taiga covers most of that band, with true
+// treeless tundra confined to a narrower strip right at the Arctic coast.
+const COLD_TEMPERATURE_LIMIT = 0.02;
 
 /**
  * Where on the tropical/temperate/boreal scale a point sits, expressed as

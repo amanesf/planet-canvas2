@@ -760,10 +760,8 @@ await yieldToBrowser('海');
 // species.ts) — one plain uniform object, updated once per frame in
 // globeTick; every material references the *same* object, so that single
 // update propagates to all of them without a per-material loop. A full
-// year takes about seven minutes: slow enough to read as a background
-// ambiance, not a strobing gimmick, the same design goal as the cloud
-// drift and wave scroll already running here.
-const SEASON_SPEED = 0.015;
+// year takes one minute.
+const SEASON_SPEED = (Math.PI * 2) / 60;
 const seasonUniforms = { uSeasonTilt: { value: 0 } };
 
 const globeMaterial = new THREE.MeshStandardMaterial({
@@ -837,8 +835,10 @@ const oceanGeometry = new THREE.SphereGeometry(
 rippleSphere(oceanGeometry, seaLevelRadius(RADIUS, BUMP_HEIGHT), 0.004);
 // a thin raised lip hugging the actual coastline, like poured resin (or
 // real water) climbing slightly against the land instead of meeting it
-// as a flat sheet
-applyCoastalMeniscus(oceanGeometry, 0.006);
+// as a flat sheet. Trimmed from 0.006 once real low-lying coastal plains
+// showed the old reach was eating into the (already thin) clearance real
+// lowland terrain has above the ocean shell — see terrain.ts's coastalStep.
+applyCoastalMeniscus(oceanGeometry, 0.004);
 const oceanTexture = buildOceanTexture(TEX_W, TEX_H);
 await yieldToBrowser('水面');
 const waveTexture = buildWaveTexture();
@@ -944,7 +944,7 @@ await yieldToBrowser('雲');
 const clouds = buildClouds(RADIUS);
 // (castShadow is decided per layer inside buildClouds: the opaque core
 // casts, the translucent fringe does not.)
-globeGroup.add(clouds);
+globeGroup.add(clouds.group);
 
 // ---------- stand: real wood pedestal + nameplate, globe hovers just
 // slightly above it (a hint of "magnetic levitation" kept, but the wood
@@ -980,15 +980,17 @@ globeTick = (t) => {
   waveTexture.offset.y = Math.sin(t * 0.15) * 0.01;
   if (oceanWaveUniforms) oceanWaveUniforms.uTime.value = t;
 
-  // Weather drifts independently of the ground under it. `clouds` is a
-  // child of globeGroup, so this rotation is *relative* to the globe's
-  // own spin — setting it directly from elapsed time (not accumulating a
-  // += each frame) keeps it exactly reproducible regardless of frame
-  // rate, the same way the wave offset above does it. Slower than the
-  // globe's own spin: weather visibly creeping across a much faster-
-  // spinning toy planet reads as wrong, the way a lit ceiling fan looks
-  // wrong under a strobe.
-  clouds.rotation.y = t * 0.018;
+  // Weather drifts independently of the ground under it — each weather
+  // band has its own latitude-appropriate wind speed/direction and slow
+  // breathing scale, recomputed from elapsed time (not accumulated += each
+  // frame, so it stays exactly reproducible regardless of frame rate, the
+  // same way the wave offset above does it). `clouds.group` is a child of
+  // globeGroup, so all of this is on top of, and slower than, the globe's
+  // own spin — weather visibly creeping across a much faster-spinning toy
+  // planet reads as wrong, the way a lit ceiling fan looks wrong under a
+  // strobe. See clouds.ts for why this is a live per-band update instead of
+  // one rigid rotation.
+  clouds.tick(t);
 
   // +1 = northern hemisphere summer, -1 = northern hemisphere winter (and
   // the reverse south of the equator, handled by multiplying against each

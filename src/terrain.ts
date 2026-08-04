@@ -257,14 +257,30 @@ function orogenyGrid(): { grid: Float32Array; width: number; height: number } {
   return orogenyGridCache;
 }
 
+// Bilinear, not nearest — see sampleField's comment above for why a hard
+// cell edge in this grid became a visible line once real elevation data
+// gave heightAt long, genuinely flat stretches with nothing else to hide it.
 function orogenyBeltAt(dir: THREE.Vector3): number {
   const { grid, width, height } = orogenyGrid();
   const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
   let phi = Math.atan2(dir.z, -dir.x);
   if (phi < 0) phi += Math.PI * 2;
-  const px = Math.min(width - 1, Math.floor((phi / (Math.PI * 2)) * width));
-  const py = Math.min(height - 1, Math.floor((theta / Math.PI) * height));
-  return grid[py * width + px];
+  const fx = (phi / (Math.PI * 2)) * width;
+  const fy = (theta / Math.PI) * height;
+
+  const x0 = Math.floor(fx);
+  const y0 = THREE.MathUtils.clamp(Math.floor(fy), 0, height - 1);
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const x0w = ((x0 % width) + width) % width;
+  const x1w = (x0w + 1) % width;
+  const y1 = Math.min(y0 + 1, height - 1);
+
+  const g00 = grid[y0 * width + x0w];
+  const g10 = grid[y0 * width + x1w];
+  const g01 = grid[y1 * width + x0w];
+  const g11 = grid[y1 * width + x1w];
+  return THREE.MathUtils.lerp(THREE.MathUtils.lerp(g00, g10, tx), THREE.MathUtils.lerp(g01, g11, tx), ty);
 }
 
 // Real-world coastlines: a single small equirectangular grayscale image
@@ -309,8 +325,20 @@ const ELEVATION_SEA_GRAY = 145;
 // jagged almost everywhere. Raising the normalized fraction to a power
 // compresses ordinary hills/plateaus back down near sea level while still
 // letting the rare true summits (Himalaya, Andes) reach the top.
+//
+// A *pure* power curve overcorrected: gray values only just above
+// ELEVATION_SEA_GRAY (most of an ordinary continental interior — the US
+// Midwest, the Great Lakes basin, that whole gray-145-to-160 band) got
+// compressed to a sliver of a millimetre above SEA_LEVEL, thinner than the
+// glass ocean shell's own coastal-meniscus/wave-ripple reach — so real
+// lowland that should be dry land was visually drowned by the sea shell
+// sitting right over it. Blending in a straight linear term restores a
+// guaranteed baseline lift proportional to how far above sea level a pixel
+// actually is, while the power term still does its job flattening the
+// upper range.
 const ELEVATION_LAND_MAX = 0.4;
 const ELEVATION_LAND_GAMMA = 1.8;
+const ELEVATION_LAND_LINEAR_MIX = 0.35;
 
 function decodeRealElevation(gray: number): number {
   if (gray <= ELEVATION_SEA_GRAY) {
@@ -322,7 +350,8 @@ function decodeRealElevation(gray: number): number {
     return THREE.MathUtils.mapLinear(gray, 0, ELEVATION_SEA_GRAY, -0.45, SEA_LEVEL);
   }
   const t = (gray - ELEVATION_SEA_GRAY) / (255 - ELEVATION_SEA_GRAY);
-  return SEA_LEVEL + Math.pow(t, ELEVATION_LAND_GAMMA) * (ELEVATION_LAND_MAX - SEA_LEVEL);
+  const shaped = THREE.MathUtils.lerp(Math.pow(t, ELEVATION_LAND_GAMMA), t, ELEVATION_LAND_LINEAR_MIX);
+  return SEA_LEVEL + shaped * (ELEVATION_LAND_MAX - SEA_LEVEL);
 }
 
 // Same inverse (dir -> phi/theta -> pixel) convention as sampleField/
@@ -481,13 +510,33 @@ function bakeField(width: number, height: number, f: (dir: THREE.Vector3) => num
 const FIELD_W = 384;
 const FIELD_H = 192;
 
+// Bilinear, not nearest: a coarse grid's cell boundaries used to be
+// invisible because the old fbm3-noise terrain was busy/bumpy everywhere,
+// masking the tiny discontinuity at each cell edge. Real elevation data
+// gave huge stretches of genuinely flat, smooth lowland with nothing else
+// competing for attention, and against that backdrop those hard cell edges
+// showed up as a visible grid of lines once the (also newly sensitive)
+// relief/wash paint picked up the tiny slope spike at every boundary.
 function sampleField(grid: Float32Array, dir: THREE.Vector3): number {
   const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
   let phi = Math.atan2(dir.z, -dir.x);
   if (phi < 0) phi += Math.PI * 2;
-  const px = Math.min(FIELD_W - 1, Math.floor((phi / (Math.PI * 2)) * FIELD_W));
-  const py = Math.min(FIELD_H - 1, Math.floor((theta / Math.PI) * FIELD_H));
-  return grid[py * FIELD_W + px];
+  const fx = (phi / (Math.PI * 2)) * FIELD_W;
+  const fy = (theta / Math.PI) * FIELD_H;
+
+  const x0 = Math.floor(fx);
+  const y0 = THREE.MathUtils.clamp(Math.floor(fy), 0, FIELD_H - 1);
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const x0w = ((x0 % FIELD_W) + FIELD_W) % FIELD_W;
+  const x1w = (x0w + 1) % FIELD_W;
+  const y1 = Math.min(y0 + 1, FIELD_H - 1);
+
+  const g00 = grid[y0 * FIELD_W + x0w];
+  const g10 = grid[y0 * FIELD_W + x1w];
+  const g01 = grid[y1 * FIELD_W + x0w];
+  const g11 = grid[y1 * FIELD_W + x1w];
+  return THREE.MathUtils.lerp(THREE.MathUtils.lerp(g00, g10, tx), THREE.MathUtils.lerp(g01, g11, tx), ty);
 }
 
 let aridityGrid: Float32Array | null = null;
@@ -577,8 +626,13 @@ const LAND_BOOST = 1.0;
 const UNDERWATER_HEIGHT = SEA_LEVEL - 0.045;
 // sits between the flattened underwater terrain and true sea level, so the
 // glass ocean shell (built from this in main.ts) fully covers the seabed
-// without z-fighting the coastline
-export const GLASS_SEA_HEIGHT = SEA_LEVEL - 0.015;
+// without z-fighting the coastline. Recessed further than the original
+// -0.015 once real coastlines exposed the old margin: a huge amount of
+// real-world low-lying land sits only barely above SEA_LEVEL (a real
+// coastal plain, unlike the old fictional continents' coasts, is *actually*
+// nearly flat), and with LAND_BOOST halved that land's displaced radius was
+// landing at or below the ocean shell's own radius — visually flooding it.
+export const GLASS_SEA_HEIGHT = SEA_LEVEL - 0.022;
 
 // Land elevation is quantized into flat terraces with a small beveled
 // transition at each edge — like a laser-cut layered topographic model —
@@ -651,7 +705,11 @@ export function displayHeight(height: number, dir: THREE.Vector3): number {
   // a fjord coastline, and fjords are not what most shoreline looks like.
   // Gentle coasts get barely any lift and meet the water as a beach; the
   // glass sea already sits slightly below SEA_LEVEL, so they still emerge.
-  const coastalStep = 0.012 + coastCliffiness(dir) * 0.15;
+  // Raised from 0.012: real low-lying coastal plains (deltas, floodplains —
+  // there's a lot more of that terrain in the real data than the old
+  // fictional coasts ever had) need a bit more guaranteed lift to clear the
+  // ocean shell, especially with LAND_BOOST halved.
+  const coastalStep = 0.028 + coastCliffiness(dir) * 0.15;
   let boost = orogenyBoost;
 
   // A volcano's summit is meant to read as one singular landmark, taller
@@ -766,8 +824,14 @@ function biomeColor(
       // sand only right at the coast — being *low* elevation isn't the
       // same as being *dry*. A wide shore→green transition was tying the
       // two together, so any low flat continent read as one giant beach
-      // regardless of its actual (independent) aridity value.
-      const t = elevation / 0.035;
+      // regardless of its actual (independent) aridity value. Narrowed
+      // twice over once real elevation data landed: measuring an actual
+      // real lowland region (the US Midwest/Great Lakes basin) put its
+      // *typical* raw elevation above sea level at roughly 0.003, not the
+      // single-digit-percent-of-TERRACE_MAX this was tuned against —
+      // real low-relief land really does sit that close to the sea-level
+      // boundary. 0.012 was still wide enough to paint most of it as sand.
+      const t = elevation / 0.003;
       outColor.copy(shoreColor).lerp(landColor, Math.min(Math.max(t, 0), 1));
       // climate belts on the ground itself, under whatever grows on it
       outColor.lerp(tropicalSoilColor, tropical * 0.65);
@@ -821,8 +885,16 @@ function biomeColor(
 // Baking a fake AO crease directly into the paint fakes the same read.
 // Steeper/darker right where a mountain belt meets the sea, matching the
 // fjord-style cliff coastline used there (see terrainColor).
+//
+// The 0.05 falloff was a narrow strip on the old fictional coastlines, but
+// real elevation data put enormous flat interior regions (the whole US
+// Midwest, most of the Amazon and Congo basins) at barely more than 0.05
+// above sea level too — so this "coastal shadow" was darkening huge tracts
+// of ordinary flat land, and fluctuating with every small per-pixel
+// elevation wobble from the real data's own bilinear sampling, into a
+// dark speckled wash instead of a clean crease at the water's edge.
 function coastalAO(height: number, cliffiness: number): number {
-  const t = smoothstep(height, SEA_LEVEL, SEA_LEVEL + 0.05);
+  const t = smoothstep(height, SEA_LEVEL, SEA_LEVEL + 0.006);
   return -0.16 * (1 - t) * (1 + cliffiness * 1.3);
 }
 
