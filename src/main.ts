@@ -19,13 +19,11 @@ import { buildClouds } from './clouds';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
 import { buildWorkshop } from './setDressing';
-import { createPlateSimulation, PLATE_UNIFORMS_GLSL, PLATE_UV_DRIFT_GLSL } from './plateSim';
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
   <div class="ui">
-    <button id="plate-speed" class="mode-button speed-button" title="プレート移動の速さを変える" aria-label="プレート移動の速さを変える">1×</button>
     <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
   </div>
   <div class="loading" id="loading" role="status">組み立て中…</div>
@@ -683,26 +681,6 @@ toggleButton.addEventListener('click', () => {
   toggleButton.setAttribute('aria-label', label);
 });
 
-// ---------- plate speed toggle ----------
-// A plain number, not a call into plateSim directly: plateSim itself is
-// declared much further down (after startRendering() has already been
-// called), so referencing it by name from a handler registered this
-// early would throw on any tick that fires before that line runs — the
-// same reason globeTick below is a deferred `let`. Reading this shared
-// number from inside globeTick, once plateSim is safely in scope, sidesteps
-// that entirely.
-const PLATE_SPEEDS = [1, 10, 100];
-let plateSpeedIndex = 0;
-const speedButton = document.querySelector<HTMLButtonElement>('#plate-speed')!;
-speedButton.addEventListener('click', () => {
-  plateSpeedIndex = (plateSpeedIndex + 1) % PLATE_SPEEDS.length;
-  const speed = PLATE_SPEEDS[plateSpeedIndex];
-  speedButton.textContent = `${speed}×`;
-  const label = `プレート移動の速さ: ${speed}倍`;
-  speedButton.title = label;
-  speedButton.setAttribute('aria-label', label);
-});
-
 // ---------- animation loop ----------
 
 const clock = new THREE.Clock();
@@ -784,91 +762,6 @@ const globeMaterial = new THREE.MeshStandardMaterial({
   metalness: 0,
   envMapIntensity: 0.06,
 });
-
-// Live plate tectonics (see plateSim.ts): a small GPU simulation ticking
-// on its own slow clock, independent of the render frame rate. Three
-// things ride on it, all driven by the same plate rotations:
-//
-// 1. A small height *delta* — mountains slowly building where plates
-//    collide, ground slowly relaxing where they pull apart — added on
-//    top of the static terrain this mesh already has, along each
-//    vertex's own (static) normal.
-// 2. The terrain's own paint (the color texture baked by terrain.ts) is
-//    advected — physically carried along the plate velocity field one
-//    small step at a time — by plateSim's second, larger ping-pong pair,
-//    rather than warped by a per-vertex UV rewrite. That older UV trick
-//    (still used for bumpMap only, see plateSim.ts's PLATE_UV_DRIFT_GLSL)
-//    tore visibly at boundaries once run for a while at real speed — see
-//    plateSim.ts's long comment on COLOR_ADVECT_FRAGMENT_SHADER for the
-//    mechanism and the fix.
-//
-// Vegetation (species.ts's few hundred thousand InstancedMesh trees etc.)
-// also rides this same clock — see plateSim.ts's attachPlateDrift — but
-// as a *real* rigid rotation of each already-placed instance around its
-// owning plate's axis, not a texture trick (a tree is a 3D object; there's
-// no "paint" to carry). Each instance is assigned its plate once at build
-// time and keeps it forever, which sidesteps the terrain color's seam
-// concern entirely for vegetation, at the cost of vegetation and terrain
-// slowly drifting apart from each other at the fast end of the speed
-// toggle (advection re-derives ownership live and can hand a point to a
-// different neighbour over time; a tree's ownership never changes) — most
-// visible at 10x/100x, not at the default speed. All of it is GPU-only,
-// extra instructions on vertices/texels these draw calls already process
-// every frame — no CPU loop, no per-frame buffer re-upload — so it
-// doesn't reintroduce the kind of per-frame cost this project fought hard
-// to get off the one real device it keeps crashing on.
-const plateSim = createPlateSimulation(terrainTexture);
-const plateDefs = plateSim.getPlateDefs();
-globeMaterial.onBeforeCompile = (shader) => {
-  shader.uniforms.uPlateSim = { value: plateSim.getTexture() };
-  shader.uniforms.uColorSim = { value: plateSim.getColorTexture() };
-  // exaggerated well past a real plate boundary's actual relief for the
-  // same reason the rest of this globe's terrain is (see BUMP_HEIGHT
-  // above) — a literally accurate few hundred meters of uplift is
-  // invisible at this scale. Raised from an initial 0.05 that read as
-  // barely-there once the sim was actually accumulating consistently
-  // (see plateSim.ts's substep fix) instead of oscillating near zero.
-  shader.uniforms.uPlateUplift = { value: 0.11 };
-  shader.uniforms.uPoles = { value: plateDefs.map((p) => p.pole) };
-  shader.uniforms.uSeeds = { value: plateDefs.map((p) => p.seed) };
-  shader.uniforms.uSpeeds = { value: plateDefs.map((p) => p.speed) };
-  shader.uniforms.uSimTime = { value: 0 };
-  shader.vertexShader = shader.vertexShader
-    .replace(
-      '#include <common>',
-      `#include <common>\nuniform sampler2D uPlateSim;\nuniform float uPlateUplift;\n${PLATE_UNIFORMS_GLSL}`,
-    )
-    // The height-delta sample two chunks down deliberately keeps reading
-    // the raw `uv` attribute directly (not vMapUv/vBumpMapUv) so the
-    // boundary/uplift forcing stays anchored to each vertex's actual
-    // current position regardless of this override; only bumpMap is
-    // warped here now — see PLATE_UV_DRIFT_GLSL's own comment for why
-    // color isn't.
-    .replace('#include <uv_vertex>', `#include <uv_vertex>\n${PLATE_UV_DRIFT_GLSL}`)
-    .replace(
-      '#include <begin_vertex>',
-      `#include <begin_vertex>
-      float plateDelta = texture2D(uPlateSim, uv).r * 2.0 - 1.0;
-      transformed += objectNormal * plateDelta * uPlateUplift;`,
-    );
-  shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', '#include <common>\nuniform sampler2D uColorSim;')
-    .replace(
-      '#include <map_fragment>',
-      `#ifdef USE_MAP
-      // Color no longer comes from the static baked map at all — it comes
-      // from plateSim's advected color texture, sampled at the mesh's own
-      // plain (un-warped) vMapUv. uColorSim holds gamma-encoded bytes (see
-      // plateSim.ts's SEED_FRAGMENT_SHADER comment), so this decodes with
-      // three's own sRGBTransferEOTF — always available here, it's
-      // unconditionally prepended to every fragment shader by
-      // WebGLProgram — rather than a hand-rolled copy of the same curve.
-      vec4 advectedColor = texture2D(uColorSim, vMapUv);
-      diffuseColor.rgb *= sRGBTransferEOTF(advectedColor).rgb;
-      #endif`,
-    );
-  globeMaterial.userData.shader = shader;
-};
 
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
 globeMesh.castShadow = true;
@@ -963,7 +856,7 @@ globeGroup.add(oceanMesh);
 // trees, mountain rocks, scree, or one of fourteen further species — so
 // adding a kind costs a branch, not another sweep. See species.ts.
 await yieldToBrowser('生物相');
-const { group: species, plateMaterials: vegetationPlateMaterials } = buildSpecies(RADIUS, BUMP_HEIGHT, plateDefs);
+const species = buildSpecies(RADIUS, BUMP_HEIGHT);
 species.traverse((child) => {
   if ((child as THREE.Mesh).isMesh) {
     // Not casting: this group is ~27 InstancedMesh draw calls (grass,
@@ -1039,43 +932,6 @@ globeTick = (t) => {
   // spinning toy planet reads as wrong, the way a lit ceiling fan looks
   // wrong under a strobe.
   clouds.rotation.y = t * 0.018;
-
-  // Ticks on its own slower clock internally (see plateSim.ts) — safe to
-  // call every frame, most calls are a no-op. The uniform has to be
-  // reassigned each time a tick actually happens because the simulation
-  // swaps which of its two render targets is "current" every step; the
-  // material's shader object was captured in onBeforeCompile above.
-  plateSim.update(renderer, t, PLATE_SPEEDS[plateSpeedIndex]);
-  const globeShader = globeMaterial.userData.shader as
-    | {
-        uniforms: {
-          uPlateSim: { value: THREE.Texture };
-          uColorSim: { value: THREE.Texture };
-          uSimTime: { value: number };
-        };
-      }
-    | undefined;
-  if (globeShader) {
-    globeShader.uniforms.uPlateSim.value = plateSim.getTexture();
-    // Reassigned every tick for the same reason uPlateSim is: the
-    // simulation swaps which render target is "current" each dispatch.
-    globeShader.uniforms.uColorSim.value = plateSim.getColorTexture();
-    // Keeps the bump-map UV warp (see plateSim.ts's PLATE_UV_DRIFT_GLSL)
-    // in lockstep with the same simulated clock the height-delta and
-    // color-advection textures were just advanced on, rather than real
-    // elapsed time — all three must agree, or they'd drift out of sync
-    // with each other.
-    globeShader.uniforms.uSimTime.value = plateSim.getSimTime();
-  }
-
-  // Vegetation's own real geometric drift (see plateSim.ts's
-  // attachPlateDrift) runs off the same simulated clock, kept in step
-  // with the terrain and height-delta updates above for the same reason.
-  const simTimeNow = plateSim.getSimTime();
-  for (const material of vegetationPlateMaterials) {
-    const shader = material.userData.shader as { uniforms: { uSimTime: { value: number } } } | undefined;
-    if (shader) shader.uniforms.uSimTime.value = simTimeNow;
-  }
 };
 
 document.querySelector<HTMLDivElement>('#loading')?.remove();
