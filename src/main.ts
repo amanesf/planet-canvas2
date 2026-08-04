@@ -668,48 +668,15 @@ standWood.push(new THREE.CylinderGeometry(1.16, 1.2, 0.48, 44).translate(0, -1.2
   standBrass.push(ring);
 }
 
-// The meridian half-ring.
-//
-// Every desk globe ever made has one, and its absence was doing more
-// damage than its size suggests: without it the sphere is a painted ball
-// resting in a collar, and *with* it the whole assembly is unmistakably a
-// globe — the one object whose entire visual grammar this piece is
-// borrowing. It runs from the collar, up over the pole and back down to
-// the collar on the other side.
-//
-// The plane it sits in matters, and the intuition is backwards. Turning it
-// edge-on to the camera sounds like the way to keep it out of the picture
-// — and it is the worst case: edge-on, the near half of the ring projects
-// to a solid bar straight down the middle of the globe's face. Left in the
-// plane *facing* the camera it projects to a circle instead, so it runs
-// around the silhouette, hugging the limb where there is nothing to hide.
-{
-  const globeCentreY = GLOBE_SEAT_Y;
-  const ringRadius = RADIUS + BUMP_HEIGHT * 0.42;
-  // reach far enough round for both ends to come down level with the collar
-  const endY = -1.05 - globeCentreY;
-  const endAngle = Math.asin(THREE.MathUtils.clamp(endY / ringRadius, -1, 1));
-  const arc = Math.PI - endAngle * 2;
-
-  const meridian = new THREE.TorusGeometry(ringRadius, 0.05, 10, 96, arc);
-  meridian.rotateZ(endAngle); // start the sweep down at the collar, not at the equator
-  meridian.translate(0, globeCentreY, 0);
-  standBrass.push(meridian);
-
-  // Graduation marks every fifteen degrees, alternating long and short the
-  // way a real engraved scale does. They are barely a pixel each at this
-  // framing, which is the point: an unbroken band of brass reads as a
-  // plastic hoop, and a band with a rhythm along it reads as machined.
-  for (let deg = -75; deg <= 75; deg += 15) {
-    const a = (deg * Math.PI) / 180;
-    const major = deg % 45 === 0;
-    const tick = new THREE.BoxGeometry(major ? 0.045 : 0.028, 0.006, 0.012);
-    tick.translate(ringRadius + 0.03, 0, 0);
-    tick.rotateZ(a);
-    tick.translate(0, globeCentreY, 0);
-    standBrass.push(tick);
-  }
-}
+// There is deliberately no meridian half-ring around the sphere. One used
+// to arc from the collar up over the pole and back down, with an engraved
+// scale along it, on the argument that a desk globe is not legible as a
+// globe without one. In the frame this piece actually uses it did the
+// opposite: sitting in the plane facing the camera it projects to a circle
+// riding the silhouette, so the brass traces the limb all the way round and
+// the planet reads as something mounted behind a hoop rather than as a
+// sphere sitting on a workbench. The collar below is enough to say "this
+// object is held" — the earth itself stays unencircled.
 
 // two meshes for the whole pedestal, instead of one per turned part
 [
