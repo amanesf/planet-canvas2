@@ -11,6 +11,7 @@ import {
   buildTerrainTexture,
   buildWaveTexture,
   displaceSphere,
+  loadRealElevationData,
   rippleSphere,
   seaLevelRadius,
 } from './terrain';
@@ -77,7 +78,7 @@ const SETTINGS = {
 // the elapsed seconds and the quality tier. The tier in particular is the
 // one fact worth having when a device behaves differently from every device
 // it was tested on.
-const BUILD_STEPS = 9;
+const BUILD_STEPS = 10;
 let buildStep = 0;
 const buildStartedAt = performance.now();
 
@@ -735,6 +736,12 @@ function animate() {
 // a phone — which is indistinguishable from the page having hung, and was
 // read as exactly that.
 startRendering();
+
+// Every subsequent terrain call (displaceSphere, buildTerrainTexture, the
+// river/relief bakes) reads real-world elevation via heightAt, so the image
+// backing it must already be decoded before any of them run.
+await loadRealElevationData(`${import.meta.env.BASE_URL}world-elevation.png`);
+await yieldToBrowser('地形データ');
 
 const geometry = new THREE.SphereGeometry(RADIUS, SETTINGS.globeSegments[0], SETTINGS.globeSegments[1]);
 displaceSphere(geometry, RADIUS, BUMP_HEIGHT);

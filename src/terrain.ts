@@ -131,20 +131,35 @@ function buildBeltSamples(controlPoints: THREE.Vector3[], segmentsPerSpan: numbe
   return samples;
 }
 
-const MOUNTAIN_BELT_A = [
-  new THREE.Vector3(0.9, 0.25, -0.35),
-  new THREE.Vector3(0.55, 0.5, -0.05),
-  new THREE.Vector3(0.15, 0.62, 0.35),
-  new THREE.Vector3(-0.2, 0.55, 0.68),
-  new THREE.Vector3(-0.55, 0.35, 0.78),
-].map((v) => v.normalize());
+// Same convention as dirForPixel/realElevationAt below, in degrees: standard
+// equirectangular, prime meridian at the image's horizontal center.
+function latLonToDir(latDeg: number, lonDeg: number): THREE.Vector3 {
+  const phi = ((lonDeg + 180) / 360) * Math.PI * 2;
+  const theta = ((90 - latDeg) / 180) * Math.PI;
+  return new THREE.Vector3(-Math.cos(phi) * Math.sin(theta), Math.cos(theta), Math.sin(phi) * Math.sin(theta));
+}
 
+// The real Alpide belt: Alps -> Caucasus/Zagros -> Himalaya -> Myanmar ->
+// Indonesian arc (Sulawesi) — where the source elevation data actually has
+// mountains, not a stand-in shape.
+const MOUNTAIN_BELT_A = [
+  latLonToDir(46, 8), // Alps
+  latLonToDir(35, 48), // Zagros / Caucasus
+  latLonToDir(29, 84), // Himalaya
+  latLonToDir(22, 98), // Myanmar highlands
+  latLonToDir(-2, 121), // Sulawesi, Indonesian arc
+];
+
+// The Pacific Ring of Fire's eastern arm: Alaska Range -> Rockies -> Sierra
+// Madre -> Andes, the length of the Americas.
 const MOUNTAIN_BELT_B = [
-  new THREE.Vector3(-0.6, -0.2, 0.75),
-  new THREE.Vector3(-0.3, -0.5, 0.55),
-  new THREE.Vector3(0.05, -0.68, 0.25),
-  new THREE.Vector3(0.35, -0.62, -0.15),
-].map((v) => v.normalize());
+  latLonToDir(62, -151), // Alaska Range
+  latLonToDir(39, -106), // Rockies, Colorado
+  latLonToDir(17, -95), // Sierra Madre, Mexico
+  latLonToDir(-5, -77), // Andes, Peru
+  latLonToDir(-33, -70), // Andes, Chile
+  latLonToDir(-50, -73), // Patagonia
+];
 
 const mountainBeltSamples: THREE.Vector3[] = [
   ...buildBeltSamples(MOUNTAIN_BELT_A, 5),
@@ -172,10 +187,14 @@ interface VolcanoDef {
 }
 
 const VOLCANOES: VolcanoDef[] = [
-  { center: new THREE.Vector3(0.873, 0.353, -0.338).normalize(), radius: 0.052, craterRadius: 0.016, active: true },
-  { center: new THREE.Vector3(-0.24, -0.715, 0.656).normalize(), radius: 0.048, craterRadius: 0.015, active: false },
-  { center: new THREE.Vector3(-0.561, 0.261, 0.785).normalize(), radius: 0.05, craterRadius: 0.015, active: true },
-  { center: new THREE.Vector3(0.656, 0.745, 0.119).normalize(), radius: 0.046, craterRadius: 0.014, active: false },
+  // Kilauea, Hawaii — a persistently active lava lake
+  { center: latLonToDir(19.42, -155.29), radius: 0.052, craterRadius: 0.016, active: true },
+  // Vesuvius, Italy — dormant, overlooking the Bay of Naples
+  { center: latLonToDir(40.82, 14.43), radius: 0.048, craterRadius: 0.015, active: false },
+  // Cotopaxi, Ecuador — one of the Andes' most active
+  { center: latLonToDir(-0.68, -78.44), radius: 0.05, craterRadius: 0.015, active: true },
+  // Mount Fuji, Japan — dormant
+  { center: latLonToDir(35.36, 138.73), radius: 0.046, craterRadius: 0.014, active: false },
 ];
 
 export interface VolcanoSample {
@@ -248,15 +267,88 @@ function orogenyBeltAt(dir: THREE.Vector3): number {
   return grid[py * width + px];
 }
 
+// Real-world coastlines: a single small equirectangular grayscale image
+// (public/world-elevation.png — a downsampled NASA Blue Marble Topography +
+// Bathymetry composite, CC BY-SA 4.0 via Wikimedia Commons) stands in for
+// the fbm3 noise this used to be built from. Loaded once at startup by
+// loadRealElevationData; every other layer in heightAt (rugged detail, mid
+// relief, ice caps, volcano cones, mountain belts) still applies on top of
+// this exactly as before, so only the *shape* of the continents changed
+// from imaginary to real.
+let realElevation: { data: Uint8ClampedArray; width: number; height: number } | null = null;
+
+/** Must resolve before anything that reads heightAt/macroHeightAt runs. */
+export async function loadRealElevationData(url: string): Promise<void> {
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`failed to load elevation data: ${url}`));
+    img.src = url;
+  });
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(image, 0, 0);
+  const { data } = ctx.getImageData(0, 0, image.width, image.height);
+  realElevation = { data, width: image.width, height: image.height };
+}
+
+// This dataset's own natural land/sea boundary, calibrated (via a land-
+// fraction histogram match against Earth's real ~29% land coverage) to
+// grayscale value 145/255. Anchoring that exact value to SEA_LEVEL keeps
+// every one of heightAt's SEA_LEVEL-relative thresholds (ruggedAmount,
+// landMask, coastal ocean opacity...) working unchanged.
+const ELEVATION_SEA_GRAY = 145;
+
+function decodeRealElevation(gray: number): number {
+  if (gray <= ELEVATION_SEA_GRAY) {
+    // the source data is a real topography+bathymetry composite, so ocean
+    // gray already varies with actual depth — preserving that range (rather
+    // than flattening every ocean pixel to one value) is what gives shelves
+    // and trenches their correct relative depth once the coloring below
+    // reads it back out
+    return THREE.MathUtils.mapLinear(gray, 0, ELEVATION_SEA_GRAY, -0.45, SEA_LEVEL);
+  }
+  return THREE.MathUtils.mapLinear(gray, ELEVATION_SEA_GRAY, 255, SEA_LEVEL, 0.5);
+}
+
+// Same inverse (dir -> phi/theta -> pixel) convention as sampleField/
+// orogenyBeltAt/sampleRiverFlow above, bilinearly filtered (the source
+// image is coarse enough at 768x384 that nearest-sampling would show as
+// visible blocking once the terrain's own displacement magnifies it), with
+// wraparound on the seam (x) and clamping at the poles (y).
+function realElevationAt(dir: THREE.Vector3): number {
+  if (!realElevation) return SEA_LEVEL;
+  const { data, width, height } = realElevation;
+  const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
+  let phi = Math.atan2(dir.z, -dir.x);
+  if (phi < 0) phi += Math.PI * 2;
+  const fx = (phi / (Math.PI * 2)) * width;
+  const fy = (theta / Math.PI) * height;
+
+  const x0 = Math.floor(fx);
+  const y0 = THREE.MathUtils.clamp(Math.floor(fy), 0, height - 1);
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const x0w = ((x0 % width) + width) % width;
+  const x1w = (x0w + 1) % width;
+  const y1 = Math.min(y0 + 1, height - 1);
+
+  const g00 = data[(y0 * width + x0w) * 4];
+  const g10 = data[(y0 * width + x1w) * 4];
+  const g01 = data[(y1 * width + x0w) * 4];
+  const g11 = data[(y1 * width + x1w) * 4];
+  const gray = THREE.MathUtils.lerp(THREE.MathUtils.lerp(g00, g10, tx), THREE.MathUtils.lerp(g01, g11, tx), ty);
+  return decodeRealElevation(gray);
+}
+
 // Big smooth rounded continents and coastal hills as the base shape — kept
 // separate from the "rugged" detail below because it also drives river
 // flow direction, and rugged high-frequency noise creates countless tiny
 // local pits that would trap water before it ever reaches the sea.
 function macroHeightAt(dir: THREE.Vector3): number {
-  return (
-    fbm3(dir.x * 1.6, dir.y * 1.6, dir.z * 1.6, 3) * 0.8 +
-    fbm3(dir.x * 3.2 + 9.2, dir.y * 3.2 + 9.2, dir.z * 3.2 + 9.2, 2) * 0.2
-  );
+  return realElevationAt(dir);
 }
 
 export function heightAt(dir: THREE.Vector3): number {
