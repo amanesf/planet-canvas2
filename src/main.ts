@@ -40,16 +40,26 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 // WebGL contexts because too many tabs were open — nothing to do with what
 // the device could sustain. These numbers are picked for a current phone
 // and used everywhere.
+// Turned down a step from where these sat before: a build/render on a
+// mid/low-end Android phone crashed outright during the "組み立て中"
+// phase, not after — the one stretch where the heavy synchronous build
+// work (texture painting, the scatter passes) and the ongoing render loop
+// (shadows, the bokeh/DOF composer pass) are both live at once, so it's
+// the single most resource-hungry moment the page ever hits. Every one of
+// these numbers feeds either that concurrent GPU load (segments, shadow
+// map, DOF rings, pixel ratio) or the build's own texture-paint cost
+// (textureWidth), so trimming them is a direct answer to a crash that
+// happens exactly there, not a general "make it prettier" knob.
 const SETTINGS = {
   /** longitudinal / latitudinal segments for the displaced globe */
-  globeSegments: [240, 135] as const,
-  oceanSegments: [88, 52] as const,
-  shadowMapSize: 1024,
+  globeSegments: [190, 108] as const,
+  oceanSegments: [72, 42] as const,
+  shadowMapSize: 768,
   /** rings of blur taps in the camera pass; each ring is 8 taps */
-  dofRings: 2,
-  maxPixelRatio: 1.5,
+  dofRings: 1,
+  maxPixelRatio: 1.2,
   /** width of the baked terrain/ocean/bump textures; height is half */
-  textureWidth: 1024,
+  textureWidth: 896,
 };
 
 // Building the model blocks the main thread for seconds: the terrain paint
