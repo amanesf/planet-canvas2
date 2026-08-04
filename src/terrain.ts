@@ -1504,9 +1504,13 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
   MAJOR_CITIES.forEach(([lat, lon, size]) => {
     const x = ((lon + 180) / 360) * width;
     const y = ((90 - lat) / 180) * height;
-    // the sprawl around the core, then the core itself
-    drawGlow(ctx, x, y, (5 + size * 9) * (width / 1024), 0.3 * size);
-    drawGlow(ctx, x, y, (1.6 + size * 2.4) * (width / 1024), 0.85 * size);
+    // The sprawl around the core, then the core itself — both a good deal
+    // tighter than they started. A metropolis drawn as a wide soft disc
+    // reads as a glowing ball hovering over the country rather than as a
+    // city: what makes it a city is that it is *small and very bright*,
+    // with a faint halo, not big and bright.
+    drawGlow(ctx, x, y, (2.6 + size * 4.5) * (width / 1024), 0.22 * size);
+    drawGlow(ctx, x, y, (0.9 + size * 1.4) * (width / 1024), 0.8 * size);
   });
 
   ctx.globalCompositeOperation = 'source-over';

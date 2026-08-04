@@ -255,6 +255,13 @@ const MATERIALS: Record<MaterialKey, THREE.MeshStandardMaterial> = {
   roof: new THREE.MeshStandardMaterial({ color: '#7a6249', roughness: 0.7, metalness: 0.15 }),
 };
 
+// Souvenir-globe scale, not map scale. At their first size the landmarks
+// were smaller than the trees standing next to them, which is both wrong
+// (a pine is not taller than the Eiffel Tower) and useless — you could not
+// tell what any of them were. A souvenir globe solves this by making the
+// building absurdly too big, and so does this.
+const LANDMARK_SCALE = 1.9;
+
 export function buildLandmarks(radius: number, bumpHeight: number): THREE.Group {
   const group = new THREE.Group();
   const buckets: Record<MaterialKey, THREE.BufferGeometry[]> = {
@@ -289,6 +296,7 @@ export function buildLandmarks(radius: number, bumpHeight: number): THREE.Group 
     basis.setPosition(up.x * surface, up.y * surface, up.z * surface);
 
     landmark.build().forEach((part) => {
+      part.geometry.scale(LANDMARK_SCALE, LANDMARK_SCALE, LANDMARK_SCALE);
       part.geometry.applyMatrix4(basis);
       buckets[part.material].push(part.geometry);
     });

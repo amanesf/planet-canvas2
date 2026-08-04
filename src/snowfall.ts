@@ -35,7 +35,13 @@ export function buildSnowfall(
   pixelRatio: number,
 ): Snowfall {
   const rand = mulberry32(9911);
-  const COUNT = 5200;
+  // Enough to read as weather, not as fog. This started at 5200 and the
+  // polar cap came out as a solid white hood: the flakes live on a shell,
+  // and at the limb the line of sight runs the long way through that
+  // shell, so any density that looks right face-on stacks up into an
+  // opaque rind at the edge. Fewer, smaller, fainter flakes in a thinner
+  // shell fixes all of that at once.
+  const COUNT = 2600;
 
   const dirs = new Float32Array(COUNT * 3);
   const phases = new Float32Array(COUNT);
@@ -56,7 +62,7 @@ export function buildSnowfall(
     dirs[i * 3 + 2] = c * Math.sin(lon);
     phases[i] = rand();
     speeds[i] = 0.05 + rand() * 0.05;
-    sizes[i] = 1.4 + rand() * 2.2;
+    sizes[i] = 1.0 + rand() * 1.5;
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -64,7 +70,7 @@ export function buildSnowfall(
   // material's own plumbing; the shader below ignores it and uses aDir, so
   // it is filled with the base direction scaled to the top of the fall.
   const positions = new Float32Array(COUNT * 3);
-  for (let i = 0; i < COUNT * 3; i++) positions[i] = dirs[i] * (radius + 0.2);
+  for (let i = 0; i < COUNT * 3; i++) positions[i] = dirs[i] * (radius + 0.1);
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('aDir', new THREE.BufferAttribute(dirs, 3));
   geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
@@ -96,7 +102,7 @@ export function buildSnowfall(
       void main() {
         float fall = fract(aPhase + uTime * aSpeed);
         // from just under the cloud deck down to the ground
-        float height = mix(0.30, 0.005, fall);
+        float height = mix(0.16, 0.005, fall);
 
         // Snow does not come straight down. A slow swirl about the axis,
         // plus a small sideways wobble at each flake's own phase, is the
@@ -123,7 +129,7 @@ export function buildSnowfall(
         // fade in as it leaves the cloud and out as it reaches the ground,
         // so flakes neither pop into existence nor pile up as a bright ring
         float ends = smoothstep(0.0, 0.12, fall) * (1.0 - smoothstep(0.82, 1.0, fall));
-        vAlpha = inZone * winter * ends * 0.85;
+        vAlpha = inZone * winter * ends * 0.42;
       }
     `,
     fragmentShader: `

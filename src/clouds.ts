@@ -110,9 +110,6 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     haloScale: 1.6,
     undersideFloor: 0.78,
   },
-  // Tall and dense with a dark, heavy underside — a cumulonimbus cell,
-  // the only type that gets its own material (see buildClouds) so it can
-  // flicker with lightning independently of the calm weather around it.
   // A tropical cyclone. Not laid along a band like every other type — its
   // nodules are placed in spiral coordinates around a moving centre (see
   // buildTyphoon) — so `arc` is unused here; the rest of the numbers are
@@ -121,8 +118,8 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     arc: [0, 0],
     hoverBase: 0.13,
     hoverBulk: 0.16,
-    sizeBase: 0.03,
-    sizeBulk: 0.05,
+    sizeBase: 0.026,
+    sizeBulk: 0.034,
     clusterBulk: 0,
     clusterBase: 1,
     flatten: 0.8,
@@ -130,6 +127,9 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     haloScale: 1.3,
     undersideFloor: 0.3,
   },
+  // Tall and dense with a dark, heavy underside — a cumulonimbus cell,
+  // the only type that gets its own material (see buildClouds) so it can
+  // flicker with lightning independently of the calm weather around it.
   storm: {
     arc: [0.22, 0.4],
     hoverBase: 0.14,
@@ -408,39 +408,44 @@ function typhoonCentre(sys: TyphoonSystem, age: number, out: THREE.Vector3): THR
 }
 
 function buildTyphoon(sys: TyphoonSystem, rand: () => number, out: Nodule[]): void {
-  const arms = 4;
+  const arms = 3;
   const params = CLOUD_TYPE_PARAMS.typhoon;
 
-  // the eyewall: a dense ring right at the eye's edge, the tallest and
-  // thickest cotton in the storm
-  const wallCount = 34;
+  // The eyewall: a dense, unbroken ring right at the eye's edge. This is
+  // the single feature that makes the whole thing read as a cyclone rather
+  // than as a patch of bad weather, so it is packed tight enough that the
+  // nodules touch and the hole in the middle stays a clean hole.
+  const wallCount = 56;
   for (let i = 0; i < wallCount; i++) {
     const theta = (i / wallCount) * Math.PI * 2;
-    const r = sys.eye * (1.0 + rand() * 0.22);
+    const r = sys.eye * (1.0 + rand() * 0.16);
     out.push(pushSpiralNodule(sys, r, theta, 1, rand, params));
   }
 
-  // and the rainbands: logarithmic spirals unwinding out of the eyewall,
-  // thinning and breaking up as they go
+  // and the rainbands: logarithmic spirals unwinding out of the eyewall.
+  // Continuous, not sampled sparsely — an arm made of well-separated puffs
+  // is read as a scatter of clouds that happen to lie on a curve, which is
+  // exactly what the first attempt here looked like. Each step lays two or
+  // three nodules *across* the arm instead, so it comes out as a band with
+  // width, and only the outermost fifth is allowed to break up.
   for (let a = 0; a < arms; a++) {
     const base = (a / arms) * Math.PI * 2 + rand() * 0.3;
-    const steps = 26;
+    const steps = 40;
     for (let i = 1; i <= steps; i++) {
       const f = i / steps;
-      const r = sys.eye * 1.15 + (sys.reach - sys.eye * 1.15) * Math.pow(f, 0.85);
+      const r = sys.eye * 1.1 + (sys.reach - sys.eye * 1.1) * Math.pow(f, 0.9);
       // the further out, the more the arm has been wound back — this is
       // what makes the arms trail rather than stick out like spokes
-      const theta = base - sys.hemi * 2.4 * Math.log(r / sys.eye);
-      // arms break up into separate cells toward the outside
-      if (f > 0.45 && rand() < (f - 0.45) * 0.9) continue;
-      const spread = 1 + Math.floor(rand() * 2);
-      for (let c = 0; c < spread; c++) {
+      const theta = base - sys.hemi * 3.1 * Math.log(r / sys.eye);
+      if (f > 0.8 && rand() < (f - 0.8) * 2.6) continue;
+      const across = 3 - Math.floor(f * 2);
+      for (let c = 0; c < across; c++) {
         out.push(
           pushSpiralNodule(
             sys,
-            r * (1 + (rand() - 0.5) * 0.08),
-            theta + (rand() - 0.5) * 0.35,
-            1 - f * 0.55,
+            r * (1 + ((c - (across - 1) / 2) * 0.05 + (rand() - 0.5) * 0.03)),
+            theta + (rand() - 0.5) * 0.12,
+            1 - f * 0.6,
             rand,
             params,
           ),
@@ -520,8 +525,8 @@ export function buildClouds(radius: number): CloudSystem {
     hemi,
     period: 150 + rand() * 40,
     phase: i * 0.5 + rand() * 0.15,
-    eye: 0.035,
-    reach: 0.3,
+    eye: 0.042,
+    reach: 0.22,
     spin: 0.55,
     intensity: 0,
     nodules: [],
