@@ -84,18 +84,8 @@ function buildSeedTexture(): THREE.CanvasTexture {
   return texture;
 }
 
-// A flat mid-value elevation field — this page is only exercising the
-// color/render-target pipeline, not real terrain data, so any constant
-// works; it just needs to satisfy createPlateSimulation's contract.
-function buildFlatElevationTexture(): THREE.DataTexture {
-  const data = new Uint8Array(512 * 256).fill(128);
-  const texture = new THREE.DataTexture(data, 512, 256, THREE.RedFormat);
-  texture.needsUpdate = true;
-  return texture;
-}
-
 const seedTexture = buildSeedTexture();
-const plateSim = createPlateSimulation(seedTexture, buildFlatElevationTexture());
+const plateSim = createPlateSimulation(seedTexture);
 
 // Also shown on screen, at the plain sim resolution, so it can be
 // visually inspected too if a screenshot is ever wanted — but the text
