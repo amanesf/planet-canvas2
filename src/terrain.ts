@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { fbm3 } from './noise';
-import { mulberry32 } from './spatialHash';
+import { clumpDensity, mulberry32 } from './spatialHash';
 
 // Tuned so land covers roughly 30% of the surface, like real Earth's
 // land:sea ≈ 3:7 (verified empirically against heightAt's noise distribution).
@@ -133,7 +133,7 @@ function buildBeltSamples(controlPoints: THREE.Vector3[], segmentsPerSpan: numbe
 
 // Same convention as dirForPixel/realElevationAt below, in degrees: standard
 // equirectangular, prime meridian at the image's horizontal center.
-function latLonToDir(latDeg: number, lonDeg: number): THREE.Vector3 {
+export function latLonToDir(latDeg: number, lonDeg: number): THREE.Vector3 {
   const phi = ((lonDeg + 180) / 360) * Math.PI * 2;
   const theta = ((90 - latDeg) / 180) * Math.PI;
   return new THREE.Vector3(-Math.cos(phi) * Math.sin(theta), Math.cos(theta), Math.sin(phi) * Math.sin(theta));
@@ -178,7 +178,7 @@ const mountainBeltSamples: THREE.Vector3[] = [
 // landing on actual land.
 // ---------------------------------------------------------------------
 
-interface VolcanoDef {
+export interface VolcanoDef {
   center: THREE.Vector3;
   radius: number;
   craterRadius: number;
@@ -186,7 +186,7 @@ interface VolcanoDef {
   active: boolean;
 }
 
-const VOLCANOES: VolcanoDef[] = [
+export const VOLCANOES: VolcanoDef[] = [
   // Kilauea, Hawaii — a persistently active lava lake
   { center: latLonToDir(19.42, -155.29), radius: 0.052, craterRadius: 0.016, active: true },
   // Vesuvius, Italy — dormant, overlooking the Bay of Naples
@@ -1387,6 +1387,131 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+// ---------------------------------------------------------------------
+// City lights
+// ---------------------------------------------------------------------
+// The night side of this globe was, until now, simply the unlit half of a
+// painted ball. What makes the real thing unmistakable from orbit is that
+// the dark half is not dark: it is threaded with light, and that light is
+// *not* spread evenly — it hugs coastlines and river valleys, thins out
+// over highland and desert, stops dead at the treeline, and knots into a
+// few dozen very bright points where the actual big cities are.
+//
+// So this is built in two passes over one texture, which main.ts adds to
+// the globe's emissive term gated by which side is facing the sun:
+// a scattered glow wherever the existing climate fields say people could
+// plausibly live, and named metropolises at their real coordinates on top.
+const MAJOR_CITIES: [number, number, number][] = [
+  // latitude, longitude, relative size
+  [35.68, 139.69, 1.0], // 東京
+  [37.57, 126.98, 0.8], // ソウル
+  [31.23, 121.47, 0.95], // 上海
+  [39.9, 116.4, 0.9], // 北京
+  [22.32, 114.17, 0.7], // 香港
+  [1.35, 103.82, 0.6], // シンガポール
+  [28.61, 77.21, 0.85], // デリー
+  [19.08, 72.88, 0.8], // ムンバイ
+  [25.2, 55.27, 0.6], // ドバイ
+  [41.01, 28.98, 0.7], // イスタンブール
+  [55.76, 37.62, 0.75], // モスクワ
+  [51.51, -0.13, 0.85], // ロンドン
+  [48.86, 2.35, 0.8], // パリ
+  [52.52, 13.4, 0.65], // ベルリン
+  [40.42, -3.7, 0.6], // マドリード
+  [41.9, 12.5, 0.6], // ローマ
+  [30.04, 31.24, 0.7], // カイロ
+  [6.52, 3.38, 0.6], // ラゴス
+  [-26.2, 28.05, 0.55], // ヨハネスブルグ
+  [40.71, -74.01, 1.0], // ニューヨーク
+  [34.05, -118.24, 0.9], // ロサンゼルス
+  [41.88, -87.63, 0.7], // シカゴ
+  [19.43, -99.13, 0.85], // メキシコシティ
+  [-23.55, -46.63, 0.85], // サンパウロ
+  [-34.6, -58.38, 0.7], // ブエノスアイレス
+  [-12.05, -77.04, 0.55], // リマ
+  [-33.87, 151.21, 0.6], // シドニー
+  [-37.81, 144.96, 0.5], // メルボルン
+];
+
+function drawGlow(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  alpha: number,
+): void {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+  // sodium-lamp amber in the core falling off through white to nothing —
+  // a flat white dot reads as a star, not as a city
+  g.addColorStop(0, `rgba(255, 244, 214, ${alpha})`);
+  g.addColorStop(0.35, `rgba(255, 206, 128, ${alpha * 0.55})`);
+  g.addColorStop(1, 'rgba(255, 170, 80, 0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/** How plausible it is that anyone lives at this point, 0..1. */
+function habitabilityAt(dir: THREE.Vector3, height: number): number {
+  if (height < SEA_LEVEL) return 0;
+  const temperature = temperatureAt(dir, height);
+  if (temperature < 0.2) return 0; // nobody lights up the ice caps
+  const elevationPenalty = smoothstep(height - SEA_LEVEL, 0.05, 0.22);
+  // The Sahara has to actually go dark. A gentler ramp here left the whole
+  // desert belt glowing as brightly as Europe, which is the one thing
+  // everybody knows a night-lights image does *not* look like.
+  const dryPenalty = smoothstep(aridityAt(dir), DESERT_ARIDITY_THRESHOLD - 0.16, 0.6);
+  const cold = smoothstep(temperature, 0.2, 0.42);
+  // Population is clustered, not uniform: one low-frequency field decides
+  // where the settled regions are at all, so the scatter comes out as
+  // populated belts with genuinely empty country between them rather than
+  // an even dusting over every habitable pixel.
+  const settled = smoothstep(clumpDensity(dir, 8123, 2.2), 0.3, 0.62);
+  return cold * (1 - elevationPenalty) * (1 - dryPenalty) * settled;
+}
+
+export function buildCityLightsTexture(width = 1024, height = 512): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, width, height);
+  // lights add to each other where towns run together into one conurbation
+  ctx.globalCompositeOperation = 'lighter';
+
+  const rand = mulberry32(60607);
+  const dir = new THREE.Vector3();
+
+  const attempts = width * height * 0.12;
+  for (let i = 0; i < attempts; i++) {
+    // area-preserving: uniform in longitude and in sin(latitude), so the
+    // scatter is not piled up at the poles the way uniform-in-pixel is
+    const u = rand();
+    const v = Math.acos(1 - 2 * rand()) / Math.PI;
+    dirForPixel(u * width, v * height, width, height, dir);
+    const h = sampledHeight(dir).raw;
+    const score = habitabilityAt(dir, h);
+    if (score <= 0 || rand() > score * score) continue;
+    drawGlow(ctx, u * width, v * height, 0.9 + rand() * 2.0, 0.05 + score * 0.17);
+  }
+
+  MAJOR_CITIES.forEach(([lat, lon, size]) => {
+    const x = ((lon + 180) / 360) * width;
+    const y = ((90 - lat) / 180) * height;
+    // the sprawl around the core, then the core itself
+    drawGlow(ctx, x, y, (5 + size * 9) * (width / 1024), 0.3 * size);
+    drawGlow(ctx, x, y, (1.6 + size * 2.4) * (width / 1024), 0.85 * size);
+  });
+
+  ctx.globalCompositeOperation = 'source-over';
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
   texture.needsUpdate = true;
   return texture;
 }

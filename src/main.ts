@@ -7,6 +7,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import {
   applyCoastalMeniscus,
   buildBumpTexture,
+  buildCityLightsTexture,
   buildOceanTexture,
   buildTerrainTexture,
   buildWaveTexture,
@@ -17,6 +18,10 @@ import {
 } from './terrain';
 import { buildSpecies } from './species';
 import { buildClouds } from './clouds';
+import { buildSnowfall } from './snowfall';
+import { buildEruptions } from './eruptions';
+import { buildLandmarks } from './landmarks';
+import { buildAircraft, buildSatellites, buildShips } from './traffic';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
 import { buildWorkshop } from './setDressing';
@@ -78,7 +83,7 @@ const SETTINGS = {
 // the elapsed seconds and the quality tier. The tier in particular is the
 // one fact worth having when a device behaves differently from every device
 // it was tested on.
-const BUILD_STEPS = 10;
+const BUILD_STEPS = 16;
 let buildStep = 0;
 const buildStartedAt = performance.now();
 
@@ -764,6 +769,22 @@ await yieldToBrowser('海');
 const SEASON_SPEED = (Math.PI * 2) / 60;
 const seasonUniforms = { uSeasonTilt: { value: 0 } };
 
+// Which way the sun is.
+//
+// There was no notion of night in this scene at all: the key light is
+// fixed, the globe turns under it, and the far side was simply the unlit
+// half of a painted ball. Naming that direction gives every later system
+// something to key off — the city lights below, the aircraft's navigation
+// strobes, the ships' running lamps — and it costs one constant vec3,
+// because the light does not move. The *globe* moving under it is what
+// produces a day-night cycle (one turn takes about forty seconds, against
+// the sixty-second year the seasons run on).
+const sunDirection = keyLight.position.clone().normalize();
+const dayNightUniforms = { uSunDir: { value: sunDirection } };
+
+await yieldToBrowser('街の灯り');
+const cityLightsTexture = buildCityLightsTexture(TEX_W, TEX_H);
+
 const globeMaterial = new THREE.MeshStandardMaterial({
   map: terrainTexture,
   // fine surface relief via lighting only (no extra geometry) — the
@@ -791,18 +812,40 @@ const globeSeaRadius = seaLevelRadius(RADIUS, BUMP_HEIGHT);
 globeMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uSeasonTilt = seasonUniforms.uSeasonTilt;
   shader.uniforms.uSeaRadius = { value: globeSeaRadius };
+  shader.uniforms.uSunDir = dayNightUniforms.uSunDir;
+  shader.uniforms.uCityLights = { value: cityLightsTexture };
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nvarying float vSeasonLat;\nvarying float vSeasonRadius;')
+    .replace(
+      '#include <common>',
+      '#include <common>\nvarying float vSeasonLat;\nvarying float vSeasonRadius;\nvarying vec3 vGlobeNormal;',
+    )
     .replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
       vSeasonLat = normalize(position).y;
-      vSeasonRadius = length(position);`,
+      vSeasonRadius = length(position);
+      // the outward direction in world space, so the terminator follows the
+      // globe as it turns under the fixed key light
+      vGlobeNormal = mat3(modelMatrix) * normalize(position);`,
     );
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
-      '#include <common>\nuniform float uSeasonTilt;\nuniform float uSeaRadius;\nvarying float vSeasonLat;\nvarying float vSeasonRadius;',
+      '#include <common>\nuniform float uSeasonTilt;\nuniform float uSeaRadius;\nuniform vec3 uSunDir;\nuniform sampler2D uCityLights;\nvarying float vSeasonLat;\nvarying float vSeasonRadius;\nvarying vec3 vGlobeNormal;',
+    )
+    // City lights, on the night side only. Added to the emissive term
+    // rather than to the diffuse colour: they have to survive being on the
+    // face no light reaches, which is the entire point of them.
+    .replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      {
+        float sun = dot(normalize(vGlobeNormal), uSunDir);
+        // a soft terminator — a hard one reads as a stencil laid over the
+        // globe rather than as the edge of the daylight
+        float night = smoothstep(0.16, -0.12, sun);
+        totalEmissiveRadiance += texture2D(uCityLights, vMapUv).rgb * night * 2.4;
+      }`,
     )
     .replace(
       '#include <map_fragment>',
@@ -946,6 +989,41 @@ const clouds = buildClouds(RADIUS);
 // casts, the translucent fringe does not.)
 globeGroup.add(clouds.group);
 
+// Snow that actually falls, over whichever hemisphere is currently in
+// winter — the painted snow line was the result, this is the event. All of
+// its motion lives in a vertex shader; see snowfall.ts.
+await yieldToBrowser('降雪');
+const snowfall = buildSnowfall(RADIUS, seasonUniforms, renderer.getPixelRatio());
+globeGroup.add(snowfall.points);
+
+// The four volcanoes stop being scenery and start being events.
+await yieldToBrowser('火山');
+const eruptions = buildEruptions(RADIUS, BUMP_HEIGHT, renderer.getPixelRatio());
+globeGroup.add(eruptions.group);
+
+// Famous buildings at their real coordinates, absurdly out of scale, which
+// is exactly what a souvenir globe does.
+await yieldToBrowser('名所');
+globeGroup.add(buildLandmarks(RADIUS, BUMP_HEIGHT));
+
+// Traffic: shipping on the sea and airliners over it, both parented to the
+// globe because both travel *with* the planet.
+await yieldToBrowser('航路');
+const ships = buildShips(RADIUS, BUMP_HEIGHT);
+globeGroup.add(ships.group);
+const aircraft = buildAircraft(RADIUS);
+globeGroup.add(aircraft.group);
+
+// Satellites, pointedly *not* parented to the globe: an orbit that turned
+// with the planet under it would be a geostationary ring. They hang off a
+// group that shares the globe's seat and axial tilt but none of its spin.
+const orbitGroup = new THREE.Group();
+orbitGroup.position.copy(globeGroup.position);
+orbitGroup.rotation.z = 0.04; // the same tilt the globe sits at
+scene.add(orbitGroup);
+const satellites = buildSatellites(RADIUS);
+orbitGroup.add(satellites.group);
+
 // ---------- stand: real wood pedestal + nameplate, globe hovers just
 // slightly above it (a hint of "magnetic levitation" kept, but the wood
 // itself — not a glowing ring — is now the dominant, grounded object) ----------
@@ -991,6 +1069,11 @@ globeTick = (t) => {
   // strobe. See clouds.ts for why this is a live per-band update instead of
   // one rigid rotation.
   clouds.tick(t);
+  snowfall.tick(t);
+  eruptions.tick(t);
+  ships.tick(t);
+  aircraft.tick(t);
+  satellites.tick(t);
 
   // +1 = northern hemisphere summer, -1 = northern hemisphere winter (and
   // the reverse south of the equator, handled by multiplying against each
