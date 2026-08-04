@@ -40,26 +40,31 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 // WebGL contexts because too many tabs were open — nothing to do with what
 // the device could sustain. These numbers are picked for a current phone
 // and used everywhere.
-// Turned down a step from where these sat before: a build/render on a
+// Turned down twice now from where these first sat: a build/render on a
 // mid/low-end Android phone crashed outright during the "組み立て中"
 // phase, not after — the one stretch where the heavy synchronous build
 // work (texture painting, the scatter passes) and the ongoing render loop
 // (shadows, the bokeh/DOF composer pass) are both live at once, so it's
-// the single most resource-hungry moment the page ever hits. Every one of
-// these numbers feeds either that concurrent GPU load (segments, shadow
-// map, DOF rings, pixel ratio) or the build's own texture-paint cost
-// (textureWidth), so trimming them is a direct answer to a crash that
-// happens exactly there, not a general "make it prettier" knob.
+// the single most resource-hungry moment the page ever hits.
+//
+// A standalone stress test of that same device (gpgpu-test.html) ran a
+// per-frame render-target switch — the same shape of work shadows and
+// the camera pass both need — clean for 200+ seconds and 5000+ frames in
+// isolation. So the switching itself isn't the problem; the *combined*
+// footprint of this scene while switching is. These numbers, and
+// species.ts's CANDIDATES, are the knobs that bring that combined
+// footprint down without giving up the feature outright — the fix belongs
+// here, not in detecting a GPU vendor and turning shadows off for it.
 const SETTINGS = {
   /** longitudinal / latitudinal segments for the displaced globe */
-  globeSegments: [190, 108] as const,
-  oceanSegments: [72, 42] as const,
-  shadowMapSize: 768,
+  globeSegments: [140, 80] as const,
+  oceanSegments: [56, 32] as const,
+  shadowMapSize: 512,
   /** rings of blur taps in the camera pass; each ring is 8 taps */
   dofRings: 1,
-  maxPixelRatio: 1.2,
+  maxPixelRatio: 1.0,
   /** width of the baked terrain/ocean/bump textures; height is half */
-  textureWidth: 896,
+  textureWidth: 704,
 };
 
 // Building the model blocks the main thread for seconds: the terrain paint
@@ -248,43 +253,27 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 // capping pixel ratio keeps this from overloading weaker mobile GPUs
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, SETTINGS.maxPixelRatio));
 
-// Imagination/PowerVR GPUs (common on recent Android phones) have a
-// long-documented history of buggy context switching in Chromium
-// (crbug.com/230896) and ship with exit_on_context_lost as an active
-// driver workaround — on this hardware, losing a WebGL context doesn't
-// recover, it takes the whole GPU process down, which reads to the user
-// as the tab crashing. Confirmed against a real device: a chrome://gpu
-// report from a phone that was crashing during assembly showed exactly
-// this GPU family and exactly that workaround, and turning off
-// post-processing alone only moved the crash later — most of the model
-// would render, then it would still go down. Shadow mapping is the other
-// standing render-target switch every single frame (light's-eye depth
-// pass, then the main pass), all render duration long, so it's the next
-// thing to give up for this GPU family specifically, not a global
-// quality cut for every device.
-const gpuDebugInfo = renderer.getContext().getExtension('WEBGL_debug_renderer_info');
-const gpuRendererString = gpuDebugInfo
-  ? String(renderer.getContext().getParameter(gpuDebugInfo.UNMASKED_RENDERER_WEBGL))
-  : '';
-// The automatic fallback below is exactly what makes the fallback itself
-// unverifiable on the one device it exists for: that GPU never takes the
-// full-feature path, by design, so there is no way to *see* shadows and
-// the camera pass working there again short of editing this file. A
-// query param opts back in on purpose, for exactly that check — nobody
-// lands on ?quality=full by accident.
-const forceFullQuality = new URLSearchParams(window.location.search).get('quality') === 'full';
-const fullGpuFeatures = forceFullQuality || !/imagination|powervr/i.test(gpuRendererString);
-// Real cast shadows, and they are not optional for this subject — normally.
-// What separates the reference photograph from a rendered planet is not
-// its palette — it is that the clouds throw soft shadows down onto the
-// sea, the coastal cliffs shade the water at their foot, and every
-// mountain occludes the valley beside it. Blob decals fake contact, but
-// they cannot produce an object shadowing a *different* object, which is
-// the cue the eye actually reads as "these things share one physical
-// space". Only the key light casts (one shadow pass), and the map is
-// sized for a subject that occupies a fixed, known volume — on GPUs that
-// can actually sustain it, see fullGpuFeatures above.
-renderer.shadowMap.enabled = fullGpuFeatures;
+// Real cast shadows, and they are not optional for this subject. What
+// separates the reference photograph from a rendered planet is not its
+// palette — it is that the clouds throw soft shadows down onto the sea,
+// the coastal cliffs shade the water at their foot, and every mountain
+// occludes the valley beside it. Blob decals fake contact, but they
+// cannot produce an object shadowing a *different* object, which is the
+// cue the eye actually reads as "these things share one physical space".
+// Only the key light casts (one shadow pass), and the map is sized for a
+// subject that occupies a fixed, known volume.
+//
+// A device once crashed on this, and the fix was not "detect that GPU and
+// skip shadows" — a standalone stress test of the exact same render-
+// target-switching pattern this needs ran clean for 200+ seconds on that
+// same device (see gpgpu-test.html), which means the switch itself is
+// fine there. What wasn't fine was the *combined* weight of the full
+// scene while switching every frame. So the fix lives in SETTINGS and in
+// how much the scatter passes place (see species.ts's CANDIDATES) —
+// bringing the whole scene's footprint down far enough that shadows and
+// the camera pass both stay affordable — not in turning features off for
+// one vendor.
+renderer.shadowMap.enabled = true;
 // PCFSoftShadowMap is deprecated in this three version and silently falls
 // back to PCF anyway; VSM was tried for a softer edge and produced no
 // visible shadow at all here (its light-bleeding term washes out contact
@@ -313,37 +302,28 @@ app.appendChild(renderer.domElement);
 // scene render the stock BokehPass costs. Both ping-pong buffers share the
 // one depth texture: only the RenderPass writes depth, and it runs first
 // every frame, so there is nothing to keep separate.
-//
-// None of this exists at all on the GPU family flagged above — plain
-// renderer.render(scene, camera) instead, see the animate/resize code
-// below.
-let composer: EffectComposer | null = null;
-let cameraPass: ShaderPass | null = null;
-let sceneDepth: THREE.DepthTexture | null = null;
-if (fullGpuFeatures) {
-  sceneDepth = new THREE.DepthTexture(window.innerWidth, window.innerHeight);
-  sceneDepth.type = THREE.UnsignedIntType;
-  // the depthTexture key is omitted rather than passed as undefined: the
-  // render target treats the key's presence as "attach one"
-  const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
-    depthTexture: sceneDepth,
-    depthBuffer: true,
-  });
-  composer = new EffectComposer(renderer, composerTarget);
-  composer.renderTarget2.depthTexture = sceneDepth;
+const sceneDepth = new THREE.DepthTexture(window.innerWidth, window.innerHeight);
+sceneDepth.type = THREE.UnsignedIntType;
+// the depthTexture key is omitted rather than passed as undefined: the
+// render target treats the key's presence as "attach one"
+const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+  depthTexture: sceneDepth,
+  depthBuffer: true,
+});
+const composer = new EffectComposer(renderer, composerTarget);
+composer.renderTarget2.depthTexture = sceneDepth;
 
-  const renderPass = new RenderPass(scene, camera);
-  composer.addPass(renderPass);
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
 
-  cameraPass = new ShaderPass(CameraPassShader);
-  cameraPass.renderToScreen = true;
-  cameraPass.material.defines = { ...cameraPass.material.defines, RINGS: SETTINGS.dofRings };
-  composer.addPass(cameraPass);
-  cameraPass.uniforms.tDepth.value = sceneDepth;
-  cameraPass.uniforms.uNear.value = camera.near;
-  cameraPass.uniforms.uFar.value = camera.far;
-  cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
-}
+const cameraPass = new ShaderPass(CameraPassShader);
+cameraPass.renderToScreen = true;
+cameraPass.material.defines = { ...cameraPass.material.defines, RINGS: SETTINGS.dofRings };
+composer.addPass(cameraPass);
+cameraPass.uniforms.tDepth.value = sceneDepth;
+cameraPass.uniforms.uNear.value = camera.near;
+cameraPass.uniforms.uFar.value = camera.far;
+cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
 // The environment the resin reflects.
 //
@@ -738,21 +718,17 @@ function animate() {
   globeTick?.(t);
 
 
-  controls.update();
+  // keep the focal plane pinned to the front face of the globe as the
+  // viewer orbits or zooms, the way a photographer refocuses on the
+  // subject rather than on a fixed distance
+  cameraPass.uniforms.uTime.value = t;
+  cameraPass.uniforms.uFocusDistance.value = Math.max(
+    camera.position.distanceTo(globeGroup.position) - RADIUS * 0.72,
+    0.5,
+  );
 
-  if (composer && cameraPass) {
-    // keep the focal plane pinned to the front face of the globe as the
-    // viewer orbits or zooms, the way a photographer refocuses on the
-    // subject rather than on a fixed distance
-    cameraPass.uniforms.uTime.value = t;
-    cameraPass.uniforms.uFocusDistance.value = Math.max(
-      camera.position.distanceTo(globeGroup.position) - RADIUS * 0.72,
-      0.5,
-    );
-    composer.render();
-  } else {
-    renderer.render(scene, camera);
-  }
+  controls.update();
+  composer.render();
   requestAnimationFrame(animate);
 }
 
@@ -897,13 +873,11 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  if (composer && cameraPass && sceneDepth) {
-    composer.setSize(window.innerWidth, window.innerHeight);
-    sceneDepth.image.width = window.innerWidth;
-    sceneDepth.image.height = window.innerHeight;
-    sceneDepth.needsUpdate = true;
-    cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
-  }
+  composer.setSize(window.innerWidth, window.innerHeight);
+  sceneDepth.image.width = window.innerWidth;
+  sceneDepth.image.height = window.innerHeight;
+  sceneDepth.needsUpdate = true;
+  cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
   // rescale the orbit distance (and its clamps) for the new aspect ratio,
   // preserving how zoomed-in the user currently is

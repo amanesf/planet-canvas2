@@ -505,7 +505,14 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
   // (no layer consumes a candidate the others wanted), so each ends up
   // sampled at least as well as it was from its own dedicated sweep,
   // for roughly half the combined candidate count the five sweeps used.
-  const CANDIDATES = 360000;
+  //
+  // Cut further on top of that: a real device crashed with the full
+  // scene rendering (shadows + post-processing) even after every other
+  // load-bearing setting came down (see SETTINGS in main.ts), and this
+  // count drives the instance totals across every layer below — fewer
+  // candidates means fewer instances means fewer things the shadow pass
+  // has to submit every frame, on top of less CPU time spent building it.
+  const CANDIDATES = 220000;
 
   for (let i = 0; i < CANDIDATES; i++) {
     const z = rand() * 2 - 1;
