@@ -301,6 +301,17 @@ export async function loadRealElevationData(url: string): Promise<void> {
 // landMask, coastal ocean opacity...) working unchanged.
 const ELEVATION_SEA_GRAY = 145;
 
+// Most land on the real dataset is unremarkable lowland — only a small
+// fraction of it is genuinely mountainous — but a plain linear ramp from
+// the sea-level boundary to the highest peak pushed the *median* land pixel
+// (gray ~159, barely above the ELEVATION_SEA_GRAY boundary) into heightAt's
+// "high mountain" ruggedness/terrace range, reading as excessively tall and
+// jagged almost everywhere. Raising the normalized fraction to a power
+// compresses ordinary hills/plateaus back down near sea level while still
+// letting the rare true summits (Himalaya, Andes) reach the top.
+const ELEVATION_LAND_MAX = 0.4;
+const ELEVATION_LAND_GAMMA = 1.8;
+
 function decodeRealElevation(gray: number): number {
   if (gray <= ELEVATION_SEA_GRAY) {
     // the source data is a real topography+bathymetry composite, so ocean
@@ -310,7 +321,8 @@ function decodeRealElevation(gray: number): number {
     // reads it back out
     return THREE.MathUtils.mapLinear(gray, 0, ELEVATION_SEA_GRAY, -0.45, SEA_LEVEL);
   }
-  return THREE.MathUtils.mapLinear(gray, ELEVATION_SEA_GRAY, 255, SEA_LEVEL, 0.5);
+  const t = (gray - ELEVATION_SEA_GRAY) / (255 - ELEVATION_SEA_GRAY);
+  return SEA_LEVEL + Math.pow(t, ELEVATION_LAND_GAMMA) * (ELEVATION_LAND_MAX - SEA_LEVEL);
 }
 
 // Same inverse (dir -> phi/theta -> pixel) convention as sampleField/

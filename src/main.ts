@@ -755,6 +755,17 @@ await yieldToBrowser('起伏');
 const terrainBumpTexture = buildBumpTexture(TEX_W, TEX_H);
 await yieldToBrowser('海');
 
+// Season phase, shared by every material below whose live color needs to
+// respond to it (this globe's own snow line, every vegetation material in
+// species.ts) — one plain uniform object, updated once per frame in
+// globeTick; every material references the *same* object, so that single
+// update propagates to all of them without a per-material loop. A full
+// year takes about seven minutes: slow enough to read as a background
+// ambiance, not a strobing gimmick, the same design goal as the cloud
+// drift and wave scroll already running here.
+const SEASON_SPEED = 0.015;
+const seasonUniforms = { uSeasonTilt: { value: 0 } };
+
 const globeMaterial = new THREE.MeshStandardMaterial({
   map: terrainTexture,
   // fine surface relief via lighting only (no extra geometry) — the
@@ -769,6 +780,45 @@ const globeMaterial = new THREE.MeshStandardMaterial({
   metalness: 0,
   envMapIntensity: 0.06,
 });
+
+// Automatic seasonal snow line: local winter (uSeasonTilt and this
+// fragment's own latitude carrying opposite sign) pulls the snow line down
+// toward the equator; local summer retreats it back toward the poles. Lives
+// entirely in the fragment shader against the already-baked terrain texture
+// — no re-bake, matching the "GPU-only, extra instructions on an existing
+// pass" rule this project settled on after the plate-tectonics rebake scare.
+// Gated to land only (vRadius vs. the ocean shell's own radius) so the
+// glassy sea itself never gets dusted.
+const globeSeaRadius = seaLevelRadius(RADIUS, BUMP_HEIGHT);
+globeMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uSeasonTilt = seasonUniforms.uSeasonTilt;
+  shader.uniforms.uSeaRadius = { value: globeSeaRadius };
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying float vSeasonLat;\nvarying float vSeasonRadius;')
+    .replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      vSeasonLat = normalize(position).y;
+      vSeasonRadius = length(position);`,
+    );
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      '#include <common>',
+      '#include <common>\nuniform float uSeasonTilt;\nuniform float uSeaRadius;\nvarying float vSeasonLat;\nvarying float vSeasonRadius;',
+    )
+    .replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+      {
+        float landMask = smoothstep(uSeaRadius - 0.01, uSeaRadius + 0.01, vSeasonRadius);
+        float seasonalFactor = uSeasonTilt * vSeasonLat;
+        float winterAmount = clamp(-seasonalFactor, 0.0, 1.0);
+        float snowLine = mix(0.82, 0.5, winterAmount);
+        float seasonalSnow = smoothstep(snowLine, snowLine + 0.14, abs(vSeasonLat)) * winterAmount * landMask;
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.799, 0.855, 0.888), seasonalSnow * 0.8);
+      }`,
+    );
+};
 
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
 globeMesh.castShadow = true;
@@ -863,7 +913,7 @@ globeGroup.add(oceanMesh);
 // trees, mountain rocks, scree, or one of fourteen further species — so
 // adding a kind costs a branch, not another sweep. See species.ts.
 await yieldToBrowser('生物相');
-const species = buildSpecies(RADIUS, BUMP_HEIGHT);
+const species = buildSpecies(RADIUS, BUMP_HEIGHT, seasonUniforms);
 species.traverse((child) => {
   if ((child as THREE.Mesh).isMesh) {
     // Not casting: this group is ~27 InstancedMesh draw calls (grass,
@@ -939,6 +989,12 @@ globeTick = (t) => {
   // spinning toy planet reads as wrong, the way a lit ceiling fan looks
   // wrong under a strobe.
   clouds.rotation.y = t * 0.018;
+
+  // +1 = northern hemisphere summer, -1 = northern hemisphere winter (and
+  // the reverse south of the equator, handled by multiplying against each
+  // fragment/instance's own latitude sign in the shaders above) — every
+  // material sharing this one object picks the new value up next frame.
+  seasonUniforms.uSeasonTilt.value = Math.sin(t * SEASON_SPEED);
 };
 
 document.querySelector<HTMLDivElement>('#loading')?.remove();

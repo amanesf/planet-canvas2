@@ -454,7 +454,55 @@ function orient(position: THREE.Vector3, normal: THREE.Vector3, spin: number, ti
   }
 }
 
-export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
+// Live foliage color for the automatic season cycle: local winter fades
+// chlorophyll toward autumn yellow-orange then a light frost, strongest at
+// high latitude and fading to nothing at the equator (real tropical growth
+// barely changes with the seasons) regardless of season phase. Applied to
+// every plant-colored material (never the mineral/rock/bark ones) as a
+// vertex+fragment shader tint — no texture rebake, no CPU work, the same
+// onBeforeCompile pattern already used for the ocean's live wave motion in
+// main.ts. seasonUniforms is one shared object so every material picks up
+// main.ts's single per-frame update automatically.
+function applySeasonalFoliageTint(
+  material: THREE.MeshStandardMaterial,
+  seasonUniforms: { uSeasonTilt: { value: number } },
+) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uSeasonTilt = seasonUniforms.uSeasonTilt;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying float vSeasonLat;')
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        // the instance's own placement on the sphere, not the local blade/
+        // leaf geometry around it — instanceMatrix's translation column is
+        // this instance's ground point, and every one of these materials is
+        // only ever drawn via InstancedMesh
+        vSeasonLat = normalize((instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz).y;`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uSeasonTilt;\nvarying float vSeasonLat;')
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        {
+          float seasonalFactor = uSeasonTilt * vSeasonLat;
+          float fade = clamp(-seasonalFactor, 0.0, 1.0);
+          vec3 autumnTint = vec3(0.62, 0.42, 0.12);
+          vec3 frostTint = vec3(0.75, 0.8, 0.82);
+          vec3 seasoned = mix(diffuseColor.rgb, autumnTint, smoothstep(0.0, 0.55, fade));
+          seasoned = mix(seasoned, frostTint, smoothstep(0.55, 1.0, fade));
+          diffuseColor.rgb = mix(diffuseColor.rgb, seasoned, smoothstep(0.15, 0.7, abs(vSeasonLat)));
+        }`,
+      );
+  };
+}
+
+export function buildSpecies(
+  radius: number,
+  bumpHeight: number,
+  seasonUniforms: { uSeasonTilt: { value: number } },
+): THREE.Group {
   const group = new THREE.Group();
   const rand = mulberry32(515151);
 
@@ -615,6 +663,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
     roughness: 0.93,
     envMapIntensity: 0.1,
   });
+  applySeasonalFoliageTint(plantMaterial, seasonUniforms);
   const mineralMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.85,
@@ -714,6 +763,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
     roughness: 0.9,
     envMapIntensity: 0.1,
   });
+  applySeasonalFoliageTint(foliageMaterial, seasonUniforms);
 
   // real diorama foliage ("clump foliage" flock/lichen material) is a
   // distinctly bright, saturated yellow-green — noticeably more lime than
@@ -854,6 +904,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
     roughness: 0.92,
     envMapIntensity: 0.1,
   });
+  applySeasonalFoliageTint(canopyMaterial, seasonUniforms);
 
   interface CanopyInstance {
     point: GroundPoint;
@@ -917,6 +968,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
     roughness: 0.9,
     envMapIntensity: 0.08,
   });
+  applySeasonalFoliageTint(grassMaterial, seasonUniforms);
   const grassMesh = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassPoints.length);
   const grassColor = new THREE.Color();
   grassPoints.forEach((p, i) => {
