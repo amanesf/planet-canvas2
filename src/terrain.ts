@@ -563,11 +563,14 @@ const OROGENY_THRESHOLD = 0.28;
 
 // water is flattened to sea level on the mesh so it doesn't visibly
 // inherit the terrain noise as bumpy waves — only land pokes up. Land is
-// pushed up well beyond its raw noise height for a toy-globe, exaggerated
+// pushed up beyond its raw noise height for a toy-globe, exaggerated
 // mountain look; since the ocean (~70% of the surface) stays perfectly
 // flat regardless, this doesn't reintroduce the "potato" whole-sphere
-// distortion from earlier — only the 30% landmass gets dramatic.
-const LAND_BOOST = 2.0;
+// distortion from earlier — only the landmass gets dramatic. Halved from
+// the original 2.0 once real-world elevation data made mountains read as
+// too tall — this only scales land height above the coastline, so it
+// doesn't touch ocean waves, ice shelves, or where the coast itself sits.
+const LAND_BOOST = 1.0;
 // a bigger drop than a purely cosmetic clamp needs — real relief globes
 // have a visible carved "step" right at the coastline instead of land
 // gently sloping into the water, and this is what makes that step read

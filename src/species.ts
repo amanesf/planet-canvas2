@@ -157,8 +157,8 @@ function classify(s: Sample, rand: () => number): Species | null {
     if (elevation < 0.03) return rand() < 0.5 * clumpDensity(dir, 113) ? 'palm' : null;
     return rand() < 0.35 * clumpDensity(dir, 127) ? 'bamboo' : null;
   }
-  if (temperature < 0.34) return rand() < 0.6 * clumpDensity(dir, 131) ? 'conifer' : null;
-  return rand() < 0.3 * clumpDensity(dir, 149) ? 'shrub' : null;
+  if (temperature < 0.34) return rand() < 0.7 * clumpDensity(dir, 131) ? 'conifer' : null;
+  return rand() < 0.5 * clumpDensity(dir, 149) ? 'shrub' : null;
 }
 
 // ---------------------------------------------------------------------
@@ -522,7 +522,7 @@ export function buildSpecies(
     kind: 'tree' | 'rock';
   }
 
-  const forestMinSpacing = 0.02;
+  const forestMinSpacing = 0.015;
   const forestMinSpacingSq = forestMinSpacing * forestMinSpacing;
   const forestHash = new SpatialHash(forestMinSpacing);
   const forestPoints: GroundPoint[] = [];
@@ -590,9 +590,13 @@ export function buildSpecies(
       // wooded at all, a finer one breaks up the margins within them —
       // see the header comment for why a single field gave an even
       // stipple instead of real closed-forest/open-plain contrast.
+      // Widened and boosted from the original tuning: real-world coastlines
+      // and climate bands leave a lot less land in play than the old
+      // fictional continents did, and the same region/patch thresholds that
+      // looked full on those read as sparse, bald-patched forest here.
       const region = fbm3(dir.x * 2.6 + 404, dir.y * 2.6 + 404, dir.z * 2.6 + 404, 2);
       const patch = fbm3(dir.x * 9 + 77, dir.y * 9 + 77, dir.z * 9 + 77, 2);
-      const density = smoothstep(region, -0.22, 0.02) * (1.15 + patch * 1.5);
+      const density = smoothstep(region, -0.55, -0.05) * (1.6 + patch * 1.6);
       if (rand() < density && !forestHash.hasNeighborWithin(dir, forestMinSpacingSq)) {
         const point = dir.clone();
         forestHash.add(point);
