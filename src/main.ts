@@ -108,10 +108,21 @@ const yieldToBrowser = (label?: string) =>
 // screen — including the case where the GPU drops the context and there is
 // no cheaper tier left to retry at, which otherwise ends as a dead canvas
 // under a caption that never changes.
+//
+// A specific failure (the WebGL context refusal below, in particular) sets
+// its own actionable message and then throws to halt startup — but that
+// throw reaches this same generic handler, which used to immediately
+// overwrite the actionable message with the raw exception text, so the
+// reader only ever saw "Error creating WebGL context" and never the "close
+// your other tabs" guidance that was written specifically for them. This
+// flag lets a specific handler claim the caption so its message survives.
+let fatalErrorShown = false;
 window.addEventListener('error', (event) => {
+  if (fatalErrorShown) return;
   setStatus(`読み込みに失敗しました: ${event.message}`);
 });
 window.addEventListener('unhandledrejection', (event) => {
+  if (fatalErrorShown) return;
   setStatus(`読み込みに失敗しました: ${String(event.reason)}`);
 });
 
@@ -216,6 +227,7 @@ let renderer: THREE.WebGLRenderer;
 try {
   renderer = createRenderer();
 } catch (error) {
+  fatalErrorShown = true;
   setStatus(
     'この端末で 3D を開始できませんでした。ブラウザの他のタブを閉じてから再読み込みしてください。',
   );
