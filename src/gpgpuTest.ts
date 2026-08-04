@@ -26,6 +26,26 @@ import * as THREE from 'three';
 // so a hard crash still leaves a number behind — reloading this page
 // after a crash shows the last frame it reached, which a screenshot of a
 // dead tab cannot.
+//
+// Extended a second time for the color-advection design (see the plan
+// this session is working from): that design wants a SECOND, larger
+// (512x256, versus this file's proven 128x128) ping-pong pair running
+// *concurrently* with the first, dispatched up to 12 times within a
+// single throttled "tick" at the fast end of the speed toggle — a
+// meaningfully different bandwidth/fill-rate profile than the single
+// 128x128 pair this file already proved stable for 200+s/5000+ frames.
+// Rather than assume that scales, this probes it directly: the original
+// small pair still runs every animation frame exactly as before, and a
+// second, larger pair now runs alongside it on the same throttled
+// tick/substep cadence the real plate-color simulation would use
+// (TICK_INTERVAL / MAX_SUBSTEPS_PER_TICK below, copied from
+// plateSim.ts), continuously — i.e. permanently pinned at the worst-case
+// dispatch rate a real session would only hit while the user is actively
+// holding the 100x speed button, not the norm. If this runs for minutes
+// without trouble, the color-advection resolution/substep budget in the
+// plan is safe to build for real; if it crashes fast, the candidate
+// resolution or substep cap needs to come down before writing the
+// feature.
 
 const statusEl = document.querySelector<HTMLDivElement>('#status')!;
 const detailEl = document.querySelector<HTMLDivElement>('#detail')!;
@@ -48,7 +68,10 @@ function readLastCheckpoint(): string | null {
 }
 function writeCheckpoint(frame: number, seconds: number) {
   try {
-    localStorage.setItem(STORAGE_KEY, `frame ${frame} / ${seconds.toFixed(1)}s`);
+    localStorage.setItem(
+      STORAGE_KEY,
+      `frame ${frame} / ${seconds.toFixed(1)}s / 色用ペア ${colorDispatchCount} 回転送`,
+    );
   } catch {
     // ignore — private browsing etc.
   }
@@ -108,6 +131,21 @@ const SIM_SIZE = 128;
 let rtA = new THREE.WebGLRenderTarget(SIM_SIZE, SIM_SIZE);
 let rtB = new THREE.WebGLRenderTarget(SIM_SIZE, SIM_SIZE);
 
+// The candidate color-advection resolution/cadence being probed — see
+// the file header. Copied constants, not imported: this file is
+// deliberately standalone (see the original header above), and these
+// need to match plateSim.ts's real values for the probe to mean anything
+// if that file's constants ever change.
+const COLOR_SIM_WIDTH = 512;
+const COLOR_SIM_HEIGHT = 256;
+const TICK_INTERVAL = 0.25;
+const MAX_SUBSTEPS_PER_TICK = 12;
+
+let colorRtA = new THREE.WebGLRenderTarget(COLOR_SIM_WIDTH, COLOR_SIM_HEIGHT);
+let colorRtB = new THREE.WebGLRenderTarget(COLOR_SIM_WIDTH, COLOR_SIM_HEIGHT);
+let colorDispatchCount = 0;
+let colorTickAccumulator = 0;
+
 const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
 // The "simulation" step: reads the previous state texture, writes a
@@ -141,11 +179,45 @@ const simMaterial = new THREE.ShaderMaterial({
 const simScene = new THREE.Scene();
 simScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), simMaterial));
 
+// The second, larger pair. Same trivial "evolve toward a moving target
+// color" shader as the small pair above — this probe is about the
+// render-target switch/bandwidth cost at this resolution, not about
+// computation cost, exactly as the original file's header says.
+const colorSimMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    tPrev: { value: null },
+    uTime: { value: 0 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position.xy, 0.0, 1.0);
+    }
+  `,
+  fragmentShader: `
+    precision mediump float;
+    uniform sampler2D tPrev;
+    uniform float uTime;
+    varying vec2 vUv;
+    void main() {
+      vec4 prev = texture2D(tPrev, vUv);
+      float wave = sin((vUv.x - vUv.y) * 18.0 - uTime) * 0.5 + 0.5;
+      vec3 target = vec3(wave, 0.5 + 0.5 * sin(uTime * 0.5), 1.0 - wave);
+      gl_FragColor = vec4(mix(prev.rgb, target, 0.05), 1.0);
+    }
+  `,
+});
+const colorSimScene = new THREE.Scene();
+colorSimScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), colorSimMaterial));
+
 // The "display" step: shows the current state texture on screen, reading
 // from whichever render target the simulation just wrote to.
 const displayMaterial = new THREE.MeshBasicMaterial({ map: rtA.texture });
 const displayScene = new THREE.Scene();
 displayScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), displayMaterial));
+
+let lastElapsed = 0;
 
 function tick() {
   frame++;
@@ -167,9 +239,33 @@ function tick() {
   renderer.setRenderTarget(null);
   renderer.render(displayScene, orthoCamera);
 
+  // The second, larger pair, throttled and sub-stepped exactly the way
+  // plateSim.ts's real update() is — see this file's header. Pinned at
+  // the fast-end worst case continuously, not just occasionally.
+  const dt = Math.max(0, Math.min(seconds - lastElapsed, 0.25));
+  lastElapsed = seconds;
+  colorTickAccumulator += dt;
+  if (colorTickAccumulator >= TICK_INTERVAL) {
+    colorTickAccumulator = 0;
+    for (let i = 0; i < MAX_SUBSTEPS_PER_TICK; i++) {
+      colorSimMaterial.uniforms.tPrev.value = colorRtA.texture;
+      colorSimMaterial.uniforms.uTime.value = seconds + i * 0.01;
+      renderer.setRenderTarget(colorRtB);
+      renderer.render(colorSimScene, orthoCamera);
+      const colorSwap = colorRtA;
+      colorRtA = colorRtB;
+      colorRtB = colorSwap;
+      colorDispatchCount++;
+    }
+    renderer.setRenderTarget(null);
+  }
+
   if (frame % 30 === 0) {
     setStatus(`実行中… frame ${frame} / ${seconds.toFixed(1)}s`);
-    setDetail('落ちずに動いていれば、この数字が増え続けます。');
+    setDetail(
+      `落ちずに動いていれば、この数字が増え続けます。\n` +
+        `色用ペア(${COLOR_SIM_WIDTH}x${COLOR_SIM_HEIGHT}): ${colorDispatchCount} 回転送`,
+    );
     writeCheckpoint(frame, seconds);
   }
 
