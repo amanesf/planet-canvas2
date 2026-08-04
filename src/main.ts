@@ -247,6 +247,24 @@ try {
 renderer.setSize(window.innerWidth, window.innerHeight);
 // capping pixel ratio keeps this from overloading weaker mobile GPUs
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, SETTINGS.maxPixelRatio));
+
+// Imagination/PowerVR GPUs (common on recent Android phones) have a
+// long-documented history of buggy context switching in Chromium
+// (crbug.com/230896) and ship with exit_on_context_lost as an active
+// driver workaround — on this hardware, losing a WebGL context doesn't
+// recover, it takes the whole GPU process down, which reads to the user
+// as the tab crashing. Confirmed against a real device: a chrome://gpu
+// report from a phone that was crashing during assembly showed exactly
+// this GPU family and exactly that workaround. The post-processing pass
+// below is the least standard thing this renderer asks of a driver — an
+// extra render target, a depth texture attachment, a full-screen shader —
+// so it's the first thing to give up for this GPU family specifically,
+// rather than a global quality cut for every device.
+const gpuDebugInfo = renderer.getContext().getExtension('WEBGL_debug_renderer_info');
+const gpuRendererString = gpuDebugInfo
+  ? String(renderer.getContext().getParameter(gpuDebugInfo.UNMASKED_RENDERER_WEBGL))
+  : '';
+const usePostProcessing = !/imagination|powervr/i.test(gpuRendererString);
 // Real cast shadows, and they are not optional for this subject. What
 // separates the reference photograph from a rendered planet is not its
 // palette — it is that the clouds throw soft shadows down onto the sea,
@@ -285,22 +303,29 @@ app.appendChild(renderer.domElement);
 // scene render the stock BokehPass costs. Both ping-pong buffers share the
 // one depth texture: only the RenderPass writes depth, and it runs first
 // every frame, so there is nothing to keep separate.
-const sceneDepth = new THREE.DepthTexture(window.innerWidth, window.innerHeight);
-sceneDepth.type = THREE.UnsignedIntType;
-// the depthTexture key is omitted rather than passed as undefined: the
-// render target treats the key's presence as "attach one"
-const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
-  depthTexture: sceneDepth,
-  depthBuffer: true,
-});
-const composer = new EffectComposer(renderer, composerTarget);
-composer.renderTarget2.depthTexture = sceneDepth;
+//
+// None of this exists at all on the GPU family flagged above — plain
+// renderer.render(scene, camera) instead, see the animate/resize code
+// below.
+let composer: EffectComposer | null = null;
+let cameraPass: ShaderPass | null = null;
+let sceneDepth: THREE.DepthTexture | null = null;
+if (usePostProcessing) {
+  sceneDepth = new THREE.DepthTexture(window.innerWidth, window.innerHeight);
+  sceneDepth.type = THREE.UnsignedIntType;
+  // the depthTexture key is omitted rather than passed as undefined: the
+  // render target treats the key's presence as "attach one"
+  const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+    depthTexture: sceneDepth,
+    depthBuffer: true,
+  });
+  composer = new EffectComposer(renderer, composerTarget);
+  composer.renderTarget2.depthTexture = sceneDepth;
 
-const renderPass = new RenderPass(scene, camera);
-composer.addPass(renderPass);
+  const renderPass = new RenderPass(scene, camera);
+  composer.addPass(renderPass);
 
-const cameraPass = new ShaderPass(CameraPassShader);
-{
+  cameraPass = new ShaderPass(CameraPassShader);
   cameraPass.renderToScreen = true;
   cameraPass.material.defines = { ...cameraPass.material.defines, RINGS: SETTINGS.dofRings };
   composer.addPass(cameraPass);
@@ -703,17 +728,21 @@ function animate() {
   globeTick?.(t);
 
 
-  // keep the focal plane pinned to the front face of the globe as the
-  // viewer orbits or zooms, the way a photographer refocuses on the
-  // subject rather than on a fixed distance
-  cameraPass.uniforms.uTime.value = t;
-  cameraPass.uniforms.uFocusDistance.value = Math.max(
-    camera.position.distanceTo(globeGroup.position) - RADIUS * 0.72,
-    0.5,
-  );
-
   controls.update();
-  composer.render();
+
+  if (composer && cameraPass) {
+    // keep the focal plane pinned to the front face of the globe as the
+    // viewer orbits or zooms, the way a photographer refocuses on the
+    // subject rather than on a fixed distance
+    cameraPass.uniforms.uTime.value = t;
+    cameraPass.uniforms.uFocusDistance.value = Math.max(
+      camera.position.distanceTo(globeGroup.position) - RADIUS * 0.72,
+      0.5,
+    );
+    composer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
   requestAnimationFrame(animate);
 }
 
@@ -858,11 +887,13 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);
-  sceneDepth.image.width = window.innerWidth;
-  sceneDepth.image.height = window.innerHeight;
-  sceneDepth.needsUpdate = true;
-  cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+  if (composer && cameraPass && sceneDepth) {
+    composer.setSize(window.innerWidth, window.innerHeight);
+    sceneDepth.image.width = window.innerWidth;
+    sceneDepth.image.height = window.innerHeight;
+    sceneDepth.needsUpdate = true;
+    cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+  }
 
   // rescale the orbit distance (and its clamps) for the new aspect ratio,
   // preserving how zoomed-in the user currently is
