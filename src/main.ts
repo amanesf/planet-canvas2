@@ -19,6 +19,7 @@ import { buildClouds } from './clouds';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
 import { buildWorkshop } from './setDressing';
+import { createPlateSimulation } from './plateSim';
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -763,6 +764,33 @@ const globeMaterial = new THREE.MeshStandardMaterial({
   envMapIntensity: 0.06,
 });
 
+// Live plate tectonics (see plateSim.ts): a small GPU simulation ticking
+// on its own slow clock, independent of the render frame rate. Its
+// output is one small height *delta* — mountains slowly building where
+// plates collide, ground slowly relaxing where they pull apart — added
+// on top of the static terrain this mesh already has, in world space
+// along each vertex's own (static) normal. The terrain's paint and its
+// overall continent shapes stay exactly as generated; only this one
+// live layer moves.
+const plateSim = createPlateSimulation();
+globeMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uPlateSim = { value: plateSim.getTexture() };
+  // exaggerated well past a real plate boundary's actual relief for the
+  // same reason the rest of this globe's terrain is (see BUMP_HEIGHT
+  // above) — a literally accurate few hundred meters of uplift is
+  // invisible at this scale
+  shader.uniforms.uPlateUplift = { value: 0.05 };
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nuniform sampler2D uPlateSim;\nuniform float uPlateUplift;')
+    .replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      float plateDelta = texture2D(uPlateSim, uv).r * 2.0 - 1.0;
+      transformed += objectNormal * plateDelta * uPlateUplift;`,
+    );
+  globeMaterial.userData.shader = shader;
+};
+
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
 globeMesh.castShadow = true;
 globeMesh.receiveShadow = true;
@@ -786,6 +814,19 @@ const oceanTexture = buildOceanTexture(TEX_W, TEX_H);
 await yieldToBrowser('水面');
 const waveTexture = buildWaveTexture();
 await yieldToBrowser('植生');
+
+// Real vertex motion, on top of the scrolled bump map above. A moving
+// bump texture alone makes the *highlights* shimmer, but the surface
+// itself never actually moves — up close, or in a still frame, that
+// reads as a photograph of water rather than water. This adds one small
+// sinusoidal offset along each vertex's own outward direction (the
+// sphere's radius direction, doubling as its normal), cheap enough that
+// it costs nothing extra to switch on: no new render target, no new
+// draw call, just a few more instructions in a vertex shader this mesh
+// already runs. Kept deliberately subtle — the ocean mesh here is
+// already low-poly (SETTINGS.oceanSegments), so a strong displacement
+// would facet visibly instead of reading as a swell.
+let oceanWaveUniforms: { uTime: { value: number } } | null = null;
 const oceanMaterial = new THREE.MeshPhysicalMaterial({
   map: oceanTexture,
   // a directional wave pattern, slowly scrolled in the animation loop —
@@ -812,6 +853,24 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   // without washing the saturated blue out to a flat gray-teal
   envMapIntensity: 0.35,
 });
+oceanMaterial.onBeforeCompile = (shader) => {
+  shader.uniforms.uTime = { value: 0 };
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nuniform float uTime;')
+    .replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      // object-space position on this sphere already points outward from
+      // its center, so it doubles as the per-vertex swell direction —
+      // two overlapping frequencies so it doesn't read as one uniform
+      // pulse breathing in and out
+      vec3 swellDir = normalize(position);
+      float swell = sin(position.x * 14.0 + position.z * 9.0 + uTime * 1.3) * 0.0011
+                  + sin(position.x * 6.0 - position.z * 8.0 - uTime * 0.8) * 0.0008;
+      transformed += swellDir * swell;`,
+    );
+  oceanWaveUniforms = shader.uniforms as unknown as { uTime: { value: number } };
+};
 const oceanMesh = new THREE.Mesh(oceanGeometry, oceanMaterial);
 // receives only — a translucent resin sheet casting a hard opaque shadow
 // onto the seabed it covers would read as a lid, not as water
@@ -890,6 +949,26 @@ window.addEventListener('resize', () => {
 globeTick = (t) => {
   waveTexture.offset.x = t * 0.006;
   waveTexture.offset.y = Math.sin(t * 0.15) * 0.01;
+  if (oceanWaveUniforms) oceanWaveUniforms.uTime.value = t;
+
+  // Weather drifts independently of the ground under it. `clouds` is a
+  // child of globeGroup, so this rotation is *relative* to the globe's
+  // own spin — setting it directly from elapsed time (not accumulating a
+  // += each frame) keeps it exactly reproducible regardless of frame
+  // rate, the same way the wave offset above does it. Slower than the
+  // globe's own spin: weather visibly creeping across a much faster-
+  // spinning toy planet reads as wrong, the way a lit ceiling fan looks
+  // wrong under a strobe.
+  clouds.rotation.y = t * 0.018;
+
+  // Ticks on its own slower clock internally (see plateSim.ts) — safe to
+  // call every frame, most calls are a no-op. The uniform has to be
+  // reassigned each time a tick actually happens because the simulation
+  // swaps which of its two render targets is "current" every step; the
+  // material's shader object was captured in onBeforeCompile above.
+  plateSim.update(renderer, t);
+  const globeShader = globeMaterial.userData.shader as { uniforms: { uPlateSim: { value: THREE.Texture } } } | undefined;
+  if (globeShader) globeShader.uniforms.uPlateSim.value = plateSim.getTexture();
 };
 
 document.querySelector<HTMLDivElement>('#loading')?.remove();
