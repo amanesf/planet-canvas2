@@ -4,15 +4,16 @@ import {
   aridityAt,
   badlandsAt,
   BADLANDS_THRESHOLD,
+  climateFactsAt,
   DESERT_ARIDITY_THRESHOLD,
   orogenyBeltAt,
   sampledHeight,
   SEA_LEVEL,
   snowinessAt,
   canopyAt,
-  coniferousAt,
   temperatureAt,
   terracedElevation,
+  type ClimateGroup,
 } from './terrain';
 import { clumpDensity, displaceWithNoise, mulberry32, smoothstep, SpatialHash } from './spatialHash';
 import { fbm3 } from './noise';
@@ -48,13 +49,18 @@ import { fbm3 } from './noise';
 
 export type Species =
   | 'conifer'
+  | 'cypress'
+  | 'broadleaf'
+  | 'acacia'
   | 'palm'
   | 'deadTree'
   | 'bamboo'
   | 'mangrove'
   | 'shrub'
+  | 'tussock'
   | 'cactus'
   | 'desertScrub'
+  | 'dune'
   | 'butte'
   | 'seaStack'
   | 'iceFloe'
@@ -64,6 +70,7 @@ export type Species =
 
 /** Whether a species is planted (tinted green-ish) or mineral. */
 const MINERAL: ReadonlySet<Species> = new Set<Species>([
+  'dune',
   'butte',
   'seaStack',
   'iceFloe',
@@ -94,13 +101,30 @@ interface Sample {
   canopy: number;
   /** and whether that forest is conifer */
   coniferous: boolean;
+  /** the Köppen group itself — what decides which species stand here */
+  group: ClimateGroup;
   underwater: boolean;
   shelfDepth: number;
 }
 
-function sampleAt(dir: THREE.Vector3): Sample {
+/**
+ * Everything every layer wants to know about a candidate, or null if there
+ * is nothing any of them could put there.
+ *
+ * The early return is worth more than it looks. Roughly seven candidates in
+ * ten land on open ocean deeper than the shelf, where nothing is ever
+ * placed — and each one was paying for a climate-raster probe, four baked
+ * field lookups and a snow computation before anything got round to
+ * discarding it. Height alone answers the question, and height is the one
+ * field that is a single array read.
+ */
+function sampleAt(dir: THREE.Vector3): Sample | null {
   const height = sampledHeight(dir).raw;
+  const shelfDepth = SEA_LEVEL - height;
+  if (shelfDepth > 0.045) return null;
+
   const elevation = terracedElevation(height);
+  const { group, coniferous } = climateFactsAt(dir);
   return {
     dir,
     height,
@@ -111,27 +135,38 @@ function sampleAt(dir: THREE.Vector3): Sample {
     belt: orogenyBeltAt(dir),
     badlands: badlandsAt(dir),
     canopy: canopyAt(dir),
-    coniferous: coniferousAt(dir),
+    coniferous,
+    group,
     underwater: height < SEA_LEVEL,
-    shelfDepth: SEA_LEVEL - height,
+    shelfDepth,
   };
 }
 
 /**
  * What belongs at this point, or null for bare ground.
  *
- * The order matters: the tests run from the most specific habitat to the
- * least, so that (say) a mangrove coast is not first claimed by the
- * generic tropical case. Each acceptance chance is gated by
- * `clumpDensity` with a seed of its own, so one species' clusters don't
- * line up with another's.
+ * Which species stands here is the Köppen group's call. It used to be a
+ * ladder of temperature and aridity thresholds, which is a reasonable way
+ * to guess a biome when you have no biome data — but the classification is
+ * *already* the biome, hand-drawn from a century of station records, and
+ * reconstructing it badly out of two scalars threw that away. Concretely,
+ * a threshold ladder cannot tell an Aw savanna from a Cfa oak wood (same
+ * temperature, similar aridity), nor a Cs Mediterranean hillside from a
+ * Cfb oceanic one, so both pairs came out as the same generic shrub. The
+ * groups separate them by construction.
+ *
+ * Within a group the order still runs from the most specific habitat to
+ * the least, so that (say) a mangrove coast is not first claimed by the
+ * generic tropical case. Each acceptance chance is gated by `clumpDensity`
+ * with a seed of its own, so one species' clusters don't line up with
+ * another's.
  */
 function classify(s: Sample, rand: () => number): Species | null {
-  const { dir, elevation, temperature, snow, arid, belt, badlands, underwater, shelfDepth } = s;
+  const { dir, elevation, temperature, snow, belt, badlands, group, underwater, shelfDepth } = s;
 
   if (underwater) {
-    // Only the shallow shelf holds anything; deep water is empty.
-    if (shelfDepth > 0.045) return null;
+    // Only the shallow shelf holds anything; anything deeper never reaches
+    // here, sampleAt having already discarded it.
     if (temperature < 0.06) return rand() < 0.55 * clumpDensity(dir, 11) ? 'iceFloe' : null;
     if (temperature > 0.62 && shelfDepth < 0.02) return rand() < 0.5 * clumpDensity(dir, 23) ? 'mangrove' : null;
     // rock left standing where a cliffed coast has been cut back
@@ -139,8 +174,10 @@ function classify(s: Sample, rand: () => number): Species | null {
     return null;
   }
 
-  // Frozen ground: ice and drifts, nothing that grows.
-  if (snow > 0.5) {
+  // Frozen ground: ice and drifts, nothing that grows. This and the two
+  // tests after it are landform, not climate — an ice cap, a volcano and a
+  // canyon each override whatever the classification says grows nearby.
+  if (snow > 0.5 || group === 'EF') {
     if (elevation > 0.2 && belt > 0.25) return rand() < 0.4 * clumpDensity(dir, 41) ? 'glacier' : null;
     return rand() < 0.3 * clumpDensity(dir, 53) ? 'snowDrift' : null;
   }
@@ -148,32 +185,102 @@ function classify(s: Sample, rand: () => number): Species | null {
   // Volcanic country vents steam.
   if (belt > 0.55 && elevation > 0.16 && rand() < 0.06 * clumpDensity(dir, 61)) return 'geyser';
 
-  if (arid > 0.62) {
-    // Thinned from 0.5: with real aridity data the Sahara is now genuinely
-    // arid over its whole area rather than in noise-chosen patches, so the
-    // same acceptance rate carpeted it in mesas — a desert reads as empty
-    // ground with the occasional landmark rock, not as a field of them.
-    if (badlands > 0.32) return rand() < 0.26 * clumpDensity(dir, 71) ? 'butte' : null;
-    if (temperature > 0.45) {
-      if (rand() >= clumpDensity(dir, 83)) return null; // bare gaps between succulent stands
-      return rand() < 0.45 ? 'cactus' : 'desertScrub';
+  // Mesas stand where the real badlands are (see KOPPEN_BADLANDS in
+  // terrain.ts) — which is inside the dry classes and nowhere else, rather
+  // than wherever a global noise blob happened to peak. A chance, not a
+  // branch: badlands country is still desert, so what a candidate is not
+  // claimed by here falls through to its group below and gets sand or
+  // scrub. Making it terminal is what left the Sahara a field of mesas
+  // with not one dune in it.
+  if (badlands > BADLANDS_THRESHOLD + 0.04 && rand() < 0.22 * clumpDensity(dir, 71)) return 'butte';
+
+  // Above the tree line: standing deadwood, whatever the climate below is.
+  if (elevation > 0.15) return rand() < 0.18 * clumpDensity(dir, 101) ? 'deadTree' : null;
+
+  switch (group) {
+    // --- A: tropical ---
+    case 'Af':
+    case 'Am': {
+      // everwet: palms along the shore, then broadleaf with bamboo through
+      // the understorey. The forest canopy layer supplies the mass; these
+      // are the individual crowns that break its outline.
+      if (elevation < 0.02 && rand() < 0.42 * clumpDensity(dir, 113)) return 'palm';
+      if (rand() >= 0.55 * clumpDensity(dir, 127)) return null;
+      return rand() < 0.3 ? 'bamboo' : 'broadleaf';
     }
-    return rand() < 0.4 * clumpDensity(dir, 97) ? 'desertScrub' : null;
-  }
+    case 'Aw': {
+      // savanna: the flat-topped acacia is the whole signature of the
+      // biome — a single silhouette that says "Serengeti" at a glance.
+      if (rand() >= 0.5 * clumpDensity(dir, 163)) return null;
+      return rand() < 0.85 ? 'acacia' : 'deadTree';
+    }
 
-  // The tree line, and the dry margin of the forest: standing deadwood.
-  if (elevation > 0.15 || arid > 0.5) return rand() < 0.18 * clumpDensity(dir, 101) ? 'deadTree' : null;
+    // --- B: dry ---
+    case 'BW': {
+      // sand desert: dunes are the landform, succulents only at the warm
+      // margins where there is any moisture at all
+      if (rand() < 0.3 * clumpDensity(dir, 167)) return 'dune';
+      if (temperature > 0.55 && rand() < 0.1 * clumpDensity(dir, 83)) return 'cactus';
+      return null;
+    }
+    case 'BS': {
+      // steppe: low scrub, thicker than true desert but nothing like a wood
+      if (rand() >= 0.5 * clumpDensity(dir, 97)) return null;
+      if (temperature > 0.6) return rand() < 0.35 ? 'cactus' : 'desertScrub';
+      return rand() < 0.4 ? 'shrub' : 'desertScrub';
+    }
 
-  if (temperature > 0.7) {
-    // equatorial: palms along the shore, bamboo further in
-    if (elevation < 0.03) return rand() < 0.5 * clumpDensity(dir, 113) ? 'palm' : null;
-    return rand() < 0.35 * clumpDensity(dir, 127) ? 'bamboo' : null;
+    // --- C: temperate ---
+    case 'Cs': {
+      // Mediterranean: cypress spires over dry maquis scrub. The cypress
+      // is doing the same job for southern Europe that the acacia does for
+      // the savanna and the spruce for the taiga.
+      if (rand() >= 0.55 * clumpDensity(dir, 131)) return null;
+      return rand() < 0.45 ? 'cypress' : 'shrub';
+    }
+    case 'Cw': {
+      // monsoon-temperate (south China, the Indian foothills): broadleaf
+      // with real bamboo stands in it
+      if (rand() >= 0.55 * clumpDensity(dir, 137)) return null;
+      return rand() < 0.4 ? 'bamboo' : 'broadleaf';
+    }
+    case 'Cf': {
+      // oceanic/humid-subtropical: mixed broadleaf wood with shrub between
+      if (rand() >= 0.6 * clumpDensity(dir, 139)) return null;
+      return rand() < 0.7 ? 'broadleaf' : 'shrub';
+    }
+
+    // --- D: continental ---
+    case 'Ds': {
+      // dry-summer continental — the interior west: open conifer stands
+      // over sage, and deadwood where it burns
+      if (rand() >= 0.5 * clumpDensity(dir, 149)) return null;
+      const roll = rand();
+      return roll < 0.5 ? 'conifer' : roll < 0.85 ? 'shrub' : 'deadTree';
+    }
+    case 'Dw':
+    case 'Df': {
+      // the boreal belt: spruce, and the single most recognisable
+      // vegetation silhouette on the planet
+      if (rand() >= 0.7 * clumpDensity(dir, 151)) return null;
+      return rand() < 0.88 ? 'conifer' : 'deadTree';
+    }
+
+    // --- E: polar ---
+    case 'ET': {
+      // tundra: no trees at all, tussock grass and lichen over frozen
+      // ground, with drifts where the snow catches
+      if (rand() >= 0.6 * clumpDensity(dir, 157)) return null;
+      return rand() < 0.78 ? 'tussock' : 'snowDrift';
+    }
+
+    // Only reachable on ground the climate raster calls sea — a strip of
+    // pixels along coastlines where the two datasets disagree. Generic
+    // scrub is the safe answer; it is never a large area.
+    case 'none':
+    default:
+      return rand() < 0.35 * clumpDensity(dir, 173) ? 'shrub' : null;
   }
-  // Conifer or not is the climate map's call now, not a temperature
-  // threshold's — which is what puts spruce across the boreal belt and
-  // keeps it out of, say, a mild oceanic climate at the same latitude.
-  if (s.coniferous) return rand() < 0.7 * clumpDensity(dir, 131) ? 'conifer' : null;
-  return rand() < 0.5 * clumpDensity(dir, 149) ? 'shrub' : null;
 }
 
 // ---------------------------------------------------------------------
@@ -212,6 +319,68 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
         const t = i / 3;
         parts.push(cone(0.026 * (1 - t * 0.55), 0.038, 0.016 + t * 0.026, 7));
       }
+      break;
+    }
+    case 'cypress': {
+      // narrower and taller than anything else that grows — the Tuscan
+      // exclamation mark. Distinguishable from the conifer spire beside it
+      // only by proportion, which is exactly how it works in life.
+      parts.push(column(0.005, 0.004, 0.016, 0, 5));
+      const body = new THREE.CylinderGeometry(0.002, 0.011, 0.062, 6);
+      body.translate(0, 0.045, 0);
+      parts.push(body);
+      break;
+    }
+    case 'broadleaf': {
+      // trunk plus one wide domed crown: the default "tree" silhouette,
+      // and the thing the temperate and tropical woods were missing —
+      // every individual tree on the planet was previously a spire.
+      parts.push(column(0.007, 0.005, 0.022, 0, 5));
+      // A sphere, not an icosahedron, purely so it can be merged with the
+      // cylinder above: mergeGeometries returns null (and the caller then
+      // throws on it) if some of its inputs are indexed and some are not,
+      // and IcosahedronGeometry is the one primitive here that is not.
+      const crown = new THREE.SphereGeometry(0.03, 7, 5);
+      displaceWithNoise(crown, 0.22, 3.5, rand() * 500);
+      crown.scale(1.15, 0.82, 1.15);
+      crown.translate(0, 0.042, 0);
+      parts.push(crown);
+      break;
+    }
+    case 'acacia': {
+      // the flat-topped umbrella. One silhouette, and it says Serengeti
+      // with no other cue at all — which is the whole reason the savanna
+      // needs a species of its own rather than a shrub.
+      const trunk = column(0.006, 0.003, 0.03, 0, 5);
+      trunk.rotateZ(0.07);
+      parts.push(trunk);
+      const canopyDisc = new THREE.CylinderGeometry(0.036, 0.022, 0.012, 8);
+      displaceWithNoise(canopyDisc, 0.16, 5, rand() * 500);
+      canopyDisc.translate(0, 0.034, 0);
+      parts.push(canopyDisc);
+      break;
+    }
+    case 'tussock': {
+      // tundra: no woody stem anywhere, just a low hummock of blades over
+      // frozen ground
+      for (let i = 0; i < 5; i++) {
+        const blade = new THREE.ConeGeometry(0.005, 0.016 + rand() * 0.008, 4);
+        blade.translate(0, 0.008, 0);
+        blade.rotateZ((rand() - 0.5) * 0.8);
+        blade.rotateY(rand() * Math.PI * 2);
+        blade.translate((rand() - 0.5) * 0.02, 0, (rand() - 0.5) * 0.02);
+        parts.push(blade);
+      }
+      break;
+    }
+    case 'dune': {
+      // a sand ridge, not a rock: long, low, and smooth, so an erg reads
+      // as swept sand rather than as the field of mesas the old noise-fed
+      // badlands test made of it
+      const g = new THREE.SphereGeometry(0.05, 8, 5);
+      displaceWithNoise(g, 0.18, 2.2, rand() * 500);
+      g.scale(1.5, 0.18, 0.55);
+      parts.push(g);
       break;
     }
     case 'palm': {
@@ -353,6 +522,19 @@ function speciesColor(species: Species, temperature: number, out: THREE.Color): 
   switch (species) {
     case 'conifer':
       return out.setHSL(0.31, 0.44, 0.24, THREE.SRGBColorSpace);
+    case 'cypress':
+      // the darkest green on the planet, which is most of why a cypress
+      // reads as a cypress
+      return out.setHSL(0.33, 0.5, 0.17, THREE.SRGBColorSpace);
+    case 'broadleaf':
+      return out.setHSL(0.24, 0.52, 0.3, THREE.SRGBColorSpace);
+    case 'acacia':
+      // dry-season savanna foliage is yellow-green, not leaf green
+      return out.setHSL(0.17, 0.44, 0.36, THREE.SRGBColorSpace);
+    case 'tussock':
+      return out.setHSL(0.13, 0.28, 0.38, THREE.SRGBColorSpace);
+    case 'dune':
+      return out.setHSL(0.11, 0.38, 0.66, THREE.SRGBColorSpace);
     case 'palm':
       return out.setHSL(0.22, 0.58, 0.32, THREE.SRGBColorSpace);
     case 'bamboo':
@@ -391,12 +573,6 @@ function speciesColor(species: Species, temperature: number, out: THREE.Color): 
 // InstancedMesh-per-kind), but they now read from the same candidate
 // stream as everything above instead of sweeping the sphere on their own.
 // ---------------------------------------------------------------------
-
-// Below this aridity: lush enough for a real forest canopy mass (handled
-// by the forest layer, not individual trees). Between this and the desert
-// threshold: savanna — sparse, individually-visible trees are correct
-// there, not a mistake to "fix" with more density.
-const FOREST_ARIDITY_MAX = 0.44;
 
 // Below this temperature it's tundra/ice country — too cold for forest,
 // savanna, or desert dressing; those zones stay bare (the paint itself
@@ -525,10 +701,17 @@ export function buildSpecies(
   const group = new THREE.Group();
   const rand = mulberry32(515151);
 
-  // One hash per layer — they keep the spacing each one was tuned at
-  // (ground cover packs far tighter than a stand of trees), but they all
-  // now draw from the same walk of the sphere below.
-  const coreMinSpacing = 0.05;
+  // One hash per layer. Every spacing here is roughly a third of what it
+  // was, and every model below is correspondingly smaller: the planet used
+  // to carry about 2,700 pieces of vegetation in total, which sounds like a
+  // lot until you divide it by the Earth. At that count each piece has to
+  // be enormous — the largest forest clumps spanned some three degrees of
+  // arc — to add up to anything that reads as green, and the difference
+  // between the Amazon and Alberta drowns in the sampling noise of a few
+  // dozen items. Smaller and roughly ten times as many reads as applied
+  // flock rather than as scattered props, and makes regional density a
+  // quantity you can actually see.
+  const coreMinSpacing = 0.022;
   const coreMinSpacingSq = coreMinSpacing * coreMinSpacing;
   const coreHash = new SpatialHash(coreMinSpacing);
   const placements: Placement[] = [];
@@ -543,12 +726,18 @@ export function buildSpecies(
     kind: 'tree' | 'rock';
   }
 
-  const forestMinSpacing = 0.015;
-  const forestMinSpacingSq = forestMinSpacing * forestMinSpacing;
-  const forestHash = new SpatialHash(forestMinSpacing);
+  // Forest spacing is the one that varies across the globe, because the
+  // thing it is modelling does: a rainforest is a closed roof with no gaps
+  // and a wooded steppe is individual trees you can walk between, and
+  // planting both on the same lattice makes them the same place with
+  // different colours. The hash's cell size is the *sparse* end, since the
+  // 3x3x3 neighbourhood has to cover the largest distance ever asked for.
+  const FOREST_SPACING_DENSE = 0.0065;
+  const FOREST_SPACING_SPARSE = 0.017;
+  const forestHash = new SpatialHash(FOREST_SPACING_SPARSE);
   const forestPoints: GroundPoint[] = [];
 
-  const grassMinSpacing = 0.028;
+  const grassMinSpacing = 0.011;
   const grassMinSpacingSq = grassMinSpacing * grassMinSpacing;
   const grassHash = new SpatialHash(grassMinSpacing);
   const grassPoints: GroundPoint[] = [];
@@ -556,12 +745,12 @@ export function buildSpecies(
   // savanna trees and mountain rocks share one hash, as they did before —
   // they never occur in the same place, so nothing is lost keeping them
   // out of each other's way with a single spacing.
-  const pointsMinSpacing = 0.115;
+  const pointsMinSpacing = 0.045;
   const pointsMinSpacingSq = pointsMinSpacing * pointsMinSpacing;
   const pointsHash = new SpatialHash(pointsMinSpacing);
   const points: ScatterPoint[] = [];
 
-  const screeMinSpacing = 0.03;
+  const screeMinSpacing = 0.013;
   const screeMinSpacingSq = screeMinSpacing * screeMinSpacing;
   const screeHash = new SpatialHash(screeMinSpacing);
   const screePoints: GroundPoint[] = [];
@@ -579,7 +768,12 @@ export function buildSpecies(
   // caused by shadow mapping specifically, not by scene weight (see
   // SETTINGS in main.ts and renderer.shadowMap.enabled in main.ts) —
   // restored most of the way back now that shadows are off there instead.
-  const CANDIDATES = 300000;
+  //
+  // Raised again with the spacings above: a Poisson-disk scatter only
+  // reaches its packing limit if the candidate stream oversamples it
+  // several times over, so cutting the spacings without raising this would
+  // have bought a fraction of the density the smaller spacing allows.
+  const CANDIDATES = 900000;
 
   for (let i = 0; i < CANDIDATES; i++) {
     const z = rand() * 2 - 1;
@@ -588,6 +782,7 @@ export function buildSpecies(
     dir.set(r * Math.cos(t), z, r * Math.sin(t));
 
     const s = sampleAt(dir);
+    if (!s) continue; // open ocean, deeper than the shelf: nothing goes here
 
     // ---- fourteen-species classification ----
     const species = classify(s, rand);
@@ -599,13 +794,29 @@ export function buildSpecies(
 
     if (s.underwater) continue; // nothing below covers open water
 
+    // There is no elevation test on any land layer below. Being above the
+    // waterline (the `underwater` check above) is the whole of it.
+    //
+    // Each layer used to add its own margin on top — `height >= SEA_LEVEL +
+    // 0.02` for forest, +0.015 for scattered trees, +0.012 for grass — left
+    // over from the era when the continents were noise and "land" meant
+    // "hill". Against real elevation data those are a different rule
+    // entirely, because real continents are mostly flat lowland: measured,
+    // the forest one alone rejected 75% of all climatically suitable ground,
+    // and it rejected it in exactly the wrong places. The Amazon basin, the
+    // Congo basin, the Ganges plain, the pampas and the Sahel are all low
+    // and flat and all came out bare, while Alaska and Tibet, being high,
+    // came out as the densest forest on the planet — the Amazon measured at
+    // one thirty-fourth of Alaska's forest density, which is the exact
+    // inverse of the truth. Even a margin as narrow as the painted beach
+    // band (COAST_WIDTH, 0.006) is too wide: the Congo basin's own mean
+    // height above sea level is 0.007.
+
     // ---- forest canopy: a dense, clumped, overlapping mass ----
     if (
-      s.height >= SEA_LEVEL + 0.02 &&
       s.elevation <= 0.15 &&
       s.temperature >= COLD_TEMPERATURE_LIMIT &&
-      s.badlands <= BADLANDS_THRESHOLD &&
-      s.arid <= FOREST_ARIDITY_MAX
+      s.badlands <= BADLANDS_THRESHOLD
     ) {
       // Which regions are wooded at all is no longer a noise field's
       // opinion — it is the real Köppen climate map (terrain.ts). That is
@@ -615,25 +826,48 @@ export function buildSpecies(
       // Canada and Siberia. A finer noise field still breaks up the
       // margins within a wooded region, because a real forest edge is
       // ragged rather than a contour line.
+      //
+      // The separate `arid <= FOREST_ARIDITY_MAX` veto that used to sit
+      // alongside this is gone: canopy and aridity are two readings of the
+      // same climate table, so it was a second vote by the same voter, and
+      // because aridity carries a noise wobble it was cancelling forest at
+      // the wet margins (south China's Cw belt in particular) that the
+      // canopy figure said should be there.
       const patch = fbm3(dir.x * 9 + 77, dir.y * 9 + 77, dir.z * 9 + 77, 2);
       const density = s.canopy * (1.5 + patch * 1.5);
-      if (rand() < density && !forestHash.hasNeighborWithin(dir, forestMinSpacingSq)) {
+      // Closed canopy packs tight, open woodland stands apart.
+      const spacing = THREE.MathUtils.lerp(
+        FOREST_SPACING_SPARSE,
+        FOREST_SPACING_DENSE,
+        THREE.MathUtils.clamp(s.canopy, 0, 1),
+      );
+      if (rand() < density && !forestHash.hasNeighborWithin(dir, spacing * spacing)) {
         const point = dir.clone();
         forestHash.add(point);
         forestPoints.push({ dir: point, height: s.height, coniferous: s.coniferous });
       }
     }
 
-    // ---- grass: dense tiny tufts covering the (non-desert, non-forest) ground ----
+    // ---- grass: dense tiny tufts covering the open, non-desert ground ----
     if (
-      s.height >= SEA_LEVEL + 0.012 &&
       s.elevation <= 0.16 &&
       s.temperature >= COLD_TEMPERATURE_LIMIT &&
       s.badlands <= BADLANDS_THRESHOLD &&
-      s.arid <= DESERT_ARIDITY_THRESHOLD &&
-      s.arid > FOREST_ARIDITY_MAX // forest floor is covered by canopy instead
+      s.arid <= DESERT_ARIDITY_THRESHOLD
     ) {
-      if (rand() < clumpDensity(dir, 199) && !grassHash.hasNeighborWithin(dir, grassMinSpacingSq)) {
+      // Grass covers the ground the canopy does not. The old test asked
+      // for aridity inside a band 0.08 wide between the forest and desert
+      // thresholds — and on the real Köppen aridity table almost no class
+      // lands in that band, which is why the entire planet's prairie,
+      // steppe and savanna floor came to 165 tufts. Driving it off canopy
+      // instead puts grass wherever there is a gap in the trees and no
+      // sand, thinning to nothing under closed forest rather than stopping
+      // at a contour line.
+      const openness = 1 - THREE.MathUtils.clamp(s.canopy, 0, 1);
+      if (
+        rand() < openness * clumpDensity(dir, 199) &&
+        !grassHash.hasNeighborWithin(dir, grassMinSpacingSq)
+      ) {
         const point = dir.clone();
         grassHash.add(point);
         grassPoints.push({ dir: point, height: s.height });
@@ -641,15 +875,24 @@ export function buildSpecies(
     }
 
     // ---- savanna trees / mountain rocks ----
-    if (s.height >= SEA_LEVEL + 0.015) {
+    {
       if (s.elevation < 0.15) {
         if (
           s.temperature >= COLD_TEMPERATURE_LIMIT &&
           s.badlands <= BADLANDS_THRESHOLD &&
-          s.arid <= DESERT_ARIDITY_THRESHOLD &&
-          s.arid > FOREST_ARIDITY_MAX // savanna band only; forest/desert get their own treatment
+          s.arid <= DESERT_ARIDITY_THRESHOLD
         ) {
-          if (rand() < clumpDensity(dir, 163) && !pointsHash.hasNeighborWithin(dir, pointsMinSpacingSq)) {
+          // Open woodland — scattered individual trees standing over
+          // grass, which is what a savanna and a wooded steppe are. That
+          // is a statement about tree cover, so it reads tree cover: a
+          // middling canopy fraction, neither closed forest (whose mass
+          // the canopy layer supplies) nor treeless.
+          const openWoodland =
+            smoothstep(s.canopy, 0.06, 0.28) * (1 - smoothstep(s.canopy, 0.45, 0.78));
+          if (
+            rand() < openWoodland * clumpDensity(dir, 163) &&
+            !pointsHash.hasNeighborWithin(dir, pointsMinSpacingSq)
+          ) {
             const point = dir.clone();
             pointsHash.add(point);
             points.push({ dir: point, height: s.height, kind: 'tree' });
@@ -719,7 +962,11 @@ export function buildSpecies(
       const align = new THREE.Quaternion().setFromUnitVectors(up, p.dir);
       const spin = new THREE.Quaternion().setFromAxisAngle(p.dir, rand() * Math.PI * 2);
       dummy.quaternion.copy(spin).multiply(align);
-      const sc = 0.85 + rand() * rand() * 1.25;
+      // Smaller than before, across the board — see the spacing block in
+      // buildSpecies. Each specimen carried more of the visual load when
+      // there were a couple of thousand of them on the whole globe; at ten
+      // times the count the same footprint would merge into a solid crust.
+      const sc = 0.6 + rand() * rand() * 0.85;
       dummy.scale.set(sc, sc * (0.85 + rand() * 0.4), sc);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
@@ -885,7 +1132,7 @@ export function buildSpecies(
 
   // ---- scree: dense loose rubble covering rocky/mountain slopes ----
 
-  const screeGeometry = new THREE.IcosahedronGeometry(0.016, 0);
+  const screeGeometry = new THREE.IcosahedronGeometry(0.008, 0);
   const screeMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.97,
@@ -895,7 +1142,7 @@ export function buildSpecies(
   const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
   const screeColor = new THREE.Color();
   screePoints.forEach((p, i) => {
-    const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight - 0.007;
+    const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight - 0.004;
     const position = p.dir.clone().multiplyScalar(surfaceRadius);
     orient(position, p.dir, rand() * Math.PI * 2, (rand() - 0.5) * 0.5, rand() * Math.PI * 2);
     dummy.scale.set(0.6 + rand() * 1.0, 0.5 + rand() * 0.7, 0.6 + rand() * 1.0);
@@ -943,8 +1190,14 @@ export function buildSpecies(
     // tell from a single size. Squaring gives the long tail real applied
     // flock has: mostly small stuff, with occasional masses several times
     // the size of their neighbours.
+    // Halved from 0.45 + r^2 * 1.9: the largest clumps under that curve
+    // spanned roughly three degrees of arc, one single piece of foliage
+    // covering more of the globe than Lake Victoria. Halving the linear
+    // size quarters the area each one covers, which is what buys the room
+    // for the count to go up by an order of magnitude without the canopy
+    // turning into an unbroken shell.
     const r0 = rand();
-    const scale = 0.45 + r0 * r0 * 1.9;
+    const scale = 0.24 + r0 * r0 * 0.95;
     const instance = { point, scale };
     if (scale >= CANOPY_FINE_SCALE) fineBuckets[i % 2].push(instance);
     else coarseBuckets[i % canopyVariantCount].push(instance);
@@ -995,8 +1248,8 @@ export function buildSpecies(
 
   // ---- grass: dense tiny tufts covering the (non-desert) ground ----
 
-  const grassGeometry = new THREE.ConeGeometry(0.008, 0.016, 5);
-  grassGeometry.translate(0, 0.008, 0);
+  const grassGeometry = new THREE.ConeGeometry(0.005, 0.013, 5);
+  grassGeometry.translate(0, 0.0065, 0);
   const grassMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.9,

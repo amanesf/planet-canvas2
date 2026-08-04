@@ -5,7 +5,11 @@ import { clumpDensity, mulberry32 } from './spatialHash';
 // Tuned so land covers roughly 30% of the surface, like real Earth's
 // land:sea ≈ 3:7 (verified empirically against heightAt's noise distribution).
 export const SEA_LEVEL = 0.072;
-const COAST_WIDTH = 0.006;
+// The width of the painted beach band above sea level. Exported because
+// vegetation placement needs to agree with it: the one thing an elevation
+// test is genuinely for is keeping plants off the strip of sand the paint
+// has already drawn, and any threshold wider than this one is a guess.
+export const COAST_WIDTH = 0.006;
 
 // Pushed a step more vivid than the original "toned down across the
 // board" pass — that rule was reacting against flat primary-color-wheel
@@ -310,12 +314,41 @@ export async function loadRealElevationData(url: string): Promise<void> {
   realElevation = { data, width: image.width, height: image.height };
 }
 
-// This dataset's own natural land/sea boundary, calibrated (via a land-
-// fraction histogram match against Earth's real ~29% land coverage) to
-// grayscale value 145/255. Anchoring that exact value to SEA_LEVEL keeps
-// every one of heightAt's SEA_LEVEL-relative thresholds (ruggedAmount,
-// landMask, coastal ocean opacity...) working unchanged.
-const ELEVATION_SEA_GRAY = 145;
+// This dataset's own natural land/sea boundary. Anchoring one exact
+// grayscale value to SEA_LEVEL keeps every one of heightAt's SEA_LEVEL-
+// relative thresholds (ruggedAmount, landMask, coastal ocean opacity...)
+// working unchanged.
+//
+// Measured off the raster itself rather than guessed. The source is a
+// topography+bathymetry composite, and its two domains do not overlap:
+// sampled inside a known shallow shelf sea (the North Sea) the grayscale
+// tops out at 143, and sampled inside known flat continental interiors
+// (the Congo basin, the Great Plains) it starts at 147-148. The gap is
+// where the boundary belongs.
+//
+// It used to sit at 145, which cuts *through* the lowest land band rather
+// than under it, and 144-145 is precisely where the world's flattest
+// lowlands sit: 60% of the Amazon basin, 73% of the pampas and 83% of the
+// west Siberian plain are gray 144 or 145. All of it was being read as
+// ocean. The global check agrees with the local one — area-weighted over
+// the whole raster, gray>143 is 28.0% of the sphere against Earth's real
+// ~29%, where gray>145 gives only 23.8%.
+const ELEVATION_SEA_GRAY = 143;
+
+// The first step of land above the waterline lands here, not at zero.
+//
+// Land occupies the top 44% of the raster's range and the paint's shore
+// band is the first 0.006 of a 0.33-unit height span — under 2% — so on a
+// straight ramp any ground in the bottom fiftieth of the world's elevation
+// range paints as beach. That is a fair description of a coastal plain and
+// a terrible one of the Amazon, which really is in the bottom fiftieth
+// (some tens of metres over two thousand kilometres) and was coming out as
+// an entire continent of sand. Lifting the first land step clear of the
+// band says the thing that is actually true: this is land, it is merely
+// very low land. The beach has not gone anywhere — it moves to the water
+// side, where the shallow shelf still sits inside the band and still paints
+// as a pale rim around every coast.
+const ELEVATION_LAND_FLOOR = COAST_WIDTH;
 
 // Most land on the real dataset is unremarkable lowland — only a small
 // fraction of it is genuinely mountainous — but a plain linear ramp from
@@ -351,7 +384,11 @@ function decodeRealElevation(gray: number): number {
   }
   const t = (gray - ELEVATION_SEA_GRAY) / (255 - ELEVATION_SEA_GRAY);
   const shaped = THREE.MathUtils.lerp(Math.pow(t, ELEVATION_LAND_GAMMA), t, ELEVATION_LAND_LINEAR_MIX);
-  return SEA_LEVEL + shaped * (ELEVATION_LAND_MAX - SEA_LEVEL);
+  return (
+    SEA_LEVEL +
+    ELEVATION_LAND_FLOOR +
+    shaped * (ELEVATION_LAND_MAX - SEA_LEVEL - ELEVATION_LAND_FLOOR)
+  );
 }
 
 // Same inverse (dir -> phi/theta -> pixel) convention as sampleField/
@@ -418,8 +455,22 @@ export function heightAt(dir: THREE.Vector3): number {
   // (fbm3 here is signed and centred on zero, like every other use of it
   // in this file — subtracting 0.5 to "centre" it would quietly lower every
   // landmass by half the amplitude and shrink the continents.)
+  //
+  // The mask starts *at* sea level rather than 0.03 below it, and reaches
+  // full strength further up, because relief may shape land but it must not
+  // decide whether land exists. Measured: the old mask gave a basin sitting
+  // a few thousandths above sea level a signed wobble of about +-0.021,
+  // several times its own height above the waterline, so the downward half
+  // of it drowned the place. The Congo is dry land in 100% of the elevation
+  // raster's own pixels and came out 57% below sea level after this line;
+  // the Sahel 62%, central Siberia 66%. Everything downstream that asks
+  // "is this land" — the paint, the beach band, every vegetation layer —
+  // was reading a coin flip over the flattest and most vegetated ground on
+  // the planet. Now the relief fades out as the ground it is texturing runs
+  // out of headroom, which also happens to be correct: the Amazon and the
+  // Congo really are flat.
   const midRelief = fbm3(dir.x * 3.4 + 17.7, dir.y * 3.4 + 17.7, dir.z * 3.4 + 17.7, 3);
-  const landMask = smoothstep(macro, SEA_LEVEL - 0.03, SEA_LEVEL + 0.07);
+  const landMask = smoothstep(macro, SEA_LEVEL, SEA_LEVEL + 0.1);
   n += midRelief * 0.145 * landMask;
 
   // Polar ice continents: guarantee a broad ice-sheet landmass right at
@@ -532,6 +583,77 @@ const KOPPEN_CONIFEROUS: boolean[] = Array.from(
   (_, i) => i >= 17,
 );
 
+/**
+ * How much exposed sedimentary rock country — canyon, mesa, hamada — each
+ * class carries, 0..1.
+ *
+ * Badlands used to be a pure global noise field with no geography in it at
+ * all, which put grey-brown banded rock across the middle of the Amazon and
+ * the Congo and let it veto vegetation over a fifth of all land. Badlands
+ * are a *dry* landform: they exist because there is not enough rain to grow
+ * a soil cover over the bedrock. So the field they come from should be the
+ * dry classes, and essentially nothing else.
+ *
+ * The B group carries almost all of it (the Colorado Plateau, the Sahara's
+ * hamada, the Karoo, the Gobi are BWk/BSk/BWh), the dry-summer continental
+ * Ds group carries a little (the American interior west, Anatolia, inland
+ * Iran), and the everwet and monsoon classes carry none — an Af rainforest
+ * has no exposed bedrock by definition.
+ */
+const KOPPEN_BADLANDS = [
+  0, // 0: no data
+  0, 0, 0, // Af Am Aw — closed canopy over deep soil, never bare rock
+  // The hot deserts are mostly erg and reg — sand sea and gravel plain —
+  // with hamada a minority of their area, so BWh sits well below the cold
+  // deserts and high plateaus (BWk, BSk: Colorado, the Gobi, Patagonia)
+  // where stripped bedrock really is the characteristic surface.
+  0.5, 1.0, 0.45, 0.85, // BWh BWk BSh BSk
+  0.2, 0.1, 0.05, // Csa Csb Csc — a little, e.g. the Spanish bardenas
+  0, 0, 0, // Cwa Cwb Cwc
+  0, 0, 0, // Cfa Cfb Cfc
+  0.5, 0.5, 0.35, 0.2, // Dsa Dsb Dsc Dsd — dry-summer continental interior
+  0.12, 0.1, 0.05, 0.05, // Dwa Dwb Dwc Dwd — the Gobi's northern margin
+  0, 0, 0, 0, // Dfa Dfb Dfc Dfd
+  0.05, 0, // ET EF — polar desert is rock, but the snow logic owns it
+];
+
+/**
+ * The Köppen group a class belongs to — the first one or two letters,
+ * which is the level the eye actually reads: "rainforest", "savanna",
+ * "sand desert", "steppe", "Mediterranean", "taiga", "tundra". Species
+ * selection keys off this rather than off a temperature threshold, which
+ * is what makes an Aw savanna get acacias and a Cs coast get cypresses
+ * even though the two sit at similar temperatures.
+ */
+export type ClimateGroup =
+  | 'none'
+  | 'Af'
+  | 'Am'
+  | 'Aw'
+  | 'BW'
+  | 'BS'
+  | 'Cs'
+  | 'Cw'
+  | 'Cf'
+  | 'Ds'
+  | 'Dw'
+  | 'Df'
+  | 'ET'
+  | 'EF';
+
+const KOPPEN_GROUP: ClimateGroup[] = [
+  'none',
+  'Af', 'Am', 'Aw',
+  'BW', 'BW', 'BS', 'BS',
+  'Cs', 'Cs', 'Cs',
+  'Cw', 'Cw', 'Cw',
+  'Cf', 'Cf', 'Cf',
+  'Ds', 'Ds', 'Ds', 'Ds',
+  'Dw', 'Dw', 'Dw', 'Dw',
+  'Df', 'Df', 'Df', 'Df',
+  'ET', 'EF',
+];
+
 let realClimate: { data: Uint8ClampedArray; width: number; height: number } | null = null;
 
 export async function loadClimateData(url: string): Promise<void> {
@@ -615,9 +737,21 @@ export function canopyAt(dir: THREE.Vector3): number {
   return sampleField(canopyGrid, dir);
 }
 
-/** Whether the forest here is conifer (boreal/continental) or broadleaf. */
-export function coniferousAt(dir: THREE.Vector3): boolean {
-  return KOPPEN_CONIFEROUS[climateClassAt(dir)];
+/**
+ * Which Köppen group is here, and whether its forest is conifer.
+ *
+ * The two travel together because `climateClassAt` is the most expensive
+ * field read in this file — a nearest-pixel probe with a widening ring
+ * search behind it — and the scatter wants both facts about every candidate
+ * it keeps. Asking separately doubled the cost of the single most expensive
+ * thing the scatter does.
+ */
+export function climateFactsAt(dir: THREE.Vector3): {
+  group: ClimateGroup;
+  coniferous: boolean;
+} {
+  const climate = climateClassAt(dir);
+  return { group: KOPPEN_GROUP[climate], coniferous: KOPPEN_CONIFEROUS[climate] };
 }
 
 // Aridity, badlands and the climate wobble are all *low-frequency* fields —
@@ -682,17 +816,39 @@ export function aridityAt(dir: THREE.Vector3): number {
 // what the paint underneath actually looks like
 export const DESERT_ARIDITY_THRESHOLD = 0.52;
 
-// A separate, decorrelated low-frequency field marking "canyon/badlands
-// country" — dry, exposed sedimentary rock distinct from both a sand-dune
-// desert and ordinary rocky mountains, like the American Southwest or the
-// Grand Canyon. Reuses the terracing language already established
-// elsewhere (a hand-cut layered model) but as color banding instead of
-// geometric steps.
+// "Canyon/badlands country" — dry, exposed sedimentary rock distinct from
+// both a sand-dune desert and ordinary rocky mountains, like the American
+// Southwest or the Grand Canyon. Reuses the terracing language already
+// established elsewhere (a hand-cut layered model) but as color banding
+// instead of geometric steps.
+//
+// This was the last purely fictional field left in the vegetation chain.
+// The aridity and canopy fields were moved onto the real Köppen map and
+// this one was missed, so a noise blob with no geography in it decided
+// where bedrock showed through — which put banded grey-brown rock across
+// the middle of the Amazon and the Congo and vetoed vegetation on a fifth
+// of all land, the same class of bug the aridity move fixed.
+//
+// Now it is the dry classes (KOPPEN_BADLANDS) that say *whether* a region
+// can have badlands at all, and noise only says *which parts of it* do.
+// The mapping is written so the field crosses BADLANDS_THRESHOLD at
+// roughly the top quarter of the noise inside a full-affinity desert, and
+// only at the extreme tail inside the half-affinity dry-continental
+// classes — badlands are a minority landform even where they belong, and
+// carpeting the Sahara in mesas is as wrong as putting them in the Amazon.
 let badlandsGrid: Float32Array | null = null;
 function badlandsAt(dir: THREE.Vector3): number {
-  badlandsGrid ??= bakeField(FIELD_W, FIELD_H, (d) =>
-    fbm3(d.x * 0.9 + 555, d.y * 0.9 + 555, d.z * 0.9 + 555, 2),
-  );
+  badlandsGrid ??= bakeField(FIELD_W, FIELD_H, (d) => {
+    const affinity = KOPPEN_BADLANDS[climateClassAt(d)];
+    if (affinity <= 0) return 0;
+    // Frequency raised from 0.9: at that scale one lobe of the field spans
+    // most of a hemisphere, so a region the size of the Sahara sat entirely
+    // inside a single peak or a single trough and came out either wholly
+    // canyon or wholly not. Badlands vary at the scale of a basin, not a
+    // continent.
+    const shape = fbm3(d.x * 2.6 + 555, d.y * 2.6 + 555, d.z * 2.6 + 555, 3);
+    return THREE.MathUtils.clamp(affinity * (BADLANDS_THRESHOLD + (shape - 0.14) * 2), 0, 1);
+  });
   return sampleField(badlandsGrid, dir);
 }
 export const BADLANDS_THRESHOLD = 0.28;
@@ -1116,10 +1272,36 @@ export function sampledHeight(dir: THREE.Vector3): { raw: number; display: numbe
   const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
   let phi = Math.atan2(dir.z, -dir.x);
   if (phi < 0) phi += Math.PI * 2;
-  const px = Math.min(field.width - 1, Math.floor((phi / (Math.PI * 2)) * field.width));
-  const py = Math.min(field.height - 1, Math.floor((theta / Math.PI) * field.height));
-  const idx = py * field.width + px;
-  return { raw: field.raw[idx], display: field.display[idx] };
+
+  // Bilinear, not nearest — the same argument sampleField makes above, and
+  // for once it is not about looks. The elevation raster's flattest ground
+  // (the Amazon and Congo basins, the pampas, the west Siberian plain) sits
+  // within one grayscale step of the calibrated land/sea boundary, so at
+  // pixel level it dithers back and forth across it. Nearest-sampling that
+  // hands every scatter candidate a coin flip on whether it is standing on
+  // land: measured, it put 60% of the Amazon basin below sea level where
+  // the underlying raster, read continuously, puts 37%. Interpolating
+  // resolves the dither the way the eye does, into the flat, barely-above-
+  // water plain it actually represents.
+  const fx = (phi / (Math.PI * 2)) * field.width;
+  const fy = (theta / Math.PI) * field.height;
+  const x0 = Math.floor(fx);
+  const y0 = THREE.MathUtils.clamp(Math.floor(fy), 0, field.height - 1);
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const x0w = ((x0 % field.width) + field.width) % field.width;
+  const x1w = (x0w + 1) % field.width;
+  const y1 = Math.min(y0 + 1, field.height - 1);
+  const i00 = y0 * field.width + x0w;
+  const i10 = y0 * field.width + x1w;
+  const i01 = y1 * field.width + x0w;
+  const i11 = y1 * field.width + x1w;
+  const mix = (a: number, b: number, c: number, d: number) =>
+    THREE.MathUtils.lerp(THREE.MathUtils.lerp(a, b, tx), THREE.MathUtils.lerp(c, d, tx), ty);
+  return {
+    raw: mix(field.raw[i00], field.raw[i10], field.raw[i01], field.raw[i11]),
+    display: mix(field.display[i00], field.display[i10], field.display[i01], field.display[i11]),
+  };
 }
 
 function sharedHeightField(width: number, height: number): SharedHeightField {

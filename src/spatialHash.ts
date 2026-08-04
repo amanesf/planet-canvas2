@@ -4,17 +4,38 @@ import { fbm3 } from './noise';
 // A spatial hash over the (small) 3D direction space so a minimum-spacing
 // rejection test is ~O(1) per candidate instead of checking against every
 // point placed so far.
+//
+// Two things about it are load-bearing at the candidate counts the scatter
+// now runs at:
+//
+// 1. The cell key is an integer, not a `${x},${y},${z}` template string.
+//    Every candidate does one lookup per neighbouring cell per layer, so
+//    the key is built tens of millions of times per load; building it by
+//    string concatenation meant allocating and hashing tens of millions of
+//    short strings, which was a visible slice of startup all by itself.
+//    Points live on the unit sphere so |cell index| stays under 256 for any
+//    cell size above 1/256 — comfortably true of every spacing here — and
+//    the three indices pack into one 27-bit integer.
+//
+// 2. `hasNeighborWithin` takes the required distance per call rather than
+//    per hash, so one hash can enforce a spacing that varies across the
+//    globe (dense in rainforest, sparse on steppe). The caller must build
+//    the hash with a cell size at least as large as the largest spacing it
+//    will ask for — the 3x3x3 neighbourhood only covers distances up to one
+//    cell, and a larger request would silently miss neighbours further out.
+const CELL_AXIS = 512;
+const CELL_BIAS = CELL_AXIS / 2;
+
 export class SpatialHash {
   private cellSize: number;
-  private cells = new Map<string, THREE.Vector3[]>();
+  private cells = new Map<number, THREE.Vector3[]>();
 
   constructor(cellSize: number) {
     this.cellSize = cellSize;
   }
 
-  private key(x: number, y: number, z: number) {
-    const s = this.cellSize;
-    return `${Math.floor(x / s)},${Math.floor(y / s)},${Math.floor(z / s)}`;
+  private static key(ix: number, iy: number, iz: number) {
+    return ((ix + CELL_BIAS) * CELL_AXIS + (iy + CELL_BIAS)) * CELL_AXIS + (iz + CELL_BIAS);
   }
 
   hasNeighborWithin(p: THREE.Vector3, minDistSq: number): boolean {
@@ -25,7 +46,7 @@ export class SpatialHash {
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dz = -1; dz <= 1; dz++) {
-          const bucket = this.cells.get(`${cx + dx},${cy + dy},${cz + dz}`);
+          const bucket = this.cells.get(SpatialHash.key(cx + dx, cy + dy, cz + dz));
           if (!bucket) continue;
           for (const q of bucket) {
             if (p.distanceToSquared(q) < minDistSq) return true;
@@ -37,7 +58,8 @@ export class SpatialHash {
   }
 
   add(p: THREE.Vector3) {
-    const k = this.key(p.x, p.y, p.z);
+    const s = this.cellSize;
+    const k = SpatialHash.key(Math.floor(p.x / s), Math.floor(p.y / s), Math.floor(p.z / s));
     let bucket = this.cells.get(k);
     if (!bucket) {
       bucket = [];
