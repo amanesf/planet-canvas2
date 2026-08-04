@@ -266,7 +266,14 @@ const gpuDebugInfo = renderer.getContext().getExtension('WEBGL_debug_renderer_in
 const gpuRendererString = gpuDebugInfo
   ? String(renderer.getContext().getParameter(gpuDebugInfo.UNMASKED_RENDERER_WEBGL))
   : '';
-const fullGpuFeatures = !/imagination|powervr/i.test(gpuRendererString);
+// The automatic fallback below is exactly what makes the fallback itself
+// unverifiable on the one device it exists for: that GPU never takes the
+// full-feature path, by design, so there is no way to *see* shadows and
+// the camera pass working there again short of editing this file. A
+// query param opts back in on purpose, for exactly that check — nobody
+// lands on ?quality=full by accident.
+const forceFullQuality = new URLSearchParams(window.location.search).get('quality') === 'full';
+const fullGpuFeatures = forceFullQuality || !/imagination|powervr/i.test(gpuRendererString);
 // Real cast shadows, and they are not optional for this subject — normally.
 // What separates the reference photograph from a rendered planet is not
 // its palette — it is that the clouds throw soft shadows down onto the
