@@ -255,26 +255,29 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, SETTINGS.maxPixelRatio)
 // recover, it takes the whole GPU process down, which reads to the user
 // as the tab crashing. Confirmed against a real device: a chrome://gpu
 // report from a phone that was crashing during assembly showed exactly
-// this GPU family and exactly that workaround. The post-processing pass
-// below is the least standard thing this renderer asks of a driver — an
-// extra render target, a depth texture attachment, a full-screen shader —
-// so it's the first thing to give up for this GPU family specifically,
-// rather than a global quality cut for every device.
+// this GPU family and exactly that workaround, and turning off
+// post-processing alone only moved the crash later — most of the model
+// would render, then it would still go down. Shadow mapping is the other
+// standing render-target switch every single frame (light's-eye depth
+// pass, then the main pass), all render duration long, so it's the next
+// thing to give up for this GPU family specifically, not a global
+// quality cut for every device.
 const gpuDebugInfo = renderer.getContext().getExtension('WEBGL_debug_renderer_info');
 const gpuRendererString = gpuDebugInfo
   ? String(renderer.getContext().getParameter(gpuDebugInfo.UNMASKED_RENDERER_WEBGL))
   : '';
-const usePostProcessing = !/imagination|powervr/i.test(gpuRendererString);
-// Real cast shadows, and they are not optional for this subject. What
-// separates the reference photograph from a rendered planet is not its
-// palette — it is that the clouds throw soft shadows down onto the sea,
-// the coastal cliffs shade the water at their foot, and every mountain
-// occludes the valley beside it. Blob decals fake contact, but they
-// cannot produce an object shadowing a *different* object, which is the
-// cue the eye actually reads as "these things share one physical space".
-// Only the key light casts (one shadow pass), and the map is sized for a
-// subject that occupies a fixed, known volume.
-renderer.shadowMap.enabled = true;
+const fullGpuFeatures = !/imagination|powervr/i.test(gpuRendererString);
+// Real cast shadows, and they are not optional for this subject — normally.
+// What separates the reference photograph from a rendered planet is not
+// its palette — it is that the clouds throw soft shadows down onto the
+// sea, the coastal cliffs shade the water at their foot, and every
+// mountain occludes the valley beside it. Blob decals fake contact, but
+// they cannot produce an object shadowing a *different* object, which is
+// the cue the eye actually reads as "these things share one physical
+// space". Only the key light casts (one shadow pass), and the map is
+// sized for a subject that occupies a fixed, known volume — on GPUs that
+// can actually sustain it, see fullGpuFeatures above.
+renderer.shadowMap.enabled = fullGpuFeatures;
 // PCFSoftShadowMap is deprecated in this three version and silently falls
 // back to PCF anyway; VSM was tried for a softer edge and produced no
 // visible shadow at all here (its light-bleeding term washes out contact
@@ -310,7 +313,7 @@ app.appendChild(renderer.domElement);
 let composer: EffectComposer | null = null;
 let cameraPass: ShaderPass | null = null;
 let sceneDepth: THREE.DepthTexture | null = null;
-if (usePostProcessing) {
+if (fullGpuFeatures) {
   sceneDepth = new THREE.DepthTexture(window.innerWidth, window.innerHeight);
   sceneDepth.type = THREE.UnsignedIntType;
   // the depthTexture key is omitted rather than passed as undefined: the
