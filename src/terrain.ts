@@ -1121,8 +1121,21 @@ function biomeColor(
       // boundary. 0.012 was still wide enough to paint most of it as sand.
       const t = elevation / 0.003;
       outColor.copy(shoreColor).lerp(landColor, Math.min(Math.max(t, 0), 1));
-      // climate belts on the ground itself, under whatever grows on it
-      outColor.lerp(tropicalSoilColor, tropical * 0.65);
+      // Climate belts on the ground itself, under whatever grows on it.
+      //
+      // The laterite is gated on dryness as well as on latitude. `tropical`
+      // reads temperature, which here is latitude and nothing else, so on
+      // its own it applied red soil in exact inverse proportion to rainfall:
+      // full strength (0.65, enough to take the ground from green-dominant
+      // to red-dominant) straight down the equator where the canopy is
+      // closed, and nothing over the cerrado twenty degrees south. That put
+      // the Amazon and the Congo basins under a muddy olive-brown while the
+      // savanna next door stayed green — the wrong way round, and the last
+      // place on the globe still being painted from latitude after the
+      // Köppen map went in. Bare laterite is what open, seasonally-dry
+      // tropical ground looks like, so the savanna and the Sahel margins
+      // keep it and the rainforest does not.
+      outColor.lerp(tropicalSoilColor, tropical * 0.65 * smoothstep(aridity, 0.16, 0.34));
       outColor.lerp(taigaColor, boreal * 0.7);
 
       // A sand sea has a pale, almost bleached core with a darker gravel
