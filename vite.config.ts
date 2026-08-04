@@ -18,6 +18,11 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         gpgpuTest: resolve(__dirname, 'gpgpu-test.html'),
+        // Reads real pixel values back from plateSim's actual color-
+        // advection render target, printed as text — for verifying the
+        // render-target write itself takes effect on a device without
+        // needing a screenshot. See src/advectTest.ts.
+        advectTest: resolve(__dirname, 'advect-test.html'),
       },
     },
   },
