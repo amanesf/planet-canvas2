@@ -46,6 +46,29 @@ const TICK_INTERVAL = 0.25;
 const MAX_SUBSTEP_SIM_SECONDS = 0.6;
 const MAX_SUBSTEPS_PER_TICK = 12;
 
+// The color-advection pair (see COLOR_ADVECT_FRAGMENT_SHADER) needs its
+// own, coarser substep budget, independent of the height pass's above.
+// The height cap exists to stop plate-ownership from flipping sign
+// dispatch to dispatch — that reasoning doesn't apply to color, which
+// never re-derives anything from scratch each dispatch (see the long
+// comment on the shader itself). What color *does* have is repeated
+// bilinear resampling — every dispatch is one more generation of blur —
+// so fewer, larger steps covering the same wall-clock time directly
+// halves the worst-case blur-generation rate instead of tracking the
+// height pass's higher rate for no benefit.
+const COLOR_MAX_SUBSTEP_SIM_SECONDS = 1.2;
+const COLOR_MAX_SUBSTEPS_PER_TICK = 6;
+
+// Validated via a soak-tested extension to gpgpuTest.ts before this was
+// built for real: a second, concurrent ping-pong pair at this resolution
+// (much larger than the 128x64 height pair, since color needs to hold
+// real biome/coastline detail rather than a smooth low-frequency signal)
+// dispatched at up to COLOR_MAX_SUBSTEPS_PER_TICK per tick, run
+// continuously, didn't crash or hang on the one real device this project
+// tunes against.
+const COLOR_SIM_WIDTH = 512;
+const COLOR_SIM_HEIGHT = 256;
+
 export interface PlateDef {
   pole: THREE.Vector3;
   seed: THREE.Vector3;
@@ -182,6 +205,128 @@ const FRAGMENT_SHADER = /* glsl */ `
 `;
 
 // ---------------------------------------------------------------------
+// Color advection: replaces the old "rewind every vertex all the way
+// back to t=0, every frame" UV-rewrite trick (formerly done in
+// PLATE_UV_DRIFT_GLSL below, now bump-map-only) for the terrain's paint.
+// ---------------------------------------------------------------------
+// The old trick's tearing came from a specific mechanism: two vertices
+// straddling a boundary can belong to different plates, and each one's
+// UV was independently unwound by *that plate's full accumulated
+// rotation since t=0* — an amount that diverges without bound as
+// simulated time grows, so the two texture samples a single triangle
+// draws between can end up arbitrarily far apart.
+//
+// This is semi-Lagrangian advection instead: each dispatch only asks
+// "one substep ago, where was the content that's here now" — a single,
+// small, exact rigid-rotation step back along the current owning
+// plate's axis (`-speed * uDt`, not `-speed * uSimTime`) — and samples
+// the *previous frame's already-advected state* there, not the original
+// static texture. The per-dispatch displacement is bounded by
+// `max(|speed|) * uDt` regardless of how long the simulation has been
+// running, so two texels straddling a boundary sample from source points
+// that stay close together instead of diverging — no discrete tear.
+// Divergent boundaries stretch/thin (every output texel always finds
+// *some* nearby source by construction) and convergent boundaries show
+// one plate's advected content overtaking the other's, both as an
+// emergent consequence of the advection rather than anything
+// special-cased for "new crust" or "subduction".
+//
+// Known, accepted cost: repeated bilinear resampling is a low-pass
+// filter, and it compounds — sustained high-speed play will visibly
+// soften fine texture detail over time. COLOR_MAX_SUBSTEPS_PER_TICK
+// above bounds how fast that happens; it is not eliminated.
+const COLOR_ADVECT_FRAGMENT_SHADER = /* glsl */ `
+  precision highp float;
+  #define PLATE_COUNT ${PLATE_COUNT}
+  uniform sampler2D tPrevColor;
+  uniform vec3 uPoles[PLATE_COUNT];
+  uniform vec3 uSeeds[PLATE_COUNT];
+  uniform float uSpeeds[PLATE_COUNT];
+  uniform float uSimTime;
+  uniform float uDt;
+  varying vec2 vUv;
+
+  vec3 dirFromUv(vec2 uv) {
+    float phi = uv.x * 6.283185307;
+    float theta = uv.y * 3.141592653;
+    return vec3(-cos(phi) * sin(theta), cos(theta), sin(phi) * sin(theta));
+  }
+
+  vec2 uvFromDir(vec3 dir) {
+    float theta = acos(clamp(dir.y, -1.0, 1.0));
+    float phi = atan(dir.z, -dir.x);
+    if (phi < 0.0) phi += 6.283185307;
+    return vec2(phi / 6.283185307, theta / 3.141592653);
+  }
+
+  vec3 rotateAroundAxis(vec3 v, vec3 axis, float angle) {
+    float s = sin(angle);
+    float c = cos(angle);
+    return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0 - c);
+  }
+
+  void main() {
+    vec3 worldDir = normalize(dirFromUv(vUv));
+
+    // Which plate owns this point right now — same nearest-seed search
+    // FRAGMENT_SHADER above runs for the height forcing. This full-
+    // history rotate-back is only used to answer "who owns this spot",
+    // never to decide where to sample from — that's the one-substep
+    // trace below.
+    float bestScore = -2.0;
+    int bestIdx = 0;
+    for (int i = 0; i < PLATE_COUNT; i++) {
+      vec3 restPoint = rotateAroundAxis(worldDir, uPoles[i], -uSpeeds[i] * uSimTime);
+      float score = dot(restPoint, uSeeds[i]);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+
+    vec3 sourceDir = rotateAroundAxis(worldDir, uPoles[bestIdx], -uSpeeds[bestIdx] * uDt);
+    vec2 sourceUv = uvFromDir(sourceDir);
+    gl_FragColor = texture2D(tPrevColor, sourceUv);
+  }
+`;
+
+// One-time seed blit: copies the existing static terrainTexture
+// (main.ts) into the color-advection target so it becomes the moving
+// texture's starting state, instead of starting blank.
+//
+// Color-space handling matters here specifically because this is the
+// one place gamma-encoded and linear values are both in play. terrainTexture
+// is sRGB-tagged, so three.js auto-decodes it to linear the moment any
+// shader samples it — including this one. Every dispatch *after* this
+// seed, though (COLOR_ADVECT_FRAGMENT_SHADER above), is a pure copy: it
+// samples tPrevColor and writes it straight back out with no encode or
+// decode, because the render target itself is a plain (non-sRGB-tagged)
+// RGBA8 target — nothing about it auto-converts on read or write. So
+// this seed pass has to manually re-encode back to the sRGB curve before
+// writing, or every advected frame downstream would be holding
+// once-decoded-and-never-reencoded linear values in 8-bit storage meant
+// for gamma-curved bytes — the same double/mismatched-encode shape of
+// bug terrain.ts's writeSRGBPixel comment already documents once for
+// this codebase. The consuming side (main.ts's globe fragment shader)
+// does the matching manual decode at final display time.
+const SEED_FRAGMENT_SHADER = /* glsl */ `
+  precision highp float;
+  uniform sampler2D tSource;
+  varying vec2 vUv;
+
+  vec3 plateLinearToSRGB(vec3 c) {
+    vec3 lo = c * 12.92;
+    vec3 hi = 1.055 * pow(c, vec3(0.41666)) - vec3(0.055);
+    return mix(lo, hi, step(vec3(0.0031308), c));
+  }
+
+  void main() {
+    vec3 linearColor = texture2D(tSource, vUv).rgb;
+    gl_FragColor = vec4(plateLinearToSRGB(linearColor), 1.0);
+  }
+`;
+
+// ---------------------------------------------------------------------
 // Shared GLSL for consumers that need to know "which plate, and where in
 // that plate's own rest frame" for a point on the sphere — the same
 // question the simulation fragment shader above answers to find
@@ -236,23 +381,24 @@ export const PLATE_UNIFORMS_GLSL = /* glsl */ `
   }
 `;
 
-// Spliced in right after #include <uv_vertex>. As of the three.js version
-// this project pins, that chunk does NOT feed the color/bump maps from
-// the generic `vUv` varying — it computes dedicated `vMapUv` / `vBumpMapUv`
-// varyings straight from the raw UV attribute, before this injected code
-// ever runs, so overwriting `vUv` alone is a no-op for what actually gets
-// sampled. This overwrites vMapUv/vBumpMapUv instead, with the UV of
-// wherever this vertex's current position sat in its owning plate's rest
-// frame at t=0 — i.e. "what was painted here before this plate had
-// rotated". Everything downstream that samples them (the color map, the
-// bump map, in the fragment shader) then picks up that moved paint
-// automatically, with no other change needed.
+// Spliced in right after #include <uv_vertex>. Bump-map only now — the
+// color map used to ride this same rewind-to-t=0 trick, but that's what
+// caused the boundary tearing (see the long comment on
+// COLOR_ADVECT_FRAGMENT_SHADER above); color now comes from the live
+// advected texture instead, sampled at the mesh's own plain, un-warped
+// vMapUv, so no per-vertex warp is needed for it any more. Bump stays on
+// this cheaper per-vertex trick on purpose: it's high-frequency surface
+// relief, not a big semantic color region, so its boundary seams are far
+// less objectionable — not worth the cost of a second, higher-resolution
+// advected target just for that.
 //
-// This is the same rotate-back-and-compare-to-each-seed search
-// FRAGMENT_SHADER runs per simulation texel, just run once per vertex
-// instead of per simulation texel, and keeping the winning rest-frame
-// direction instead of only the winning index.
+// As of the three.js version this project pins, #include <uv_vertex>
+// does NOT feed the bump map from the generic `vUv` varying — it
+// computes a dedicated `vBumpMapUv` varying straight from the raw UV
+// attribute, before this injected code ever runs, so overwriting `vUv`
+// alone would be a no-op for what actually gets sampled.
 export const PLATE_UV_DRIFT_GLSL = /* glsl */ `
+  #ifdef USE_BUMPMAP
   {
     vec3 plateWorldDir = plateDirFromUv(uv);
     float plateBestScore = -2.0;
@@ -265,14 +411,9 @@ export const PLATE_UV_DRIFT_GLSL = /* glsl */ `
         plateRestDir = restPoint;
       }
     }
-    vec2 plateWarpedUv = plateUvFromDir(plateRestDir);
-    #ifdef USE_MAP
-    vMapUv = plateWarpedUv;
-    #endif
-    #ifdef USE_BUMPMAP
-    vBumpMapUv = plateWarpedUv;
-    #endif
+    vBumpMapUv = plateUvFromDir(plateRestDir);
   }
+  #endif
 `;
 
 // ---------------------------------------------------------------------
@@ -436,6 +577,14 @@ export interface PlateSimulation {
   /** Current height-delta texture, in [0,1] (unpack with *2.0-1.0 in a consuming shader). */
   getTexture: () => THREE.Texture;
   /**
+   * Current advected terrain-color texture. Holds gamma-encoded (sRGB
+   * curve) bytes, not linear values — decode with three's built-in
+   * `sRGBTransferEOTF` (always available in a MeshStandardMaterial's
+   * fragment shader) before using it as a display color. See
+   * COLOR_ADVECT_FRAGMENT_SHADER / SEED_FRAGMENT_SHADER above for why.
+   */
+  getColorTexture: () => THREE.Texture;
+  /**
    * Call every frame; internally throttles actual GPU work to
    * TICK_INTERVAL. `speedMultiplier` scales simulated time per tick, not
    * tick frequency — see the implementation for why.
@@ -462,7 +611,23 @@ function makeRenderTarget(): THREE.WebGLRenderTarget {
   return rt;
 }
 
-export function createPlateSimulation(): PlateSimulation {
+function makeColorRenderTarget(): THREE.WebGLRenderTarget {
+  const rt = new THREE.WebGLRenderTarget(COLOR_SIM_WIDTH, COLOR_SIM_HEIGHT, {
+    magFilter: THREE.LinearFilter,
+    minFilter: THREE.LinearFilter,
+    generateMipmaps: false,
+  });
+  rt.texture.flipY = false;
+  return rt;
+}
+
+/**
+ * @param seedTexture main.ts's existing static terrainTexture — copied in
+ * once (see SEED_FRAGMENT_SHADER) as the color-advection target's
+ * starting state, so it moves the actual baked artwork instead of
+ * starting from a blank field.
+ */
+export function createPlateSimulation(seedTexture: THREE.Texture): PlateSimulation {
   const plates = buildPlates();
 
   let rtA = makeRenderTarget();
@@ -484,11 +649,49 @@ export function createPlateSimulation(): PlateSimulation {
   const scene = new THREE.Scene();
   scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
 
+  let colorRtA = makeColorRenderTarget();
+  let colorRtB = makeColorRenderTarget();
+  const colorMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      tPrevColor: { value: colorRtA.texture },
+      uPoles: { value: plates.map((p) => p.pole) },
+      uSeeds: { value: plates.map((p) => p.seed) },
+      uSpeeds: { value: plates.map((p) => p.speed) },
+      uSimTime: { value: 0 },
+      uDt: { value: 0 },
+    },
+    vertexShader: VERTEX_SHADER,
+    fragmentShader: COLOR_ADVECT_FRAGMENT_SHADER,
+  });
+  const colorScene = new THREE.Scene();
+  colorScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), colorMaterial));
+
+  const seedMaterial = new THREE.ShaderMaterial({
+    uniforms: { tSource: { value: seedTexture } },
+    vertexShader: VERTEX_SHADER,
+    fragmentShader: SEED_FRAGMENT_SHADER,
+  });
+  const seedScene = new THREE.Scene();
+  seedScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), seedMaterial));
+  let colorSeeded = false;
+
   let simTime = 0;
   let accumulator = 0;
   let lastElapsed = 0;
 
   const update = (renderer: THREE.WebGLRenderer, elapsedSeconds: number, speedMultiplier = 1) => {
+    // Deferred rather than done at construction time: this whole module
+    // doesn't otherwise need a `renderer` until the first real tick, and
+    // seeding is a one-time render just like any other dispatch below, so
+    // it can piggyback on the same renderer this call already received.
+    if (!colorSeeded) {
+      colorSeeded = true;
+      const seedTarget = renderer.getRenderTarget();
+      renderer.setRenderTarget(colorRtA);
+      renderer.render(seedScene, camera);
+      renderer.setRenderTarget(seedTarget);
+    }
+
     const dt = Math.max(0, Math.min(elapsedSeconds - lastElapsed, 0.25));
     lastElapsed = elapsedSeconds;
     accumulator += dt;
@@ -534,11 +737,39 @@ export function createPlateSimulation(): PlateSimulation {
       rtA = rtB;
       rtB = swap;
     }
+
+    // Color gets its own, coarser substep count covering the same
+    // totalStepDt — see COLOR_MAX_SUBSTEPS_PER_TICK's comment for why.
+    // Walking colorTime forward from simTime - totalStepDt lands it on
+    // exactly the same final simTime the height loop just reached, so
+    // the two never clock-skew relative to each other even though they
+    // take a different number of steps to get there.
+    const colorSubsteps = Math.min(
+      COLOR_MAX_SUBSTEPS_PER_TICK,
+      Math.max(1, Math.ceil(totalStepDt / COLOR_MAX_SUBSTEP_SIM_SECONDS)),
+    );
+    const colorSubDt = totalStepDt / colorSubsteps;
+    let colorTime = simTime - totalStepDt;
+    for (let i = 0; i < colorSubsteps; i++) {
+      colorTime += colorSubDt;
+      colorMaterial.uniforms.tPrevColor.value = colorRtA.texture;
+      colorMaterial.uniforms.uSimTime.value = colorTime;
+      colorMaterial.uniforms.uDt.value = colorSubDt;
+
+      renderer.setRenderTarget(colorRtB);
+      renderer.render(colorScene, camera);
+
+      const colorSwap = colorRtA;
+      colorRtA = colorRtB;
+      colorRtB = colorSwap;
+    }
+
     renderer.setRenderTarget(previousTarget);
   };
 
   return {
     getTexture: () => rtA.texture,
+    getColorTexture: () => colorRtA.texture,
     update,
     getSimTime: () => simTime,
     getPlateDefs: () => plates,
