@@ -564,6 +564,29 @@ export function buildClouds(radius: number): CloudSystem {
   const stratusGeometry = buildNoduleGeometry(rand, CLOUD_TYPE_PARAMS.stratus.flatten, CLOUD_TYPE_PARAMS.stratus.undersideFloor);
   const cirrusGeometry = buildNoduleGeometry(rand, CLOUD_TYPE_PARAMS.cirrus.flatten, CLOUD_TYPE_PARAMS.cirrus.undersideFloor);
 
+  // The halo needs its *own* copy of each geometry, differing only in the
+  // baked vertex colours.
+  //
+  // It was drawn from the core's geometry, which carries the top-lit /
+  // underside-shaded gradient the cores are shaded by — so the halo, which
+  // extends a third further out in every direction, was painting that
+  // gradient's dark underside over the sky *around* each nodule. Against
+  // the ocean it came out as a distinct grey ring following every lump: the
+  // exact opposite of what a fringe is for, and the single most CG-looking
+  // thing left in the sky. A fringe is backlit — the thin edge of a wad of
+  // cotton is the *brightest* part of it, not the darkest — so the halo
+  // copies are flooded to near-white and only the core keeps the shading.
+  const flatWhite = (source: THREE.BufferGeometry): THREE.BufferGeometry => {
+    const g = source.clone();
+    const count = g.attributes.position.count;
+    const colors = new Float32Array(count * 3).fill(0.97);
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    return g;
+  };
+  const regularHaloVariants = regularVariants.map(flatWhite);
+  const stratusHaloGeometry = flatWhite(stratusGeometry);
+  const cirrusHaloGeometry = flatWhite(cirrusGeometry);
+
   const coreMaterial = new THREE.MeshStandardMaterial({
     color: '#f2f0ee',
     vertexColors: true, // baked top-lit / underside-shaded gradient, above
@@ -658,12 +681,12 @@ export function buildClouds(radius: number): CloudSystem {
 
   regularByVariant.forEach((list, vi) => {
     buildLayer(list, regularVariants[vi], coreMaterial, 1, true);
-    buildLayer(list, regularVariants[vi], haloMaterial, CLOUD_TYPE_PARAMS.cumulus.haloScale, false);
+    buildLayer(list, regularHaloVariants[vi], haloMaterial, CLOUD_TYPE_PARAMS.cumulus.haloScale, false);
   });
   buildLayer(stratusNodules, stratusGeometry, coreMaterial, 1, true);
-  buildLayer(stratusNodules, stratusGeometry, haloMaterial, CLOUD_TYPE_PARAMS.stratus.haloScale, false);
+  buildLayer(stratusNodules, stratusHaloGeometry, haloMaterial, CLOUD_TYPE_PARAMS.stratus.haloScale, false);
   buildLayer(cirrusNodules, cirrusGeometry, coreMaterial, 1, false);
-  buildLayer(cirrusNodules, cirrusGeometry, cirrusHaloMaterial, CLOUD_TYPE_PARAMS.cirrus.haloScale, false);
+  buildLayer(cirrusNodules, cirrusHaloGeometry, cirrusHaloMaterial, CLOUD_TYPE_PARAMS.cirrus.haloScale, false);
 
   // ---- storm cells: each band gets its own material so lightning can
   // flicker one storm without lighting up every cloud on the planet ----
@@ -681,7 +704,7 @@ export function buildClouds(radius: number): CloudSystem {
     const stormCore = coreMaterial.clone();
     stormCore.emissiveIntensity = 0.08;
     buildLayer(list, regularVariants[band % regularVariantCount], stormCore, 1, true);
-    buildLayer(list, regularVariants[band % regularVariantCount], haloMaterial, CLOUD_TYPE_PARAMS.storm.haloScale, false);
+    buildLayer(list, regularHaloVariants[band % regularVariantCount], haloMaterial, CLOUD_TYPE_PARAMS.storm.haloScale, false);
     // a cyclone is a far more electrically active thing than a lone
     // thunderhead, so its eyewall flickers several times as often
     const cyclone = bandType[band] === 'typhoon';
