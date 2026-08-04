@@ -263,17 +263,16 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, SETTINGS.maxPixelRatio)
 // Only the key light casts (one shadow pass), and the map is sized for a
 // subject that occupies a fixed, known volume.
 //
-// A device once crashed on this, and the fix was not "detect that GPU and
-// skip shadows" — a standalone stress test of the exact same render-
-// target-switching pattern this needs ran clean for 200+ seconds on that
-// same device (see gpgpu-test.html), which means the switch itself is
-// fine there. What wasn't fine was the *combined* weight of the full
-// scene while switching every frame. So the fix lives in SETTINGS and in
-// how much the scatter passes place (see species.ts's CANDIDATES) —
-// bringing the whole scene's footprint down far enough that shadows and
-// the camera pass both stay affordable — not in turning features off for
-// one vendor.
-renderer.shadowMap.enabled = true;
+// A device kept crashing on this even after the whole scene's weight
+// (SETTINGS, species.ts's CANDIDATES, clouds.ts's cloud count) came down
+// hard — with the camera-pass composer still on. Temporarily off, as a
+// diagnostic: does shadows alone (against everything else already at
+// today's reduced weight, and post-processing left running) survive on
+// that device? Whatever the answer, it narrows down whether the crash is
+// shadows specifically, the composer specifically, or needs both present
+// at once — see the same reasoning trail above/in git log for the
+// composer side of this.
+renderer.shadowMap.enabled = false;
 // PCFSoftShadowMap is deprecated in this three version and silently falls
 // back to PCF anyway; VSM was tried for a softer edge and produced no
 // visible shadow at all here (its light-bleeding term washes out contact
