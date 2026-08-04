@@ -19,7 +19,7 @@ import { buildClouds } from './clouds';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
 import { buildWorkshop } from './setDressing';
-import { createPlateSimulation } from './plateSim';
+import { createPlateSimulation, PLATE_UNIFORMS_GLSL, PLATE_UV_DRIFT_GLSL } from './plateSim';
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -786,14 +786,31 @@ const globeMaterial = new THREE.MeshStandardMaterial({
 });
 
 // Live plate tectonics (see plateSim.ts): a small GPU simulation ticking
-// on its own slow clock, independent of the render frame rate. Its
-// output is one small height *delta* — mountains slowly building where
-// plates collide, ground slowly relaxing where they pull apart — added
-// on top of the static terrain this mesh already has, in world space
-// along each vertex's own (static) normal. The terrain's paint and its
-// overall continent shapes stay exactly as generated; only this one
-// live layer moves.
+// on its own slow clock, independent of the render frame rate. Two
+// things ride on it, both driven by the same plate rotations:
+//
+// 1. A small height *delta* — mountains slowly building where plates
+//    collide, ground slowly relaxing where they pull apart — added on
+//    top of the static terrain this mesh already has, along each
+//    vertex's own (static) normal.
+// 2. The terrain's own paint (the color/bump textures baked by
+//    terrain.ts) sampled at a UV that's warped to follow each vertex's
+//    owning plate's rotation, so the continents themselves visibly drift
+//    rather than only the boundary bumps moving under a fixed painting.
+//    See plateSim.ts's PLATE_UV_DRIFT_GLSL for how.
+//
+// Vegetation (species.ts's few hundred thousand InstancedMesh trees etc.)
+// deliberately does NOT follow this drift — re-deriving per-instance
+// placement every frame for that many instances is exactly the kind of
+// per-frame cost this whole project has been fighting to keep off the
+// one real device it keeps crashing on. Over the timescales this sim
+// runs at by default that mismatch isn't visible; at the higher end of
+// the speed toggle it will be, along with visible seams at plate
+// boundaries where two plates' rest frames have drifted apart — both
+// accepted trade-offs of warping a static painted texture instead of
+// actually re-painting it.
 const plateSim = createPlateSimulation();
+const plateDefs = plateSim.getPlateDefs();
 globeMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uPlateSim = { value: plateSim.getTexture() };
   // exaggerated well past a real plate boundary's actual relief for the
@@ -803,8 +820,21 @@ globeMaterial.onBeforeCompile = (shader) => {
   // barely-there once the sim was actually accumulating consistently
   // (see plateSim.ts's substep fix) instead of oscillating near zero.
   shader.uniforms.uPlateUplift = { value: 0.11 };
+  shader.uniforms.uPoles = { value: plateDefs.map((p) => p.pole) };
+  shader.uniforms.uSeeds = { value: plateDefs.map((p) => p.seed) };
+  shader.uniforms.uSpeeds = { value: plateDefs.map((p) => p.speed) };
+  shader.uniforms.uSimTime = { value: 0 };
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform sampler2D uPlateSim;\nuniform float uPlateUplift;')
+    .replace(
+      '#include <common>',
+      `#include <common>\nuniform sampler2D uPlateSim;\nuniform float uPlateUplift;\n${PLATE_UNIFORMS_GLSL}`,
+    )
+    // The height-delta sample two chunks down deliberately keeps reading
+    // the raw `uv` attribute directly (not vMapUv/vBumpMapUv) so the
+    // boundary/uplift forcing stays anchored to each vertex's actual
+    // current position regardless of this override; only the paint
+    // (map/bumpMap) is meant to move.
+    .replace('#include <uv_vertex>', `#include <uv_vertex>\n${PLATE_UV_DRIFT_GLSL}`)
     .replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
@@ -990,8 +1020,18 @@ globeTick = (t) => {
   // swaps which of its two render targets is "current" every step; the
   // material's shader object was captured in onBeforeCompile above.
   plateSim.update(renderer, t, PLATE_SPEEDS[plateSpeedIndex]);
-  const globeShader = globeMaterial.userData.shader as { uniforms: { uPlateSim: { value: THREE.Texture } } } | undefined;
-  if (globeShader) globeShader.uniforms.uPlateSim.value = plateSim.getTexture();
+  const globeShader = globeMaterial.userData.shader as
+    | { uniforms: { uPlateSim: { value: THREE.Texture }; uSimTime: { value: number } } }
+    | undefined;
+  if (globeShader) {
+    globeShader.uniforms.uPlateSim.value = plateSim.getTexture();
+    // Keeps the UV-drift warp (see plateSim.ts's PLATE_UV_DRIFT_GLSL) in
+    // lockstep with the same simulated clock the height-delta texture
+    // itself was just advanced on, rather than real elapsed time — the
+    // two must agree, or the painted continents and the boundary bumps
+    // riding on them would drift out of sync with each other.
+    globeShader.uniforms.uSimTime.value = plateSim.getSimTime();
+  }
 };
 
 document.querySelector<HTMLDivElement>('#loading')?.remove();

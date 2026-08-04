@@ -28,7 +28,7 @@ import { mulberry32 } from './spatialHash';
 // and are closing on each other, height accumulates (a collision zone);
 // where they're pulling apart, it relaxes back down (a rift).
 
-const PLATE_COUNT = 7;
+export const PLATE_COUNT = 7;
 export const SIM_WIDTH = 128;
 export const SIM_HEIGHT = 64;
 
@@ -46,7 +46,7 @@ const TICK_INTERVAL = 0.25;
 const MAX_SUBSTEP_SIM_SECONDS = 0.6;
 const MAX_SUBSTEPS_PER_TICK = 12;
 
-interface PlateDef {
+export interface PlateDef {
   pole: THREE.Vector3;
   seed: THREE.Vector3;
   /** signed angular speed, radians per simulated second — slow on purpose */
@@ -181,6 +181,100 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
+// ---------------------------------------------------------------------
+// Shared GLSL for consumers that need to know "which plate, and where in
+// that plate's own rest frame" for a point on the sphere — the same
+// question the simulation fragment shader above answers to find
+// convergence/divergence at boundaries. main.ts's globe vertex shader
+// reuses this verbatim to make the *painted* terrain (the static color
+// texture baked by terrain.ts) visually ride along with its owning
+// plate's rotation, instead of only the height-delta bumps moving while
+// the continents underneath stay painted in place.
+//
+// Deliberately duplicated as plain strings rather than shared with
+// FRAGMENT_SHADER above: that shader's internals (dirFromUv, the
+// boundary/convergence math) are private to the simulation pass and
+// named without a prefix; these are meant to be spliced into someone
+// else's shader alongside other identifiers, so everything here is
+// prefixed `plate*` to avoid colliding with whatever that shader already
+// declares.
+export const PLATE_UNIFORMS_GLSL = /* glsl */ `
+  #define PLATE_COUNT ${PLATE_COUNT}
+  uniform vec3 uPoles[PLATE_COUNT];
+  uniform vec3 uSeeds[PLATE_COUNT];
+  uniform float uSpeeds[PLATE_COUNT];
+  uniform float uSimTime;
+
+  vec3 plateRotate(vec3 v, vec3 axis, float angle) {
+    float s = sin(angle);
+    float c = cos(angle);
+    return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0 - c);
+  }
+
+  // Same equirectangular convention as dirFromUv above (and terrain.ts's
+  // dirForPixel) — deriving the query direction from the *UV* attribute
+  // rather than the mesh's vertex position keeps plate ownership here
+  // exactly consistent with how the height-delta texture's own texels
+  // were assigned (that lookup already keys off this same uv attribute,
+  // see uPlateSim's sample below), instead of introducing a second,
+  // slightly different notion of "where this vertex is" from its
+  // (already terrain-displaced) position.
+  vec3 plateDirFromUv(vec2 uv) {
+    float phi = uv.x * 6.283185307;
+    float theta = uv.y * 3.141592653;
+    return vec3(-cos(phi) * sin(theta), cos(theta), sin(phi) * sin(theta));
+  }
+
+  // Inverse of plateDirFromUv above (and of terrain.ts's dirForPixel,
+  // which this must match exactly for a warped sample to land on the
+  // same texel the unwarped one would have at t=0).
+  vec2 plateUvFromDir(vec3 dir) {
+    float theta = acos(clamp(dir.y, -1.0, 1.0));
+    float phi = atan(dir.z, -dir.x);
+    if (phi < 0.0) phi += 6.283185307;
+    return vec2(phi / 6.283185307, theta / 3.141592653);
+  }
+`;
+
+// Spliced in right after #include <uv_vertex>. As of the three.js version
+// this project pins, that chunk does NOT feed the color/bump maps from
+// the generic `vUv` varying — it computes dedicated `vMapUv` / `vBumpMapUv`
+// varyings straight from the raw UV attribute, before this injected code
+// ever runs, so overwriting `vUv` alone is a no-op for what actually gets
+// sampled. This overwrites vMapUv/vBumpMapUv instead, with the UV of
+// wherever this vertex's current position sat in its owning plate's rest
+// frame at t=0 — i.e. "what was painted here before this plate had
+// rotated". Everything downstream that samples them (the color map, the
+// bump map, in the fragment shader) then picks up that moved paint
+// automatically, with no other change needed.
+//
+// This is the same rotate-back-and-compare-to-each-seed search
+// FRAGMENT_SHADER runs per simulation texel, just run once per vertex
+// instead of per simulation texel, and keeping the winning rest-frame
+// direction instead of only the winning index.
+export const PLATE_UV_DRIFT_GLSL = /* glsl */ `
+  {
+    vec3 plateWorldDir = plateDirFromUv(uv);
+    float plateBestScore = -2.0;
+    vec3 plateRestDir = plateWorldDir;
+    for (int i = 0; i < PLATE_COUNT; i++) {
+      vec3 restPoint = plateRotate(plateWorldDir, uPoles[i], -uSpeeds[i] * uSimTime);
+      float score = dot(restPoint, uSeeds[i]);
+      if (score > plateBestScore) {
+        plateBestScore = score;
+        plateRestDir = restPoint;
+      }
+    }
+    vec2 plateWarpedUv = plateUvFromDir(plateRestDir);
+    #ifdef USE_MAP
+    vMapUv = plateWarpedUv;
+    #endif
+    #ifdef USE_BUMPMAP
+    vBumpMapUv = plateWarpedUv;
+    #endif
+  }
+`;
+
 export interface PlateSimulation {
   /** Current height-delta texture, in [0,1] (unpack with *2.0-1.0 in a consuming shader). */
   getTexture: () => THREE.Texture;
@@ -190,6 +284,15 @@ export interface PlateSimulation {
    * tick frequency — see the implementation for why.
    */
   update: (renderer: THREE.WebGLRenderer, elapsedSeconds: number, speedMultiplier?: number) => void;
+  /** Simulated seconds elapsed so far — for a consumer (e.g. the UV-drift
+   * shader above) that needs to replay the exact same rest-frame rotation
+   * this simulation used, rather than the real-time clock. */
+  getSimTime: () => number;
+  /** The plate definitions this instance was built with (fixed, seeded —
+   * same values every time), so a consumer can build its own uPoles /
+   * uSeeds / uSpeeds uniform arrays that stay in lockstep with the ones
+   * driving the simulation itself. */
+  getPlateDefs: () => PlateDef[];
 }
 
 function makeRenderTarget(): THREE.WebGLRenderTarget {
@@ -280,5 +383,7 @@ export function createPlateSimulation(): PlateSimulation {
   return {
     getTexture: () => rtA.texture,
     update,
+    getSimTime: () => simTime,
+    getPlateDefs: () => plates,
   };
 }
