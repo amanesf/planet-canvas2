@@ -88,9 +88,33 @@ export function smoothstep(x: number, edge0: number, edge1: number): number {
 // only *where* they land changes, from even spacing to drifts and gaps.
 // Different seeds per species/layer keep their clusters from all forming
 // in the same places.
+// Two scales, multiplied, not one.
+//
+// A single field at frequency 3 has features about a fifth of a radian
+// across — continental scale. Zoomed in on any one region it is very
+// nearly constant, so within the part of the globe you are actually
+// looking at, every candidate was accepted with the same probability, and
+// a uniform acceptance probability combined with the minimum-spacing test
+// each caller applies produces exactly one thing: an even lattice. That is
+// why the trees read as planted on a grid however much clumping the field
+// was supposedly doing.
+//
+// The broad field still decides which regions are populated at all. A
+// second, much finer one on top of it punches thickets and bald patches at
+// a scale you can see from arm's length — and because it is *multiplied*
+// rather than added, the places where it goes negative clamp to a genuine
+// hole rather than merely thinning out.
 export function clumpDensity(dir: THREE.Vector3, seed: number, frequency = 3): number {
-  const n = fbm3(dir.x * frequency + seed, dir.y * frequency + seed, dir.z * frequency + seed, 3);
-  return Math.max(0, 1 + n * 1.6);
+  const broad = fbm3(dir.x * frequency + seed, dir.y * frequency + seed, dir.z * frequency + seed, 3);
+  const fine = fbm3(
+    dir.x * frequency * 5.5 + seed + 311,
+    dir.y * frequency * 5.5 + seed + 311,
+    dir.z * frequency * 5.5 + seed + 311,
+    2,
+  );
+  // both terms average to about 1, so the mean acceptance rate — and with
+  // it the total instance count — stays where it was
+  return Math.max(0, (1 + broad * 1.5) * (1 + fine * 1.5));
 }
 
 // deterministic RNG so scatter patterns look the same every reload

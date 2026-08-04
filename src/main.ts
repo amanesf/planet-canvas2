@@ -59,14 +59,23 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 // the hardest cuts that turned out not to be what mattered.
 const SETTINGS = {
   /** longitudinal / latitudinal segments for the displaced globe */
-  globeSegments: [200, 112] as const,
+  // Raised from 200x112. This, not the elevation data, was what stopped
+  // Japan (about four degrees across) from having a recognisable shape:
+  // at 200 segments a degree and a half of longitude is one quad, so the
+  // whole archipelago was two vertices wide however good the height field
+  // underneath it was.
+  globeSegments: [384, 216] as const,
   oceanSegments: [76, 44] as const,
   shadowMapSize: 768,
   /** rings of blur taps in the camera pass; each ring is 8 taps */
   dofRings: 1,
   maxPixelRatio: 1.2,
   /** width of the baked terrain/ocean/bump textures; height is half */
-  textureWidth: 1024,
+  // Doubled alongside the geometry, and alongside a source elevation image
+  // that went to 4096x2048 in the same pass — a crisper coastline is no
+  // use if the paint over it is still averaging four of its pixels into
+  // one.
+  textureWidth: 2048,
 };
 
 // Building the model blocks the main thread for seconds: the terrain paint
@@ -289,7 +298,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 // the same exposure the cheap tier came out visibly brighter and flatter
 // than the others: not a lower-detail version of the same picture, a
 // different one. Pulled back to match.
-renderer.toneMappingExposure = 1.55;
+renderer.toneMappingExposure = 1.9;
 app.appendChild(renderer.domElement);
 
 // Tilt-shift blur (see tiltShift.ts for why this is a cheap single-pass
@@ -363,7 +372,7 @@ const studioEnvironment = buildStudioEnvironment();
 scene.environment = pmremGenerator.fromEquirectangular(studioEnvironment).texture;
 studioEnvironment.dispose();
 pmremGenerator.dispose();
-scene.environmentIntensity = 0.9;
+scene.environmentIntensity = 1.1;
 
 // A lost context now comes back at a cheaper tier rather than rebuilding
 // the scene that lost it — see quality.ts.
@@ -411,7 +420,7 @@ controls.target.set(0, TARGET_Y, 0);
 // shadows were rendering correctly and were simply drowned. A shadow is
 // only as legible as the fraction of the light it removes, so the key has
 // to actually dominate before any of this is visible.
-scene.add(new THREE.AmbientLight(0xffe9c2, 0.26));
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.42));
 
 const keyLight = new THREE.DirectionalLight(0xfff1dc, 3.4);
 // Raking, not frontal. This sat at (-3.2, 4.6, 4.2) with the camera at
@@ -444,13 +453,13 @@ scene.add(keyLight);
 
 // the bounce card propped against the desk: enough to keep the shaded
 // side readable, nowhere near enough to compete with the key
-const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.42);
+const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.62);
 fillLight.position.set(3.5, -0.8, 2.5);
 scene.add(fillLight);
 
 // cool separation edge along the far side, so the globe doesn't merge
 // into the dim background it's sitting against
-const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.35);
+const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.45);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
 
@@ -460,7 +469,7 @@ scene.add(rimLight);
 // desk, the bottles and the foreground clutter sitting in near-black. A
 // warm falloff light above the bench lights the room without touching the
 // key-to-fill ratio the globe is lit by.
-const benchLamp = new THREE.PointLight(0xffcf95, 210, 44, 2);
+const benchLamp = new THREE.PointLight(0xffcf95, 280, 44, 2);
 benchLamp.position.set(-3, 7, 4);
 scene.add(benchLamp);
 

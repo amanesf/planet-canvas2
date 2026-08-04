@@ -20,7 +20,7 @@ import { latLonToDir, sampledHeight } from './terrain';
 // landmark is placed they are all merged down to one mesh per material —
 // eleven buildings for four draw calls.
 
-type MaterialKey = 'stone' | 'steel' | 'copper' | 'roof';
+type MaterialKey = 'stone' | 'steel' | 'copper' | 'roof' | 'glass';
 
 interface Part {
   geometry: THREE.BufferGeometry;
@@ -245,6 +245,254 @@ const LANDMARKS: Landmark[] = [
   },
 ];
 
+// A second continent-spanning batch, so the globe rewards turning it round
+// rather than having everything worth finding on the Europe/Japan face.
+// Same rules as above: real coordinates, primitives only, and each one
+// built around whatever single feature makes it recognisable in silhouette.
+LANDMARKS.push(
+  {
+    name: 'ピサの斜塔',
+    lat: 43.723,
+    lon: 10.3966,
+    build: () => {
+      const parts: Part[] = [];
+      for (let i = 0; i < 7; i++) {
+        const drum = new THREE.CylinderGeometry(0.011, 0.011, 0.008, 14).translate(0, 0.006 + i * 0.009, 0);
+        parts.push({ geometry: drum, material: 'stone' });
+      }
+      // the whole point of it: everything above tilts together
+      parts.forEach((p) => p.geometry.rotateZ(0.11));
+      return parts;
+    },
+  },
+  {
+    name: 'ストーンヘンジ',
+    lat: 51.1789,
+    lon: -1.8262,
+    build: () => {
+      const parts: Part[] = [];
+      const ring = 0.026;
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2;
+        const x = Math.cos(a) * ring;
+        const z = Math.sin(a) * ring;
+        [-0.005, 0.005].forEach((d) => {
+          parts.push({
+            geometry: new THREE.BoxGeometry(0.006, 0.024, 0.004)
+              .translate(x + Math.sin(a) * d, 0.012, z - Math.cos(a) * d),
+            material: 'stone',
+          });
+        });
+        // the lintel across the top, which is what makes it Stonehenge
+        // rather than a circle of stones
+        const lintel = new THREE.BoxGeometry(0.006, 0.004, 0.016);
+        lintel.rotateY(-a);
+        lintel.translate(x, 0.026, z);
+        parts.push({ geometry: lintel, material: 'stone' });
+      }
+      return parts;
+    },
+  },
+  {
+    name: 'アンコール・ワット',
+    lat: 13.4125,
+    lon: 103.867,
+    build: () => {
+      const parts: Part[] = [box(0.06, 0.008, 0.06, 0, 'stone')];
+      // a quincunx of corn-cob towers, the tallest in the middle
+      const towers: [number, number, number][] = [
+        [0, 0, 1],
+        [-0.02, -0.02, 0.68],
+        [0.02, -0.02, 0.68],
+        [-0.02, 0.02, 0.68],
+        [0.02, 0.02, 0.68],
+      ];
+      towers.forEach(([x, z, s]) => {
+        const t = new THREE.CylinderGeometry(0.002, 0.011, 0.05 * s, 8).translate(x, 0.008 + 0.025 * s, z);
+        parts.push({ geometry: t, material: 'stone' });
+      });
+      return parts;
+    },
+  },
+  {
+    name: '凱旋門',
+    lat: 48.8738,
+    lon: 2.295,
+    build: () => [
+      // two piers and a lintel: an arch, from three boxes
+      { geometry: new THREE.BoxGeometry(0.008, 0.03, 0.016).translate(-0.014, 0.015, 0), material: 'stone' },
+      { geometry: new THREE.BoxGeometry(0.008, 0.03, 0.016).translate(0.014, 0.015, 0), material: 'stone' },
+      box(0.036, 0.014, 0.016, 0.03, 'stone'),
+    ],
+  },
+  {
+    name: 'ゴールデンゲートブリッジ',
+    lat: 37.8199,
+    lon: -122.4783,
+    build: () => {
+      const parts: Part[] = [];
+      [-0.03, 0.03].forEach((x) => {
+        parts.push({
+          geometry: new THREE.BoxGeometry(0.005, 0.058, 0.005).translate(x, 0.029, 0),
+          material: 'steel',
+        });
+        parts.push({
+          geometry: new THREE.BoxGeometry(0.008, 0.004, 0.008).translate(x, 0.05, 0),
+          material: 'steel',
+        });
+      });
+      // the deck, and the two cables sagging between the towers
+      parts.push({ geometry: new THREE.BoxGeometry(0.09, 0.003, 0.01).translate(0, 0.022, 0), material: 'steel' });
+      for (let i = 0; i < 9; i++) {
+        const t = i / 8;
+        const x = -0.03 + t * 0.06;
+        const y = 0.05 - Math.sin(t * Math.PI) * 0.024;
+        parts.push({ geometry: new THREE.BoxGeometry(0.008, 0.0025, 0.0025).translate(x, y, 0), material: 'steel' });
+      }
+      return parts;
+    },
+  },
+  {
+    name: 'マチュ・ピチュ',
+    lat: -13.1631,
+    lon: -72.545,
+    build: () => {
+      const parts: Part[] = [];
+      // terraces stepping up a ridge, with a scatter of small stone huts
+      for (let i = 0; i < 5; i++) {
+        parts.push({
+          geometry: new THREE.BoxGeometry(0.05 - i * 0.007, 0.006, 0.03 - i * 0.004).translate(
+            0,
+            0.003 + i * 0.006,
+            i * 0.004,
+          ),
+          material: 'stone',
+        });
+      }
+      [-0.014, 0, 0.013].forEach((x, i) => {
+        parts.push({
+          geometry: new THREE.BoxGeometry(0.008, 0.008, 0.007).translate(x, 0.034, -0.004 + i * 0.003),
+          material: 'roof',
+        });
+      });
+      return parts;
+    },
+  },
+  {
+    name: 'ペトラ遺跡',
+    lat: 30.3285,
+    lon: 35.4444,
+    build: () => [
+      // a facade carved into a cliff: a slab with columns cut in front of it
+      box(0.04, 0.05, 0.012, 0, 'stone'),
+      { geometry: new THREE.CylinderGeometry(0.004, 0.004, 0.03, 8).translate(-0.012, 0.015, 0.009), material: 'roof' },
+      { geometry: new THREE.CylinderGeometry(0.004, 0.004, 0.03, 8).translate(0.012, 0.015, 0.009), material: 'roof' },
+      { geometry: new THREE.ConeGeometry(0.016, 0.014, 4).translate(0, 0.05, 0.004), material: 'roof' },
+    ],
+  },
+  {
+    name: '聖ワシリイ大聖堂',
+    lat: 55.7525,
+    lon: 37.6231,
+    build: () => {
+      const parts: Part[] = [box(0.034, 0.018, 0.034, 0, 'stone')];
+      // onion domes: a sphere pinched to a point on top of a drum
+      const spots: [number, number, number][] = [
+        [0, 0, 1],
+        [-0.012, -0.012, 0.6],
+        [0.012, -0.012, 0.6],
+        [-0.012, 0.012, 0.6],
+        [0.012, 0.012, 0.6],
+      ];
+      spots.forEach(([x, z, s]) => {
+        parts.push({
+          geometry: new THREE.CylinderGeometry(0.005 * s, 0.005 * s, 0.02 * s, 8).translate(x, 0.018 + 0.01 * s, z),
+          material: 'stone',
+        });
+        const onion = new THREE.SphereGeometry(0.008 * s, 10, 8);
+        onion.scale(1, 1.35, 1);
+        onion.translate(x, 0.018 + 0.024 * s, z);
+        parts.push({ geometry: onion, material: 'copper' });
+        parts.push({
+          geometry: new THREE.ConeGeometry(0.002 * s, 0.008 * s, 5).translate(x, 0.018 + 0.036 * s, z),
+          material: 'copper',
+        });
+      });
+      return parts;
+    },
+  },
+  {
+    name: 'ブルジュ・ハリファ',
+    lat: 25.1972,
+    lon: 55.2744,
+    build: () => {
+      const parts: Part[] = [];
+      // a setback tower: each stage narrower than the one under it, which
+      // is the entire silhouette
+      let y = 0;
+      for (let i = 0; i < 5; i++) {
+        const h = 0.026 - i * 0.003;
+        const r = 0.013 - i * 0.0022;
+        parts.push({ geometry: new THREE.CylinderGeometry(r * 0.85, r, h, 6).translate(0, y + h / 2, 0), material: 'glass' });
+        y += h;
+      }
+      parts.push({ geometry: new THREE.CylinderGeometry(0.0003, 0.0014, 0.016, 5).translate(0, y + 0.008, 0), material: 'glass' });
+      return parts;
+    },
+  },
+  {
+    name: 'ウルル',
+    lat: -25.3444,
+    lon: 131.0369,
+    build: () => {
+      // a single long weathered dome, not a mountain: much wider than tall,
+      // with steeply rounded ends
+      const rock = new THREE.SphereGeometry(0.03, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+      rock.scale(1.5, 0.42, 0.75);
+      return [{ geometry: rock, material: 'roof' }];
+    },
+  },
+  {
+    name: '姫路城',
+    lat: 34.8394,
+    lon: 134.6939,
+    build: () => {
+      const parts: Part[] = [box(0.04, 0.014, 0.04, 0, 'stone')];
+      // a five-storey keep: each floor smaller, each with a flared roof
+      for (let i = 0; i < 4; i++) {
+        const w = 0.03 - i * 0.005;
+        const y = 0.014 + i * 0.012;
+        parts.push({ geometry: new THREE.BoxGeometry(w, 0.009, w).translate(0, y + 0.0045, 0), material: 'stone' });
+        parts.push({
+          geometry: new THREE.ConeGeometry(w * 0.85, 0.006, 4).translate(0, y + 0.012, 0),
+          material: 'roof',
+        });
+      }
+      return parts;
+    },
+  },
+  {
+    name: 'ナスカの地上絵',
+    lat: -14.7392,
+    lon: -75.1301,
+    build: () => {
+      // drawn, not built: shallow pale lines scratched into the desert, so
+      // it is a set of thin slabs lying almost flat on the ground
+      const parts: Part[] = [];
+      const line = (x: number, z: number, len: number, angle: number) => {
+        const g = new THREE.BoxGeometry(len, 0.0012, 0.003);
+        g.rotateY(angle);
+        g.translate(x, 0.0006, z);
+        parts.push({ geometry: g, material: 'stone' });
+      };
+      for (let i = 0; i < 7; i++) line(0, 0, 0.1, (i / 7) * Math.PI);
+      line(0.03, 0.02, 0.05, 0.6);
+      line(-0.035, -0.02, 0.06, -0.4);
+      return parts;
+    },
+  },
+);
+
 const MATERIALS: Record<MaterialKey, THREE.MeshStandardMaterial> = {
   // weathered limestone, the default for anything old and built of blocks
   stone: new THREE.MeshStandardMaterial({ color: '#d6cdb8', roughness: 0.85, metalness: 0.03 }),
@@ -253,6 +501,8 @@ const MATERIALS: Record<MaterialKey, THREE.MeshStandardMaterial> = {
   // oxidised copper — the one colour on this list nobody mistakes
   copper: new THREE.MeshStandardMaterial({ color: '#5fa08b', roughness: 0.7, metalness: 0.25 }),
   roof: new THREE.MeshStandardMaterial({ color: '#7a6249', roughness: 0.7, metalness: 0.15 }),
+  // the one modern tower on the list: glass curtain wall, not painted steel
+  glass: new THREE.MeshStandardMaterial({ color: '#aebfcc', roughness: 0.25, metalness: 0.6 }),
 };
 
 // Souvenir-globe scale, not map scale. At their first size the landmarks
@@ -269,6 +519,7 @@ export function buildLandmarks(radius: number, bumpHeight: number): THREE.Group 
     steel: [],
     copper: [],
     roof: [],
+    glass: [],
   };
 
   const basis = new THREE.Matrix4();

@@ -389,14 +389,22 @@ interface TyphoonSystem {
   nodules: Nodule[];
 }
 
-/** How far through its life the storm is, 0..1. */
+/**
+ * How far through its life the storm is, 0..1 — or negative while there is
+ * no storm at all. Only the first TYPHOON_DUTY of each cycle carries one;
+ * the rest of the cycle is open ocean, which is what makes the next one an
+ * event rather than a permanent fixture.
+ */
+const TYPHOON_DUTY = 0.55;
+
 function typhoonAge(sys: TyphoonSystem, t: number): number {
-  return ((t / sys.period + sys.phase) % 1 + 1) % 1;
+  const cycle = ((t / sys.period + sys.phase) % 1 + 1) % 1;
+  return cycle < TYPHOON_DUTY ? cycle / TYPHOON_DUTY : -1;
 }
 
 /** 0 while forming and dissipating, 1 at peak — scales every nodule. */
 function typhoonIntensity(age: number): number {
-  return Math.pow(Math.sin(age * Math.PI), 0.7);
+  return age < 0 ? 0 : Math.pow(Math.sin(age * Math.PI), 0.7);
 }
 
 function typhoonCentre(sys: TyphoonSystem, age: number, out: THREE.Vector3): THREE.Vector3 {
@@ -517,13 +525,16 @@ export function buildClouds(radius: number): CloudSystem {
     buildCloudBand(seed.dir, band, CLOUD_TYPE_PARAMS[seed.type], rand, nodules);
   });
 
-  // Two cyclones, one per hemisphere, out of phase with each other so the
-  // planet is not showing two storms at the same stage of the same life.
-  const typhoons: TyphoonSystem[] = [1, -1].map((hemi, i) => ({
+  // One cyclone, not two. A pair (one per hemisphere) meant that at almost
+  // any moment there was a hurricane somewhere on the planet, and a storm
+  // that is always present is scenery rather than an event — which is the
+  // opposite of the reason for building it. One, with long quiet gaps
+  // between its lives, is a thing you notice when it happens.
+  const typhoons: TyphoonSystem[] = [1].map((hemi, i) => ({
     band: seeds.length + i,
     lon0: rand() * Math.PI * 2,
     hemi,
-    period: 150 + rand() * 40,
+    period: 210 + rand() * 60,
     phase: i * 0.5 + rand() * 0.15,
     eye: 0.042,
     reach: 0.22,

@@ -233,18 +233,17 @@ export function buildWorkshop(): THREE.Group {
     buildBrushJar(rand, at(x, -2.08, z, [1.4, h, 1.4]));
   });
 
-  // Foreground clutter, close enough to the lens to be pure soft shape —
-  // the strongest single cue that this is a photograph of something small.
-  //
-  // These have to be *tall*. The lens sits about six units above the bench
-  // and looks slightly down, so anything standing on the bench between it
-  // and the subject projects well below the bottom of the frame — measured
-  // at roughly y = -2.4 in clip space, where the frame ends at -1. Only
-  // objects that reach up toward the globe's own height get into shot at a
-  // distance short enough to be properly out of focus.
-  buildSpareTree(at(-1.95, -2.08, 6.3, 3.1));
-  buildBrushJar(rand, at(2.35, -2.08, 5.6, 1.7));
-  buildCottonWad(rand, at(2.9, -1.85, 2.4, 1.6));
+  // These three used to stand between the lens and the globe, as a
+  // deliberate depth cue — a defocused object in the near foreground is
+  // the classic signal that a photograph was taken of something small.
+  // In practice they were simply in the way: they occupied a third of the
+  // frame's width, they sat across the part of the globe you most want to
+  // look at, and no amount of blur makes an obstruction stop obstructing.
+  // Moved round behind the subject, where they still establish the bench
+  // and still take the same light, but the globe is unobstructed.
+  buildSpareTree(at(-4.6, -2.08, -4.4, 3.1));
+  buildBrushJar(rand, at(4.9, -2.08, -4.0, 1.7));
+  buildCottonWad(rand, at(-6.4, -1.85, -2.6, 1.6));
 
   // One mesh per material for the whole of the above.
   const propMaterials: Record<PropMaterial, THREE.Material> = {
