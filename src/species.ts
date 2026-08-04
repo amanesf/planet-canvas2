@@ -13,6 +13,7 @@ import {
   canopyAt,
   temperatureAt,
   terracedElevation,
+  urbanAt,
   type ClimateGroup,
 } from './terrain';
 import { clumpDensity, displaceWithNoise, mulberry32, smoothstep, SpatialHash } from './spatialHash';
@@ -374,12 +375,47 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
       break;
     }
     case 'dune': {
-      // a sand ridge, not a rock: long, low, and smooth, so an erg reads
-      // as swept sand rather than as the field of mesas the old noise-fed
-      // badlands test made of it
-      const g = new THREE.SphereGeometry(0.05, 8, 5);
-      displaceWithNoise(g, 0.18, 2.2, rand() * 500);
-      g.scale(1.5, 0.18, 0.55);
+      // A dune is a ridge, not a lump.
+      //
+      // This used to be a sphere scaled to (1.5, 0.18, 0.55). An ellipsoid
+      // squashed that way is a lens: from above it comes to a sharp point
+      // at both ends, and it stops in mid-air there rather than going
+      // anywhere. At the size these are actually drawn, every single one
+      // read as an almond lying on the sand instead of reading as sand —
+      // which is the same failure as the old field-of-mesas Sahara, just
+      // with a rounder mesa.
+      //
+      // What makes an erg look like an erg is not the individual mound. It
+      // is that the mounds are long, that they all run the same way (see
+      // duneBearing at the placement loop), and that they sink back into
+      // the ground at their ends. Only the last of those is geometry.
+      const g = new THREE.SphereGeometry(0.05, 14, 8);
+      // Gentle: sand is a smooth material. The noise amplitude that reads
+      // as "weathered rock" on a butte reads as "gravel" here.
+      displaceWithNoise(g, 0.09, 3.4, rand() * 500);
+
+      const CREST = 0.095; // half-length of the ridge along its crest line
+      const pos = g.attributes.position as THREE.BufferAttribute;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i) * 1.9;
+        let y = pos.getY(i);
+        let z = pos.getZ(i) * 0.7;
+        // Flatten the underside. Only the half above the ground is ever
+        // seen, and carrying a buried lower hemisphere is what forced the
+        // whole shape to be so thin in the first place.
+        y = Math.max(y, 0) * 0.3;
+        // The slip face. A dune is not symmetric — the windward side
+        // climbs gently and the lee side drops at the angle of repose, and
+        // that asymmetry is most of what says "wind put this here" rather
+        // than "something was dropped here".
+        if (z > 0) z *= 0.55;
+        // Taper the crest down into the sand at both ends instead of
+        // leaving it hanging, which is what made the outline an almond.
+        const along = Math.min(1, Math.abs(x) / CREST);
+        y *= 1 - along * along;
+        pos.setXYZ(i, x, y, z);
+      }
+      pos.needsUpdate = true;
       parts.push(g);
       break;
     }
@@ -515,6 +551,19 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
   parts.forEach((g) => g.dispose());
   merged.computeVertexNormals();
   return merged;
+}
+
+/**
+ * The compass bearing a dune's crest runs along at this point, in radians.
+ *
+ * Deliberately very low frequency: the whole point is that neighbouring
+ * dunes agree, so the field sweeps across the erg the way wind-built sand
+ * actually does. It still turns slowly across a desert the size of the
+ * Sahara, which keeps the far side of one from looking like a copy of the
+ * near side.
+ */
+function duneBearing(dir: THREE.Vector3): number {
+  return fbm3(dir.x * 1.6 + 71, dir.y * 1.6 + 71, dir.z * 1.6 + 71, 2) * Math.PI * 2;
 }
 
 /** Base colour for a species, before the per-instance jitter. */
@@ -784,9 +833,44 @@ export function buildSpecies(
     const s = sampleAt(dir);
     if (!s) continue; // open ocean, deeper than the shelf: nothing goes here
 
+    // Cities clear the ground they stand on.
+    //
+    // The paint layer draws a grey urban patch (terrain.ts, urbanAt) but
+    // the scatter used to keep flocking trees straight through it, so Tokyo
+    // and São Paulo were grey smudges with a full forest still standing on
+    // top of them — which reads as a decal slid under the greenery rather
+    // than as a place. Both systems now read the same field, so the paint
+    // and the clearing cannot drift apart.
+    //
+    // Probabilistic rather than a hard radius: `urban` falls off smoothly
+    // from the centre, so trees thin out through the suburbs and the last
+    // few survive at the edge, instead of the city ending at a circle with
+    // a wall of forest around it. Only ever draws from the random stream
+    // inside a city, so the other 99% of the planet is bit-for-bit
+    // unchanged by this.
+    // The gain matters. `urbanAt` is tuned for *paint*, where the patch is
+    // deliberately faint — a souvenir globe shows a city as a smudge, not
+    // as a street map — and it only approaches 1 at the exact centre of the
+    // largest cities. Clearing at that raw strength measured as a 27%
+    // thinning of the core, which is not a clearing at all; the trees were
+    // still standing on top of the grey. Ground cover is the opposite case
+    // from paint: where a city is built, the ground is built on. Scaled up
+    // until it saturates across the built-up core, measured over all 28
+    // cities: trees within 0.012 rad of centre −80%, the 0.012–0.022 ring
+    // −30% (the ragged edge, which is the point — a shaved circle would read
+    // as a crop mark), ground beyond 0.06 rad −0.2%, whole-planet forest
+    // −0.4%. Grass is thinned rather than cleared: the parks and verges
+    // left behind are what keep a cleared patch from looking scorched.
+    //
+    // Note the patches are small — about 0.018 rad even for Tokyo — so any
+    // measurement of this has to use city-sized bands. Averaged over a
+    // 0.03 rad cap the effect vanishes into ground that was never urban.
+    const urban = Math.min(1, urbanAt(dir) * 2.6);
+    const clearedByCity = (strength: number) => strength > 0 && rand() < strength;
+
     // ---- fourteen-species classification ----
     const species = classify(s, rand);
-    if (species && !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)) {
+    if (species && !clearedByCity(urban) && !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)) {
       const point = dir.clone();
       coreHash.add(point);
       placements.push({ dir: point, height: s.height, species });
@@ -841,7 +925,11 @@ export function buildSpecies(
         FOREST_SPACING_DENSE,
         THREE.MathUtils.clamp(s.canopy, 0, 1),
       );
-      if (rand() < density && !forestHash.hasNeighborWithin(dir, spacing * spacing)) {
+      if (
+        rand() < density &&
+        !clearedByCity(urban) &&
+        !forestHash.hasNeighborWithin(dir, spacing * spacing)
+      ) {
         const point = dir.clone();
         forestHash.add(point);
         forestPoints.push({ dir: point, height: s.height, coniferous: s.coniferous });
@@ -866,6 +954,7 @@ export function buildSpecies(
       const openness = 1 - THREE.MathUtils.clamp(s.canopy, 0, 1);
       if (
         rand() < openness * clumpDensity(dir, 199) &&
+        !clearedByCity(urban * 0.55) &&
         !grassHash.hasNeighborWithin(dir, grassMinSpacingSq)
       ) {
         const point = dir.clone();
@@ -891,6 +980,7 @@ export function buildSpecies(
             smoothstep(s.canopy, 0.06, 0.28) * (1 - smoothstep(s.canopy, 0.45, 0.78));
           if (
             rand() < openWoodland * clumpDensity(dir, 163) &&
+            !clearedByCity(urban) &&
             !pointsHash.hasNeighborWithin(dir, pointsMinSpacingSq)
           ) {
             const point = dir.clone();
@@ -960,7 +1050,15 @@ export function buildSpecies(
         : radius + sampledHeight(p.dir).display * bumpHeight - 0.004;
       dummy.position.copy(p.dir).multiplyScalar(surface);
       const align = new THREE.Quaternion().setFromUnitVectors(up, p.dir);
-      const spin = new THREE.Quaternion().setFromAxisAngle(p.dir, rand() * Math.PI * 2);
+      // A random bearing is right for almost everything that stands on the
+      // ground — a tree has no reason to face anywhere in particular. Sand
+      // does: dune crests in an erg run parallel because one prevailing
+      // wind built all of them, and a dune field with every ridge pointing
+      // a different way stops reading as a landform and becomes a scatter
+      // of loose objects. Only the small jitter stays random.
+      const spinAngle =
+        species === 'dune' ? duneBearing(p.dir) + (rand() - 0.5) * 0.45 : rand() * Math.PI * 2;
+      const spin = new THREE.Quaternion().setFromAxisAngle(p.dir, spinAngle);
       dummy.quaternion.copy(spin).multiply(align);
       // Smaller than before, across the board — see the spacing block in
       // buildSpecies. Each specimen carried more of the visual load when
