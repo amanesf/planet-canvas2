@@ -9,6 +9,8 @@ import {
   sampledHeight,
   SEA_LEVEL,
   snowinessAt,
+  canopyAt,
+  coniferousAt,
   temperatureAt,
   terracedElevation,
 } from './terrain';
@@ -88,6 +90,10 @@ interface Sample {
   arid: number;
   belt: number;
   badlands: number;
+  /** how much closed forest the real climate map puts here, 0..1 */
+  canopy: number;
+  /** and whether that forest is conifer */
+  coniferous: boolean;
   underwater: boolean;
   shelfDepth: number;
 }
@@ -104,6 +110,8 @@ function sampleAt(dir: THREE.Vector3): Sample {
     arid: aridityAt(dir),
     belt: orogenyBeltAt(dir),
     badlands: badlandsAt(dir),
+    canopy: canopyAt(dir),
+    coniferous: coniferousAt(dir),
     underwater: height < SEA_LEVEL,
     shelfDepth: SEA_LEVEL - height,
   };
@@ -141,7 +149,11 @@ function classify(s: Sample, rand: () => number): Species | null {
   if (belt > 0.55 && elevation > 0.16 && rand() < 0.06 * clumpDensity(dir, 61)) return 'geyser';
 
   if (arid > 0.62) {
-    if (badlands > 0.32) return rand() < 0.5 * clumpDensity(dir, 71) ? 'butte' : null;
+    // Thinned from 0.5: with real aridity data the Sahara is now genuinely
+    // arid over its whole area rather than in noise-chosen patches, so the
+    // same acceptance rate carpeted it in mesas — a desert reads as empty
+    // ground with the occasional landmark rock, not as a field of them.
+    if (badlands > 0.32) return rand() < 0.26 * clumpDensity(dir, 71) ? 'butte' : null;
     if (temperature > 0.45) {
       if (rand() >= clumpDensity(dir, 83)) return null; // bare gaps between succulent stands
       return rand() < 0.45 ? 'cactus' : 'desertScrub';
@@ -157,7 +169,10 @@ function classify(s: Sample, rand: () => number): Species | null {
     if (elevation < 0.03) return rand() < 0.5 * clumpDensity(dir, 113) ? 'palm' : null;
     return rand() < 0.35 * clumpDensity(dir, 127) ? 'bamboo' : null;
   }
-  if (temperature < 0.34) return rand() < 0.7 * clumpDensity(dir, 131) ? 'conifer' : null;
+  // Conifer or not is the climate map's call now, not a temperature
+  // threshold's — which is what puts spruce across the boreal belt and
+  // keeps it out of, say, a mild oceanic climate at the same latitude.
+  if (s.coniferous) return rand() < 0.7 * clumpDensity(dir, 131) ? 'conifer' : null;
   return rand() < 0.5 * clumpDensity(dir, 149) ? 'shrub' : null;
 }
 
@@ -521,6 +536,8 @@ export function buildSpecies(
   interface GroundPoint {
     dir: THREE.Vector3;
     height: number;
+    /** forest only: boreal/continental climates are conifer, the rest broadleaf */
+    coniferous?: boolean;
   }
   interface ScatterPoint extends GroundPoint {
     kind: 'tree' | 'rock';
@@ -590,21 +607,20 @@ export function buildSpecies(
       s.badlands <= BADLANDS_THRESHOLD &&
       s.arid <= FOREST_ARIDITY_MAX
     ) {
-      // Two scales of clumping: a broad field decides which regions are
-      // wooded at all, a finer one breaks up the margins within them —
-      // see the header comment for why a single field gave an even
-      // stipple instead of real closed-forest/open-plain contrast.
-      // Widened and boosted from the original tuning: real-world coastlines
-      // and climate bands leave a lot less land in play than the old
-      // fictional continents did, and the same region/patch thresholds that
-      // looked full on those read as sparse, bald-patched forest here.
-      const region = fbm3(dir.x * 2.6 + 404, dir.y * 2.6 + 404, dir.z * 2.6 + 404, 2);
+      // Which regions are wooded at all is no longer a noise field's
+      // opinion — it is the real Köppen climate map (terrain.ts). That is
+      // the difference between "somewhere around this latitude there is
+      // probably forest" and the Amazon being solid canopy, the Sahara
+      // having none, and the boreal belt running unbroken across Alaska,
+      // Canada and Siberia. A finer noise field still breaks up the
+      // margins within a wooded region, because a real forest edge is
+      // ragged rather than a contour line.
       const patch = fbm3(dir.x * 9 + 77, dir.y * 9 + 77, dir.z * 9 + 77, 2);
-      const density = smoothstep(region, -0.55, -0.05) * (1.6 + patch * 1.6);
+      const density = s.canopy * (1.5 + patch * 1.5);
       if (rand() < density && !forestHash.hasNeighborWithin(dir, forestMinSpacingSq)) {
         const point = dir.clone();
         forestHash.add(point);
-        forestPoints.push({ dir: point, height: s.height });
+        forestPoints.push({ dir: point, height: s.height, coniferous: s.coniferous });
       }
     }
 
@@ -943,7 +959,17 @@ export function buildSpecies(
         const surfaceRadius = radius + sampledHeight(point.dir).display * bumpHeight;
         const position = point.dir.clone().multiplyScalar(surfaceRadius);
         orient(position, point.dir, rand() * Math.PI * 2);
-        dummy.scale.setScalar(scale);
+        // A taiga does not look like a jungle from above, and the
+        // difference is entirely in the proportion: spruce is tall and
+        // narrow, broadleaf canopy is wide and domed. Stretching the same
+        // clump geometry along its own normal gets that for nothing —
+        // no extra variant, no extra draw call — now that the climate map
+        // says which of the two a given stand actually is. Gently: the
+        // clumps are displaced spheres, and stretching one hard turns its
+        // displacement into spikes, so the boreal belt came out as a field
+        // of golden thorns rather than as spruce.
+        if (point.coniferous) dummy.scale.set(scale * 0.78, scale * 1.35, scale * 0.78);
+        else dummy.scale.setScalar(scale);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
         // Foliage colour follows the climate it grows in, not one palette

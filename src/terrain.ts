@@ -457,35 +457,167 @@ export function heightAt(dir: THREE.Vector3): number {
   return Math.max(n, -0.2); // flatten the deep ocean floor a bit
 }
 
-// Real deserts follow latitude, not random chance: Earth's subtropical
-// high-pressure belts (~15-35° from the equator) are where the Sahara,
-// Arabian, Kalahari and Australian deserts all sit, with humid air right
-// at the equator and humid temperate zones further out toward the poles.
-// dir.y stands in for latitude, matching how the rest of this file uses it.
-function desertBeltAt(dir: THREE.Vector3): number {
-  const lat = Math.abs(dir.y);
-  return smoothstep(lat, 0.1, 0.3) * (1 - smoothstep(lat, 0.55, 0.8));
+// (The latitude desert belt and the continent-scale wet/dry bias that used
+// to live here are gone: they were a stand-in for a climate map, and there
+// is a real climate map now — see the Köppen section below.)
+
+// ---------------------------------------------------------------------
+// Real climate
+// ---------------------------------------------------------------------
+// The continents have been real since the elevation data went in. The
+// *climate* on them was not: aridity came out of the latitude belt above
+// plus two octaves of noise, which is a decent-looking abstraction and a
+// completely fictional map. It put the subtropical dry belt in the right
+// band — and then let noise decide which parts of that band were actually
+// desert. So the Sahara might come out green, the Amazon might come out
+// as scrub, and Alaska's boreal forest was wherever the dice fell. Once
+// the coastlines are recognisable that is not a stylisation any more, it
+// is just wrong, and it is wrong in exactly the places a viewer knows
+// best.
+//
+// Köppen-Geiger is the fix, and it is the same kind of fix the elevation
+// was: one small raster, looked up directly. Beck et al.'s 1980-2016
+// map (CC BY-SA 4.0, via Wikimedia Commons) is quantised offline to one
+// byte per pixel — a class index, 0 for sea — which comes to 88 KB at
+// 2048x1024. Every downstream consumer of aridity keeps working unchanged
+// because what changes is only where the values come from.
+//
+// Class indices are the standard legend order: 1-3 tropical A, 4-7 dry B,
+// 8-16 temperate C, 17-28 continental D, 29-30 polar E.
+const KOPPEN_CLASSES = 30;
+
+/**
+ * How dry each class is, on the same 0..1 scale the noise field used, so
+ * DESERT_ARIDITY_THRESHOLD and every other tuned constant still mean what
+ * they meant. The B classes are the only ones that clear the desert
+ * threshold — which is the entire point: sand is now exactly where the
+ * real deserts are and nowhere else.
+ */
+const KOPPEN_ARIDITY = [
+  0.34, // 0: no data — a middling value, only reachable on ground the map calls sea
+  0.10, 0.14, 0.36, // Af Am Aw
+  0.97, 0.90, 0.64, 0.58, // BWh BWk BSh BSk
+  0.48, 0.44, 0.42, // Csa Csb Csc — summer-dry, but not desert
+  0.30, 0.28, 0.28, // Cwa Cwb Cwc
+  0.18, 0.16, 0.18, // Cfa Cfb Cfc
+  0.44, 0.42, 0.40, 0.40, // Dsa Dsb Dsc Dsd
+  0.32, 0.30, 0.28, 0.28, // Dwa Dwb Dwc Dwd
+  0.20, 0.18, 0.18, 0.20, // Dfa Dfb Dfc Dfd
+  0.36, 0.42, // ET EF — cold deserts by rainfall, but the snow logic owns them
+];
+
+/**
+ * How much closed forest each class carries, 0..1. This is what finally
+ * separates rainforest from savanna from steppe from taiga: the Amazon
+ * (Af) is solid canopy, the Sahara (BWh) has none, and the whole boreal
+ * belt across Alaska, Canada and Siberia (Dfc) is dense conifer — which
+ * is the specific thing that was missing.
+ */
+const KOPPEN_CANOPY = [
+  0.35, // 0: no data
+  1.0, 0.95, 0.5, // Af Am Aw — rainforest, monsoon, savanna
+  0.0, 0.02, 0.1, 0.14, // BWh BWk BSh BSk
+  0.4, 0.55, 0.45, // Csa Csb Csc
+  0.6, 0.68, 0.5, // Cwa Cwb Cwc
+  0.82, 0.9, 0.72, // Cfa Cfb Cfc
+  0.5, 0.55, 0.5, 0.4, // Dsa Dsb Dsc Dsd
+  0.6, 0.68, 0.7, 0.45, // Dwa Dwb Dwc Dwd
+  0.85, 0.9, 0.85, 0.5, // Dfa Dfb Dfc Dfd
+  0.05, 0.0, // ET EF
+];
+
+/** True for the continental/polar classes, where the forest is conifer. */
+const KOPPEN_CONIFEROUS: boolean[] = Array.from(
+  { length: KOPPEN_CLASSES + 1 },
+  (_, i) => i >= 17,
+);
+
+let realClimate: { data: Uint8ClampedArray; width: number; height: number } | null = null;
+
+export async function loadClimateData(url: string): Promise<void> {
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`failed to load climate data: ${url}`));
+    img.src = url;
+  });
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(image, 0, 0);
+  const { data } = ctx.getImageData(0, 0, image.width, image.height);
+  realClimate = { data, width: image.width, height: image.height };
 }
 
-// Very low-frequency, continent-scale "is this whole landmass dry or wet"
-// identity — a real Sahara doesn't have much jungle hiding inside it; an
-// entire continent commits to being arid or lush, and only its edges blend.
-function climateBiasAt(dir: THREE.Vector3): number {
-  return fbm3(dir.x * 0.35 + 300, dir.y * 0.35 + 300, dir.z * 0.35 + 300, 2);
+/**
+ * The Köppen class at a direction, or 0 where the source map has no land.
+ *
+ * Nearest-sampled, never interpolated — these are category labels, and the
+ * average of "rainforest" and "desert" is not a climate. The widening
+ * search matters more than it looks: this globe's coastline comes from a
+ * different dataset at a different resolution, so a strip of pixels along
+ * every coast is land here and sea there. Without the search those would
+ * all fall back to the no-data value and every shoreline on the planet
+ * would get a ring of generic scrub. Looking outward for the nearest
+ * classified pixel instead extends the neighbouring climate to the water's
+ * edge, which is what it would do in reality anyway.
+ */
+export function climateClassAt(dir: THREE.Vector3): number {
+  if (!realClimate) return 0;
+  const { data, width, height } = realClimate;
+  const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
+  let phi = Math.atan2(dir.z, -dir.x);
+  if (phi < 0) phi += Math.PI * 2;
+  const cx = Math.min(width - 1, Math.floor((phi / (Math.PI * 2)) * width));
+  const cy = Math.min(height - 1, Math.floor((theta / Math.PI) * height));
+
+  for (let r = 0; r <= 6; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      const y = cy + dy;
+      if (y < 0 || y >= height) continue;
+      for (let dx = -r; dx <= r; dx++) {
+        // only the ring at exactly this radius; the inside was searched already
+        if (r > 0 && Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+        const x = ((cx + dx) % width + width) % width;
+        const v = data[(y * width + x) * 4];
+        if (v > 0 && v <= KOPPEN_CLASSES) return v;
+      }
+    }
+  }
+  return 0;
 }
 
-// Climate variety in three layers: the latitude desert belt (where deserts
-// are *allowed* at all), a continent-scale wet/dry bias (whether this
-// particular landmass commits to being one), and local noise for patchy
-// edges. Where the belt and the continent's own bias both agree it's dry,
-// local noise is mostly ignored so the whole region reads as one
-// unbroken desert instead of a speckled mix.
+// Real climate, plus a little noise for texture. The noise is now doing
+// the job it should always have had — breaking up an edge so a boundary
+// isn't a drawn line — rather than deciding where the deserts are.
 function rawAridityAt(dir: THREE.Vector3): number {
-  const belt = desertBeltAt(dir);
-  const bias = climateBiasAt(dir);
+  const climate = climateClassAt(dir);
+  const base = KOPPEN_ARIDITY[climate];
   const local = fbm3(dir.x * 2.6 + 51.3, dir.y * 2.6 + 51.3, dir.z * 2.6 + 51.3, 3);
-  const commitment = belt * smoothstep(bias, 0, 0.5);
-  return belt * 0.55 + bias * 0.4 + local * (0.4 - commitment * 0.28);
+  // Where the map is committed (true desert, true rainforest) the noise is
+  // held back so the region reads as one unbroken thing; the middling
+  // classes, where the real boundary genuinely is fuzzy, get more of it.
+  const commitment = Math.abs(base - 0.5) * 2;
+  return base + local * 0.22 * (1 - commitment);
+}
+
+let canopyGrid: Float32Array | null = null;
+
+/**
+ * How much closed forest belongs here, 0..1 — the real one, from the
+ * climate map. Baked and bilinearly sampled (unlike the class index
+ * itself) because this one *is* a continuous quantity: a forest thins out
+ * toward its margin rather than stopping at a line.
+ */
+export function canopyAt(dir: THREE.Vector3): number {
+  canopyGrid ??= bakeField(FIELD_W, FIELD_H, (d) => KOPPEN_CANOPY[climateClassAt(d)]);
+  return sampleField(canopyGrid, dir);
+}
+
+/** Whether the forest here is conifer (boreal/continental) or broadleaf. */
+export function coniferousAt(dir: THREE.Vector3): boolean {
+  return KOPPEN_CONIFEROUS[climateClassAt(dir)];
 }
 
 // Aridity, badlands and the climate wobble are all *low-frequency* fields —

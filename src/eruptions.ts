@@ -78,7 +78,7 @@ export function buildEruptions(radius: number, bumpHeight: number, pixelRatio: n
       owner[p * 4 + vi] = 1;
       phases[p] = rand();
       speeds[p] = 0.16 + rand() * 0.14;
-      sizes[p] = 2.0 + rand() * 4.0;
+      sizes[p] = 4.0 + rand() * 7.0;
       // where in the column this particle sits, so the plume has width and
       // billows to one side rather than rising as a needle
       const a = rand() * Math.PI * 2;
@@ -185,7 +185,7 @@ export function buildEruptions(radius: number, bumpHeight: number, pixelRatio: n
       depthWrite: false,
     });
     ventMaterials.push(mat);
-    const bead = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 6), mat);
+    const bead = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), mat);
     bead.position.copy(summits[vi]).multiplyScalar(1.001);
     bead.frustumCulled = false;
     group.add(bead);

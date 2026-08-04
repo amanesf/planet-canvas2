@@ -416,7 +416,7 @@ function typhoonCentre(sys: TyphoonSystem, age: number, out: THREE.Vector3): THR
 }
 
 function buildTyphoon(sys: TyphoonSystem, rand: () => number, out: Nodule[]): void {
-  const arms = 3;
+  const arms = 5;
   const params = CLOUD_TYPE_PARAMS.typhoon;
 
   // The eyewall: a dense, unbroken ring right at the eye's edge. This is
@@ -743,7 +743,7 @@ export function buildClouds(radius: number): CloudSystem {
       sys.intensity = typhoonIntensity(age);
 
       sys.nodules.forEach((n) => {
-        const r = n.spiral!.radius;
+        const r = n.spiral!.radius * (0.4 + sys.intensity * 0.6);
         // Differential rotation: the eyewall goes round several times for
         // each turn of the outer rainbands, which is what winds the arms
         // tighter over time instead of spinning a rigid pinwheel. A
@@ -759,9 +759,19 @@ export function buildClouds(radius: number): CloudSystem {
           .addScaledVector(north, Math.sin(r) * tangentX)
           .addScaledVector(east, Math.sin(r) * tangentZ)
           .normalize();
-        // a storm that is forming or falling apart is made of smaller,
-        // sparser cotton, so it fades in and out instead of popping
-        n.liveScale = sys.intensity;
+        // Forming and dissipating are changes in *organisation*, not in
+        // the size of the cloud a storm is made of.
+        //
+        // Scaling every nodule straight down by intensity was the obvious
+        // thing and it looked wrong in a very specific way: the arms
+        // stayed exactly where they were and simply got thin, so a
+        // weak storm was a set of long skinny blades radiating from a
+        // hub — a desk fan. What actually happens is that a cyclone
+        // starts as a compact disorganised cluster and *spreads* as it
+        // spins up, opening its eye on the way. Pulling the spiral in
+        // toward its own centre at low intensity, while keeping the
+        // cotton nearly full size, gets that.
+        n.liveScale = 0.6 + sys.intensity * 0.4;
       });
     });
 

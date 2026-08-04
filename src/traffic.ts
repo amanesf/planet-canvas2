@@ -25,6 +25,15 @@ import { SEA_LEVEL, latLonToDir, sampledHeight, seaLevelRadius } from './terrain
 
 const UP = new THREE.Vector3(0, 1, 0);
 
+// Souvenir-globe scale, the same joke the landmarks are built on.
+//
+// These were modelled at something close to their real size relative to a
+// two-unit Earth, which is the correct number and the wrong decision: a
+// container ship came out a couple of pixels long, so the most alive thing
+// in the scene was invisible unless you already knew where to look. On a
+// model, the ship is a ship-shaped bead you can actually see.
+const TRAFFIC_SCALE = 5;
+
 /** An orthonormal pair spanning the plane through two directions. */
 function planeBasis(a: THREE.Vector3, b: THREE.Vector3): [THREE.Vector3, THREE.Vector3] {
   const u = a.clone().normalize();
@@ -123,6 +132,7 @@ export function buildSatellites(radius: number): Traffic {
 
   for (let i = 0; i < 5; i++) {
     const object = template.clone();
+    object.scale.setScalar(TRAFFIC_SCALE);
     group.add(object);
 
     // a random orbital plane: a normal picked off the sphere, and any two
@@ -238,6 +248,7 @@ export function buildAircraft(radius: number): Traffic {
     const span = a.angleTo(b);
 
     const object = buildAircraftMesh();
+    object.scale.setScalar(TRAFFIC_SCALE);
     group.add(object);
 
     // The contrail. A line with per-vertex alpha, rewritten each frame from
@@ -307,7 +318,7 @@ export function buildAircraft(radius: number): Traffic {
       // from the end of the route to the start of the next one reads as a
       // landing and a take-off rather than as a teleport
       const visible = Math.min(1, progress * 14) * Math.min(1, (1 - progress) * 14);
-      flight.object.scale.setScalar(0.6 + visible * 0.4);
+      flight.object.scale.setScalar(TRAFFIC_SCALE * (0.6 + visible * 0.4));
       flight.material.opacity = visible;
 
       for (let i = 0; i < TRAIL_POINTS; i++) {
@@ -424,6 +435,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
     if (span < 0.45) continue;
 
     const object = buildShipMesh();
+    object.scale.setScalar(TRAFFIC_SCALE);
     group.add(object);
 
     const WAKE_POINTS = 26;
@@ -487,7 +499,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
       onGreatCircle(route.u, route.v, progress * route.span, pos);
       onGreatCircle(route.u, route.v, (progress + 0.004 * direction) * route.span, ahead);
       // sitting *in* the resin, not on top of it
-      route.object.position.copy(pos).multiplyScalar(seaRadius + 0.004);
+      route.object.position.copy(pos).multiplyScalar(seaRadius + 0.012);
       orient(route.object, pos, ahead.sub(pos));
 
       for (let i = 0; i < route.wakeAlpha.length; i++) {
