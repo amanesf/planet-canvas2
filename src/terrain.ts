@@ -101,6 +101,10 @@ const deltaColor = new THREE.Color('#a99568');
 // Whitewater foam at the base of a waterfall.
 const foamColor = new THREE.Color('#eef6f2');
 
+// Surf. Slightly cooler and less bright than the waterfall's foam: this is
+// aerated water seen through the resin, not a white highlight.
+const surfColor = new THREE.Color('#e4f2f1');
+
 function smoothstep(x: number, edge0: number, edge1: number): number {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
   return t * t * (3 - 2 * t);
@@ -1510,6 +1514,15 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
       }
     }
 
+    // Built-up ground. Land only — this whole branch is above the
+    // waterline, so a coastal city cannot bleed out over its own harbour.
+    // Kept under half way to the urban grey even at the very centre:
+    // enough that Tokyo, the Nile delta and the US northeast are visibly
+    // duller than the country around them, not enough to read as a drawn
+    // patch.
+    const urban = urbanAt(dir);
+    if (urban > 0) color.lerp(urbanColor, urban * 0.45);
+
     // Volcano: a crater's lava pool or lake overrides whatever the
     // elevation band said, and an active crater bleeds a glowing basalt
     // flow down its flank.
@@ -1537,7 +1550,98 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
   return color.offsetHSL(0, 0, paintGrain(dir));
 }
 
-function oceanColor(dir: THREE.Vector3, height: number): THREE.Color {
+// ---------------------------------------------------------------------
+// Coastal surf
+// ---------------------------------------------------------------------
+// Where the water shallows onto a shore it breaks, and the white band that
+// leaves is the most recognisable thing about a coastline seen from any
+// distance at all — the sea does not simply stop being blue at the paint
+// boundary. Until now it did exactly that: land met water as a clean colour
+// edge, which is what makes a globe read as printed rather than built.
+//
+// The band is found by distance to the shore, not by depth. Depth was the
+// obvious first answer and it is wrong, and wrong in a way only the flat map
+// showed: a shelf sea is shallow across its whole width, so gating on "the
+// seabed is within 0.013 of SEA_LEVEL" whitened the entire North Sea, the
+// Irish Sea, the Sunda shelf and half the Gulf of Thailand — thousands of
+// kilometres of open water, not a coastline. A chamfer distance transform
+// over the land mask gives the thing actually wanted: how far is the nearest
+// beach, measured on the texture's own grid.
+//
+// The band is deliberately not an even outline. A uniform white rim reads as
+// a decal stuck on the sphere, the failure mode this model keeps fighting.
+// `coastCliffiness` says how hard the water is hitting — a rock coast inside
+// a mountain belt throws spray the whole way along, a sandy shelf shore
+// barely foams — and a mid-frequency noise field widens and narrows the band
+// along its own length on top of that, so the surf gathers into stretches
+// with quieter water between them.
+//
+// Widths are in texels of a 1536-wide map and are generous on purpose: this
+// map is about two thousand across for a sphere filling half the frame, and
+// anything a couple of texels wide never survives to the screen — the same
+// argument the resin droplets below are sized by.
+const SURF_TEXELS = 3.4;
+
+/**
+ * Distance from every ocean texel to the nearest land texel, in texels.
+ * Two-pass chamfer (1 orthogonal, √2 diagonal), wrapping at the seam.
+ */
+function coastDistanceField(heights: Float32Array, width: number, height: number): Float32Array {
+  const size = width * height;
+  const dist = new Float32Array(size);
+  const FAR = 1e9;
+  for (let i = 0; i < size; i++) dist[i] = heights[i] >= SEA_LEVEL ? 0 : FAR;
+  const D = 1;
+  const DD = Math.SQRT2;
+  const at = (x: number, y: number) => dist[y * width + ((x % width) + width) % width];
+
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      const i = py * width + px;
+      if (dist[i] === 0) continue;
+      let best = dist[i];
+      if (py > 0) {
+        best = Math.min(best, at(px, py - 1) + D, at(px - 1, py - 1) + DD, at(px + 1, py - 1) + DD);
+      }
+      best = Math.min(best, at(px - 1, py) + D);
+      dist[i] = best;
+    }
+  }
+  for (let py = height - 1; py >= 0; py--) {
+    for (let px = width - 1; px >= 0; px--) {
+      const i = py * width + px;
+      if (dist[i] === 0) continue;
+      let best = dist[i];
+      if (py < height - 1) {
+        best = Math.min(best, at(px, py + 1) + D, at(px - 1, py + 1) + DD, at(px + 1, py + 1) + DD);
+      }
+      best = Math.min(best, at(px + 1, py) + D);
+      dist[i] = best;
+    }
+  }
+  return dist;
+}
+
+/**
+ * How much broken white water is on the sea here, 0..1.
+ * `texels` is the distance to the nearest shore, `scale` the map's size
+ * relative to the 1536-wide reference the widths are quoted in.
+ */
+function surfAt(dir: THREE.Vector3, texels: number, scale: number): number {
+  if (texels <= 0 || texels > SURF_TEXELS * 2.6 * scale) return 0;
+  const cliff = coastCliffiness(dir);
+  // Along-shore variation. Frequency chosen so one lobe spans a few hundred
+  // kilometres — the scale of a bay, not of a continent and not of speckle.
+  const along = fbm3(dir.x * 14 + 4242, dir.y * 14 + 4242, dir.z * 14 + 4242, 3);
+  const width = SURF_TEXELS * scale * (0.5 + cliff * 1.0 + along * 1.9);
+  if (texels > width) return 0;
+  // Strongest right against the shore, gone by the outer edge of the band.
+  const band = 1 - smoothstep(texels, width * 0.15, width);
+  const strength = 0.45 + cliff * 0.55 + along * 0.7;
+  return THREE.MathUtils.clamp(band * strength, 0, 1);
+}
+
+function oceanColor(dir: THREE.Vector3, height: number, surf: number): THREE.Color {
   // Turquoise belongs to the last stretch of the shelf, not to most of the
   // sea. Splitting the ramp at 0.6 put the pale colour over everything
   // within reach of a continent and left a broad milky ring around every
@@ -1561,6 +1665,9 @@ function oceanColor(dir: THREE.Vector3, height: number): THREE.Color {
   const temperature = temperatureAt(dir, 0);
   const seaIce = smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE - 0.08);
   outColor.lerp(iceColor, seaIce);
+  // Surf goes on last, over the ice too — a frozen shore still has a white
+  // rim, it just stops being the interesting part.
+  if (surf > 0) outColor.lerp(surfColor, surf * 0.92);
   return outColor.offsetHSL(0, 0, paintGrain(dir) * 0.6);
 }
 
@@ -1764,6 +1871,73 @@ const MAJOR_CITIES: [number, number, number][] = [
   [-37.81, 144.96, 0.5], // メルボルン
 ];
 
+// The same 28 cities, in daylight.
+//
+// MAJOR_CITIES used to be read by the night-lights pass and by nothing
+// else, so every city on the planet existed only after dark: the day side
+// was uninterrupted wilderness and the light came on over ground that had
+// nothing there a moment earlier. A built-up area is visible from orbit at
+// noon too — not as roads, which is a map's answer, but as a dulled,
+// desaturated patch where the green has been rubbed off.
+//
+// That is also the right answer for a painted miniature: grey-tan drybrush
+// worked into the flock, not a symbol. So this is a soft smudge, edge
+// broken up by noise, and it never gets strong enough to read as a shape
+// with a boundary.
+const urbanColor = new THREE.Color('#8b8778');
+
+const CITY_PATCHES = MAJOR_CITIES.map(([lat, lon, size]) => ({
+  center: latLonToDir(lat, lon),
+  // In radians of arc. Tokyo, the largest, comes out at about 0.04 — ten
+  // texels of the 1536-wide paint, which is the smallest thing that reliably
+  // survives to the screen, and about half a degree of latitude wider than
+  // the real conurbation. A souvenir globe exaggerates its landmarks.
+  radius: 0.014 + size * 0.026,
+  size,
+}));
+const CITY_COS_CUTOFF = Math.cos(Math.max(...CITY_PATCHES.map((c) => c.radius)));
+
+/**
+ * How built-up this point is: 0 anywhere away from a city and over water,
+ * rising smoothly to ~1 at a large city's centre.
+ *
+ * Exported because two things need it and they must not disagree: the paint
+ * below, and the vegetation scatter, which has to stop flocking trees where
+ * the city is — a grey smudge laid over ground that is still fully forested
+ * reads as a decal on the greenery rather than as cleared land. Two systems
+ * computing "where the cities are" from two different expressions is exactly
+ * how the snow line and the snow flecks ended up disagreeing.
+ *
+ * Cheap enough for the scatter's 900k candidates: 28 dot products with an
+ * early-out, and the noise lookup only for the handful of points that are
+ * actually inside a patch.
+ */
+export function urbanAt(dir: THREE.Vector3): number {
+  let best = 0;
+  for (let i = 0; i < CITY_PATCHES.length; i++) {
+    const c = CITY_PATCHES[i];
+    // A dot product against 28 points is cheap; anything that misses the
+    // widest patch on the list leaves before the acos.
+    if (dir.dot(c.center) < CITY_COS_CUTOFF) continue;
+    const dist = dir.angleTo(c.center);
+    if (dist >= c.radius) continue;
+    // Dense core, ragged suburbs: the falloff is steep near the middle and
+    // long in the tail, which is what a conurbation actually looks like from
+    // altitude and also stops the patch having a visible rim.
+    const t = Math.pow(1 - dist / c.radius, 1.9) * (0.55 + c.size * 0.45);
+    if (t > best) best = t;
+  }
+  if (best <= 0) return 0;
+  // Never over water. A harbour city painted onto its own bay would put grey
+  // in the resin, and the vegetation side wants the same answer.
+  if (sampledHeight(dir).raw < SEA_LEVEL) return 0;
+  // Break the disc. Without this every city is a perfect circle, which is
+  // the sticker read again — a city grows along its valleys and its
+  // coastline, so its outline is torn.
+  const ragged = fbm3(dir.x * 70 + 1212, dir.y * 70 + 1212, dir.z * 70 + 1212, 2);
+  return THREE.MathUtils.clamp(best * (1 + ragged * 1.6), 0, 1);
+}
+
 function drawGlow(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -1858,11 +2032,33 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
   const image = ctx.createImageData(width, height);
   const dir = new THREE.Vector3();
 
+  // Sampled, not sharedHeightField: this texture is not necessarily built at
+  // the same size as the terrain paint, and taking the shared field at a
+  // second resolution would throw away the cache the rest of the build is
+  // still using.
+  const heights = new Float32Array(width * height);
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      heights[py * width + px] = sampledHeight(dirForPixel(px, py, width, height, dir)).raw;
+    }
+  }
+  const coastDist = coastDistanceField(heights, width, height);
+  const texelScale = width / 1536;
+
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       dirForPixel(px, py, width, height, dir);
-      const h = sampledHeight(dir).raw;
-      const c = oceanColor(dir, h);
+      const h = heights[py * width + px];
+      // The jitter the paint's own coastline uses, in texels, so the surf
+      // wanders with the shore it belongs to instead of tracing a
+      // mathematically clean offset curve beside it.
+      // Land texels are never surf — the jitter below is applied only once a
+      // texel is already on the water side, or a shore-adjacent inland pixel
+      // picks up a positive distance out of nothing and the whole interior of
+      // every continent foams.
+      const d = coastDist[py * width + px];
+      const surf = d > 0 ? surfAt(dir, d + coastlineJitter(dir) * 220 * texelScale, texelScale) : 0;
+      const c = oceanColor(dir, h, surf);
 
       const idx = (py * width + px) * 4;
       writeSRGBPixel(image.data, idx, c);
@@ -1872,7 +2068,12 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
       // shelf edge hides everything. Baking that into the shell's alpha
       // gives the poured-resin read without paying for real transmission.
       const depth = 1 - smoothstep(h, -0.13, SEA_LEVEL);
-      image.data[idx + 3] = Math.round(THREE.MathUtils.lerp(0.26, 0.93, depth) * 255);
+      // ...except where it is breaking. Foam is air in water: it is the one
+      // part of the sea that is not see-through, so the shallows' low alpha
+      // (which is what lets the seabed read) has to be overridden there or
+      // the white simply washes out against the sand underneath it.
+      const clarity = THREE.MathUtils.lerp(0.26, 0.93, depth);
+      image.data[idx + 3] = Math.round(Math.max(clarity, surf * 0.96) * 255);
     }
   }
 
