@@ -44,7 +44,7 @@ function cloudDensityAt(dir: THREE.Vector3): number {
 // hundred cheap instance-matrix updates, no render target, no simulation
 // state carried between frames.
 
-export type CloudType = 'cumulus' | 'stratus' | 'cirrus' | 'storm';
+export type CloudType = 'cumulus' | 'stratus' | 'cirrus' | 'storm' | 'typhoon';
 
 interface CloudTypeParams {
   /** min/max arc length in radians */
@@ -113,6 +113,23 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
   // Tall and dense with a dark, heavy underside — a cumulonimbus cell,
   // the only type that gets its own material (see buildClouds) so it can
   // flicker with lightning independently of the calm weather around it.
+  // A tropical cyclone. Not laid along a band like every other type — its
+  // nodules are placed in spiral coordinates around a moving centre (see
+  // buildTyphoon) — so `arc` is unused here; the rest of the numbers are
+  // what the eyewall's cotton is made of: dense, tall, dark underneath.
+  typhoon: {
+    arc: [0, 0],
+    hoverBase: 0.13,
+    hoverBulk: 0.16,
+    sizeBase: 0.03,
+    sizeBulk: 0.05,
+    clusterBulk: 0,
+    clusterBase: 1,
+    flatten: 0.8,
+    haloOpacity: 0.12,
+    haloScale: 1.3,
+    undersideFloor: 0.3,
+  },
   storm: {
     arc: [0.22, 0.4],
     hoverBase: 0.14,
@@ -129,8 +146,9 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
 };
 
 interface Nodule {
-  /** unit direction on the sphere, before this frame's band rotation */
-  dir: THREE.Vector3;
+  /** latitude/longitude at t = 0, in radians; the wind works on these */
+  lat: number;
+  lon: number;
   /** how far above the globe surface this nodule floats */
   hover: number;
   /** world-space radius of the nodule */
@@ -139,6 +157,21 @@ interface Nodule {
   spin: number;
   /** which weather band this nodule belongs to, for independent drift */
   band: number;
+  /**
+   * Set only on tropical cyclone nodules: polar coordinates in the storm's
+   * own frame (angular distance from the eye, and bearing) rather than a
+   * fixed place on the globe, because the whole system both spins and
+   * travels. See buildTyphoon.
+   */
+  spiral?: { radius: number; theta: number };
+  /** where this nodule is *this frame*, filled in by tick */
+  live: THREE.Vector3;
+  /** and how big it is this frame (breathing, storm intensity) */
+  liveScale: number;
+}
+
+function makeNodule(dir: THREE.Vector3, rest: Omit<Nodule, 'lat' | 'lon' | 'live' | 'liveScale'>): Nodule {
+  return { ...rest, lat: latOf(dir), lon: lonOf(dir), live: dir.clone(), liveScale: 1 };
 }
 
 /**
@@ -197,8 +230,7 @@ function buildCloudBand(
         .addScaledVector(along, forward)
         .normalize();
 
-      out.push({
-        dir,
+      out.push(makeNodule(dir, {
         // Standing clear of the surface rather than lying on it: pinned
         // this tightly they read as frost on the shell, and the gap is what
         // lets their shadows land on the terrain where you can see them.
@@ -206,7 +238,7 @@ function buildCloudBand(
         size: (params.sizeBase + bulk * params.sizeBulk) * (0.55 + rand() * 0.8),
         spin: rand() * Math.PI * 2,
         band,
-      });
+      }));
     }
   }
 }
@@ -241,17 +273,199 @@ function buildNoduleGeometry(rand: () => number, flatten: number, undersideFloor
   return g;
 }
 
-// Real prevailing winds reverse direction by latitude band (trade
-// easterlies near the equator, westerlies in the temperate belt, polar
-// easterlies again near the poles) — a cheap, geography-appropriate stand-
-// in for the "evaporation + rain shadow" atmospheric simulation the
-// original design memo wanted but that this project's plate-tectonics
-// scare ruled out running for real. latY is the band seed's own dir.y.
-function windAngularVelocity(latY: number): number {
-  const abs = Math.abs(latY);
-  if (abs < 0.35) return -0.024; // tropical easterlies
-  if (abs < 0.75) return 0.017; // mid-latitude westerlies
-  return -0.01; // polar easterlies
+// ---------------------------------------------------------------------
+// Wind
+// ---------------------------------------------------------------------
+// The direction was already right — trade easterlies in the tropics,
+// westerlies in the temperate belt, polar easterlies again at the top —
+// but three things about how it was applied gave the game away as soon as
+// you watched it for more than a few seconds.
+//
+// 1. Three constants with hard steps between them. A cloud at 20° and one
+//    at 21° moved at exactly the same speed; one at 39° and one at 41°
+//    moved in opposite directions at full speed with nothing in between.
+//    Real prevailing winds go through zero at the doldrums (0°), the horse
+//    latitudes (~30°) and the polar front (~60°), and peak halfway between
+//    — so the profile here is a sine that does exactly that, and the belts
+//    fade into each other the way the actual circulation cells do.
+//
+// 2. One speed for the whole band, taken from the seed's latitude. That
+//    makes a cloud mass a rigid object sliding across the globe. Wind
+//    shear — the fact that the poleward edge of a cloud moves at a
+//    different speed from the equatorward edge — is *the* thing that makes
+//    real cloud fields look alive: bands stretch, tilt and comb out as
+//    they travel. Every nodule now takes its wind from its own latitude,
+//    which costs nothing extra and gives that for free.
+//
+// 3. Rotation about the globe's axis at a constant *angular* rate, which
+//    means a cloud near the pole covers ground as fast as one at the
+//    equator. Wind is a linear speed; angular speed is that divided by
+//    cos(latitude), so the same wind whips a polar cloud around its much
+//    smaller circle of latitude far faster. That conversion is here now.
+//
+// On top of the zonal flow, mid-latitude clouds ride a slow meander —
+// the Rossby waves that make a real jet stream snake north and south
+// rather than run around a parallel like a drawn line. It is strongest
+// where the westerlies are and dies away toward the equator and the pole.
+
+/** Peak wind speed, in radians of great circle per second. */
+const WIND_SCALE = 0.02;
+
+/**
+ * Eastward wind speed at a latitude, in radians of great circle per second.
+ * Negative is an easterly (blowing toward the west).
+ */
+function zonalWind(lat: number): number {
+  const deg = Math.abs(lat) * (180 / Math.PI);
+  if (deg < 30) return -0.85 * WIND_SCALE * Math.sin((Math.PI * deg) / 30); // trades
+  if (deg < 60) return 1.35 * WIND_SCALE * Math.sin((Math.PI * (deg - 30)) / 30); // westerlies
+  return -0.6 * WIND_SCALE * Math.sin((Math.PI * (deg - 60)) / 30); // polar easterlies
+}
+
+/** The same wind expressed as a rate of change of longitude. */
+function zonalOmega(lat: number): number {
+  // clamped so the 1/cos does not run away to infinity at the pole itself
+  return zonalWind(lat) / Math.max(Math.cos(lat), 0.22);
+}
+
+/** How far this latitude's flow meanders north/south, in radians. */
+function meanderAmplitude(lat: number): number {
+  const deg = Math.abs(lat) * (180 / Math.PI);
+  if (deg < 20 || deg > 75) return 0;
+  return 0.085 * Math.sin((Math.PI * (deg - 20)) / 55);
+}
+
+const HALF_PI = Math.PI / 2;
+
+function latOf(dir: THREE.Vector3): number {
+  return Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1));
+}
+
+// Longitude increases *eastward*, matching terrain.ts's latLonToDir (which
+// puts the prime meridian at the elevation image's horizontal centre) —
+// otherwise every wind on this planet would blow the wrong way relative to
+// the continents painted underneath them.
+function lonOf(dir: THREE.Vector3): number {
+  return Math.atan2(dir.z, -dir.x);
+}
+
+function dirFromLatLon(lat: number, lon: number, out: THREE.Vector3): THREE.Vector3 {
+  const c = Math.cos(lat);
+  return out.set(-c * Math.cos(lon), Math.sin(lat), c * Math.sin(lon));
+}
+
+// ---------------------------------------------------------------------
+// Tropical cyclones
+// ---------------------------------------------------------------------
+// The one weather system on the planet that is a *shape* rather than a
+// patch: banded spiral arms wound around a clear eye, the whole thing
+// rotating cyclonically while its centre travels. None of that survives
+// being built the way the other cloud types are (nodules pinned to fixed
+// points on the globe), so a typhoon's nodules keep polar coordinates in
+// the storm's own frame instead, and their place on the globe is resolved
+// every frame from wherever the eye currently is.
+//
+// The track is the textbook one, because the textbook one is what people
+// recognise: form in the tropics, run west-northwest with the trades,
+// then recurve poleward and back east once the storm reaches the
+// westerlies — and weaken to nothing at both ends of its life, so the
+// planet is not permanently carrying the same hurricane around.
+interface TyphoonSystem {
+  band: number;
+  /** longitude the track starts at, radians */
+  lon0: number;
+  /** +1 northern hemisphere, -1 southern */
+  hemi: number;
+  /** seconds for one form → recurve → dissipate cycle, and where in it we start */
+  period: number;
+  phase: number;
+  /** angular radius of the eye, and of the outermost arm */
+  eye: number;
+  reach: number;
+  spin: number;
+  /** 0..1, recomputed each frame from the track age */
+  intensity: number;
+  /** its own nodules, gathered once so the per-frame pass is not a search */
+  nodules: Nodule[];
+}
+
+/** How far through its life the storm is, 0..1. */
+function typhoonAge(sys: TyphoonSystem, t: number): number {
+  return ((t / sys.period + sys.phase) % 1 + 1) % 1;
+}
+
+/** 0 while forming and dissipating, 1 at peak — scales every nodule. */
+function typhoonIntensity(age: number): number {
+  return Math.pow(Math.sin(age * Math.PI), 0.7);
+}
+
+function typhoonCentre(sys: TyphoonSystem, age: number, out: THREE.Vector3): THREE.Vector3 {
+  // 12°N-ish at formation, recurving out to about 34°
+  const lat = (0.21 + 0.38 * Math.pow(age, 1.7)) * sys.hemi;
+  // carried west by the trades, then east again once it is in the westerlies
+  const lon = sys.lon0 - 0.95 * age + 1.7 * Math.pow(age, 3);
+  return dirFromLatLon(lat, lon, out);
+}
+
+function buildTyphoon(sys: TyphoonSystem, rand: () => number, out: Nodule[]): void {
+  const arms = 4;
+  const params = CLOUD_TYPE_PARAMS.typhoon;
+
+  // the eyewall: a dense ring right at the eye's edge, the tallest and
+  // thickest cotton in the storm
+  const wallCount = 34;
+  for (let i = 0; i < wallCount; i++) {
+    const theta = (i / wallCount) * Math.PI * 2;
+    const r = sys.eye * (1.0 + rand() * 0.22);
+    out.push(pushSpiralNodule(sys, r, theta, 1, rand, params));
+  }
+
+  // and the rainbands: logarithmic spirals unwinding out of the eyewall,
+  // thinning and breaking up as they go
+  for (let a = 0; a < arms; a++) {
+    const base = (a / arms) * Math.PI * 2 + rand() * 0.3;
+    const steps = 26;
+    for (let i = 1; i <= steps; i++) {
+      const f = i / steps;
+      const r = sys.eye * 1.15 + (sys.reach - sys.eye * 1.15) * Math.pow(f, 0.85);
+      // the further out, the more the arm has been wound back — this is
+      // what makes the arms trail rather than stick out like spokes
+      const theta = base - sys.hemi * 2.4 * Math.log(r / sys.eye);
+      // arms break up into separate cells toward the outside
+      if (f > 0.45 && rand() < (f - 0.45) * 0.9) continue;
+      const spread = 1 + Math.floor(rand() * 2);
+      for (let c = 0; c < spread; c++) {
+        out.push(
+          pushSpiralNodule(
+            sys,
+            r * (1 + (rand() - 0.5) * 0.08),
+            theta + (rand() - 0.5) * 0.35,
+            1 - f * 0.55,
+            rand,
+            params,
+          ),
+        );
+      }
+    }
+  }
+}
+
+function pushSpiralNodule(
+  sys: TyphoonSystem,
+  r: number,
+  theta: number,
+  bulk: number,
+  rand: () => number,
+  params: CloudTypeParams,
+): Nodule {
+  const n = makeNodule(new THREE.Vector3(0, 1, 0), {
+    hover: params.hoverBase + bulk * params.hoverBulk + rand() * 0.03,
+    size: (params.sizeBase + bulk * params.sizeBulk) * (0.6 + rand() * 0.7),
+    spin: rand() * Math.PI * 2,
+    band: sys.band,
+  });
+  n.spiral = { radius: r, theta };
+  return n;
 }
 
 export interface CloudSystem {
@@ -297,11 +511,35 @@ export function buildClouds(radius: number): CloudSystem {
     bandType.push(seed.type);
     buildCloudBand(seed.dir, band, CLOUD_TYPE_PARAMS[seed.type], rand, nodules);
   });
-  const bandVelocity = seeds.map((s) => windAngularVelocity(s.dir.y));
+
+  // Two cyclones, one per hemisphere, out of phase with each other so the
+  // planet is not showing two storms at the same stage of the same life.
+  const typhoons: TyphoonSystem[] = [1, -1].map((hemi, i) => ({
+    band: seeds.length + i,
+    lon0: rand() * Math.PI * 2,
+    hemi,
+    period: 150 + rand() * 40,
+    phase: i * 0.5 + rand() * 0.15,
+    eye: 0.035,
+    reach: 0.3,
+    spin: 0.55,
+    intensity: 0,
+    nodules: [],
+  }));
+  typhoons.forEach((sys) => {
+    bandType[sys.band] = 'typhoon';
+    buildTyphoon(sys, rand, sys.nodules);
+    nodules.push(...sys.nodules);
+  });
+
   // each band breathes (grows/shrinks) on its own slow cycle, standing in
   // for forming and dissipating without ever changing instance counts
-  const bandBreathPhase = seeds.map(() => rand() * Math.PI * 2);
-  const bandBreathSpeed = seeds.map(() => 0.06 + rand() * 0.05);
+  const bandBreathPhase = bandType.map(() => rand() * Math.PI * 2);
+  const bandBreathSpeed = bandType.map(() => 0.06 + rand() * 0.05);
+  // how far this band's flow is displaced by the current meander, and where
+  // in that meander it sits — a per-band phase keeps neighbouring bands from
+  // snaking in lockstep
+  const bandMeanderPhase = bandType.map(() => rand() * Math.PI * 2);
 
   const regularVariantCount = 3;
   const regularVariants = Array.from({ length: regularVariantCount }, () =>
@@ -389,7 +627,7 @@ export function buildClouds(radius: number): CloudSystem {
 
   nodules.forEach((n) => {
     const type = bandType[n.band];
-    if (type === 'storm') {
+    if (type === 'storm' || type === 'typhoon') {
       const list = stormNodulesByBand.get(n.band) ?? [];
       list.push(n);
       stormNodulesByBand.set(n.band, list);
@@ -418,6 +656,9 @@ export function buildClouds(radius: number): CloudSystem {
     coreMaterial: THREE.MeshStandardMaterial;
     nextFlashAt: number;
     flashUntil: number;
+    /** minimum seconds between flashes, and the random spread on top */
+    flashGap: number;
+    flashSpread: number;
   }
   const stormBands: StormBand[] = [];
   stormNodulesByBand.forEach((list, band) => {
@@ -425,21 +666,93 @@ export function buildClouds(radius: number): CloudSystem {
     stormCore.emissiveIntensity = 0.08;
     buildLayer(list, regularVariants[band % regularVariantCount], stormCore, 1, true);
     buildLayer(list, regularVariants[band % regularVariantCount], haloMaterial, CLOUD_TYPE_PARAMS.storm.haloScale, false);
-    stormBands.push({ band, coreMaterial: stormCore, nextFlashAt: 2 + rand() * 6, flashUntil: 0 });
+    // a cyclone is a far more electrically active thing than a lone
+    // thunderhead, so its eyewall flickers several times as often
+    const cyclone = bandType[band] === 'typhoon';
+    stormBands.push({
+      band,
+      coreMaterial: stormCore,
+      nextFlashAt: 2 + rand() * 6,
+      flashUntil: 0,
+      flashGap: cyclone ? 0.5 : 3,
+      flashSpread: cyclone ? 1.6 : 9,
+    });
   });
 
+  // Scratch objects for the per-frame advection, hoisted out of the loop:
+  // this runs over every nodule on the planet each frame, and allocating a
+  // vector per nodule per frame is exactly the kind of thing that turns a
+  // free update into garbage-collection stutter.
+  const centre = new THREE.Vector3();
+  const east = new THREE.Vector3();
+  const north = new THREE.Vector3();
+  const align = new THREE.Quaternion();
+  const spinQ = new THREE.Quaternion();
+
+  // Where every nodule is *right now*. Done once per frame over the nodule
+  // list rather than inside the mesh loop, because the core and halo layers
+  // share the same Nodule objects — computing it per mesh would do all of
+  // this twice for no difference on screen.
+  const advect = (t: number) => {
+    typhoons.forEach((sys) => {
+      const age = typhoonAge(sys, t);
+      typhoonCentre(sys, age, centre);
+      // the storm's own tangent frame, so its spiral can be laid out
+      // relative to north/east at wherever the eye currently is
+      north.set(0, 1, 0).addScaledVector(centre, -centre.y).normalize();
+      east.crossVectors(north, centre).normalize();
+      sys.intensity = typhoonIntensity(age);
+
+      sys.nodules.forEach((n) => {
+        const r = n.spiral!.radius;
+        // Differential rotation: the eyewall goes round several times for
+        // each turn of the outer rainbands, which is what winds the arms
+        // tighter over time instead of spinning a rigid pinwheel. A
+        // cyclone turns anticlockwise seen from above in the north and
+        // clockwise in the south, hence the hemisphere sign.
+        const omega = (sys.spin / (0.45 + r / sys.reach)) * -sys.hemi;
+        const theta = n.spiral!.theta + omega * t;
+        const tangentX = Math.cos(theta);
+        const tangentZ = Math.sin(theta);
+        n.live
+          .copy(centre)
+          .multiplyScalar(Math.cos(r))
+          .addScaledVector(north, Math.sin(r) * tangentX)
+          .addScaledVector(east, Math.sin(r) * tangentZ)
+          .normalize();
+        // a storm that is forming or falling apart is made of smaller,
+        // sparser cotton, so it fades in and out instead of popping
+        n.liveScale = sys.intensity;
+      });
+    });
+
+    nodules.forEach((n) => {
+      if (n.spiral) return; // cyclones are placed above
+      // Wind read at this nodule's *own* latitude, not its band's: that is
+      // what shears a band apart as it travels instead of sliding it along
+      // rigid. Closed-form in t (not accumulated per frame) so the sky is
+      // identical at a given time whatever the frame rate, the same rule
+      // the rest of this project's animation follows.
+      const lon = n.lon + zonalOmega(n.lat) * t;
+      const lat =
+        n.lat +
+        meanderAmplitude(n.lat) * Math.sin(lon * 3 + t * 0.05 + bandMeanderPhase[n.band]);
+      dirFromLatLon(THREE.MathUtils.clamp(lat, -HALF_PI, HALF_PI), lon, n.live);
+      n.liveScale = 1 + Math.sin(t * bandBreathSpeed[n.band] + bandBreathPhase[n.band]) * 0.09;
+    });
+  };
+
   const tick = (t: number) => {
+    advect(t);
+
     liveMeshes.forEach(({ mesh, list, sizeScale }) => {
       list.forEach((n, i) => {
-        const angle = t * bandVelocity[n.band];
-        rotated.copy(n.dir).applyAxisAngle(up, angle);
-        const breath = 1 + Math.sin(t * bandBreathSpeed[n.band] + bandBreathPhase[n.band]) * 0.09;
-
+        rotated.copy(n.live);
         dummy.position.copy(rotated).multiplyScalar(radius + n.hover);
-        const align = new THREE.Quaternion().setFromUnitVectors(up, rotated);
-        const spin = new THREE.Quaternion().setFromAxisAngle(rotated, n.spin);
-        dummy.quaternion.copy(spin).multiply(align);
-        const s = n.size * sizeScale * breath;
+        align.setFromUnitVectors(up, rotated);
+        spinQ.setFromAxisAngle(rotated, n.spin);
+        dummy.quaternion.copy(spinQ).multiply(align);
+        const s = n.size * sizeScale * n.liveScale;
         dummy.scale.set(s, s * 0.8, s);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
@@ -454,7 +767,7 @@ export function buildClouds(radius: number): CloudSystem {
       if (t >= s.nextFlashAt) {
         // start a new flash now; schedule the one after it
         s.flashUntil = t + 0.09 + rand() * 0.06;
-        s.nextFlashAt = s.flashUntil + 3 + rand() * 9;
+        s.nextFlashAt = s.flashUntil + s.flashGap + rand() * s.flashSpread;
       }
       if (t < s.flashUntil) {
         // a quick double-pulse reads as lightning; a single flat spike reads
