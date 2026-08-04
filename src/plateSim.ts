@@ -496,7 +496,20 @@ export const PLATE_LIVE_ELEVATION_GLSL = /* glsl */ `
     float hV = elevMin + texture2D(uColorSim, uvV).a * elevRange;
     vec3 posV = dirV * (uRadius + hV * uBumpHeight);
 
-    vec3 liveNormal = normalize(cross(posU - plateLivePosition, posV - plateLivePosition));
+    // normalize() of a near-zero-length vector is undefined per spec —
+    // some drivers hand back NaN rather than something merely wrong, and
+    // a NaN vertex position makes the primitive's rasterization
+    // undefined too, which on at least one real device this project
+    // tests against read as the mesh going invisible/transparent rather
+    // than glitching visibly. The cross product can get arbitrarily
+    // small right at the equirectangular UV seam and near the poles
+    // (where moving in u barely changes the actual 3D direction at
+    // all), so guard the divide instead of assuming it's always safe:
+    // fall back to the known-good outward radial direction rather than
+    // ever calling normalize() on something that might be ~0.
+    vec3 liveCross = cross(posU - plateLivePosition, posV - plateLivePosition);
+    float liveCrossLen = length(liveCross);
+    vec3 liveNormal = liveCrossLen > 0.00001 ? liveCross / liveCrossLen : dir0;
     // Cross-product winding depends on which of the two tangent
     // directions comes first, which is easy to get backwards by
     // convention rather than by any actual error — cheaper to just

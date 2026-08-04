@@ -915,6 +915,13 @@ globeMaterial.onBeforeCompile = (shader) => {
 const globeMesh = new THREE.Mesh(geometry, globeMaterial);
 globeMesh.castShadow = true;
 globeMesh.receiveShadow = true;
+// The vertex shader now displaces this mesh live, potentially well
+// beyond the bounding sphere three.js computed once from the static
+// geometry at creation time — CPU-side frustum culling has no way to
+// know about a GPU-side displacement, so leaving it on risks the whole
+// mesh being incorrectly culled as "off-screen" once it's drifted past
+// its original, now-stale bounds.
+globeMesh.frustumCulled = false;
 globeGroup.add(globeMesh);
 
 // glossy resin-like ocean shell sitting right at sea level, covering the
