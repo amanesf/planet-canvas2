@@ -799,8 +799,10 @@ globeMaterial.onBeforeCompile = (shader) => {
   // exaggerated well past a real plate boundary's actual relief for the
   // same reason the rest of this globe's terrain is (see BUMP_HEIGHT
   // above) — a literally accurate few hundred meters of uplift is
-  // invisible at this scale
-  shader.uniforms.uPlateUplift = { value: 0.05 };
+  // invisible at this scale. Raised from an initial 0.05 that read as
+  // barely-there once the sim was actually accumulating consistently
+  // (see plateSim.ts's substep fix) instead of oscillating near zero.
+  shader.uniforms.uPlateUplift = { value: 0.11 };
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nuniform sampler2D uPlateSim;\nuniform float uPlateUplift;')
     .replace(

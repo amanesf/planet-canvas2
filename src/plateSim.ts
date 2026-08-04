@@ -40,6 +40,12 @@ export const SIM_HEIGHT = 64;
 // adds to a small, controlled fraction of the frame budget.
 const TICK_INTERVAL = 0.25;
 
+// How the speed multiplier is actually spent — see the long comment in
+// update() below. Kept here alongside TICK_INTERVAL since the two
+// together bound worst-case dispatch rate regardless of multiplier.
+const MAX_SUBSTEP_SIM_SECONDS = 0.6;
+const MAX_SUBSTEPS_PER_TICK = 12;
+
 interface PlateDef {
   pole: THREE.Vector3;
   seed: THREE.Vector3;
@@ -227,31 +233,48 @@ export function createPlateSimulation(): PlateSimulation {
     lastElapsed = elapsedSeconds;
     accumulator += dt;
     if (accumulator < TICK_INTERVAL) return;
-    // The tick still only fires at the same real-world cadence (one
-    // render-target switch roughly every TICK_INTERVAL seconds,
-    // regardless of speed) — a multiplier scales how much *simulated*
-    // time that one tick covers, not how often it happens, so speeding
-    // this up costs nothing extra on the GPU.
-    const stepDt = accumulator * speedMultiplier;
+    const totalStepDt = accumulator * speedMultiplier;
     accumulator = 0;
-    simTime += stepDt;
 
-    material.uniforms.tPrev.value = rtA.texture;
-    material.uniforms.uSimTime.value = simTime;
-    material.uniforms.uDt.value = stepDt;
+    // A single dispatch covering a large simulated-time jump is not the
+    // same simulation run faster — it's a different, wrong one. The
+    // boundary test re-derives plate ownership from scratch each
+    // dispatch by rotating back to t=0, so a big enough jump can put a
+    // texel under a *different* neighbour than the previous dispatch saw,
+    // flipping the accumulated forcing's sign dispatch to dispatch
+    // instead of building consistently in one direction — this is what
+    // read as the terrain squirming instead of visibly drifting at high
+    // speed. Splitting a big jump into several smaller dispatches, each
+    // one actually feeding forward from the previous texture the way the
+    // 1x case always did, keeps every step physically continuous.
+    //
+    // Capped rather than scaled exactly to the multiplier: even at 100x,
+    // real per-second dispatch count stays well inside the range
+    // gpgpu-test.html already proved stable (that ran one dispatch every
+    // frame, ~60/sec, for 200+ seconds) — MAX_SUBSTEPS_PER_TICK *
+    // (1 / TICK_INTERVAL) tops out around 48/sec here, comfortably under
+    // that, regardless of how high the multiplier goes.
+    const substeps = Math.min(
+      MAX_SUBSTEPS_PER_TICK,
+      Math.max(1, Math.ceil(totalStepDt / MAX_SUBSTEP_SIM_SECONDS)),
+    );
+    const subDt = totalStepDt / substeps;
 
-    // this device's driver copes fine with switching render targets (see
-    // gpgpu-test.html) — the crash this project spent so long chasing
-    // was shadow mapping, not this pattern; restoring the caller's own
-    // target afterward keeps this a self-contained step regardless
     const previousTarget = renderer.getRenderTarget();
-    renderer.setRenderTarget(rtB);
-    renderer.render(scene, camera);
-    renderer.setRenderTarget(previousTarget);
+    for (let i = 0; i < substeps; i++) {
+      simTime += subDt;
+      material.uniforms.tPrev.value = rtA.texture;
+      material.uniforms.uSimTime.value = simTime;
+      material.uniforms.uDt.value = subDt;
 
-    const swap = rtA;
-    rtA = rtB;
-    rtB = swap;
+      renderer.setRenderTarget(rtB);
+      renderer.render(scene, camera);
+
+      const swap = rtA;
+      rtA = rtB;
+      rtB = swap;
+    }
+    renderer.setRenderTarget(previousTarget);
   };
 
   return {
