@@ -14,6 +14,7 @@ import {
 } from './terrain';
 import { clumpDensity, displaceWithNoise, mulberry32, smoothstep, SpatialHash } from './spatialHash';
 import { fbm3 } from './noise';
+import { attachPlateDrift, plateIndexForDir, type PlateDef } from './plateSim';
 
 // ---------------------------------------------------------------------
 // One scatter, everything that stands on the ground
@@ -454,9 +455,37 @@ function orient(position: THREE.Vector3, normal: THREE.Vector3, spin: number, ti
   }
 }
 
-export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
+export interface BuiltSpecies {
+  group: THREE.Group;
+  /**
+   * Every unique material that got the plate-drift shader treatment (see
+   * plateSim.ts's attachPlateDrift) — main.ts refreshes each one's
+   * uSimTime uniform every frame from the same simulated clock the
+   * terrain warp and the height-delta bumps use, so all three stay in
+   * lockstep.
+   */
+  plateMaterials: THREE.Material[];
+}
+
+export function buildSpecies(radius: number, bumpHeight: number, plateDefs: PlateDef[]): BuiltSpecies {
   const group = new THREE.Group();
   const rand = mulberry32(515151);
+  const plateMaterials: THREE.Material[] = [];
+
+  // Every instance is assigned its owning plate once, at build time (see
+  // plateIndexForDir), and rides with that plate's rotation forever after
+  // — see the long comment on attachPlateDrift in plateSim.ts for why
+  // this differs from how the terrain's paint follows plates.
+  function withPlateDrift<T extends THREE.Material>(material: T): T {
+    attachPlateDrift(material, plateDefs);
+    plateMaterials.push(material);
+    return material;
+  }
+  function setPlateIndexAttribute(mesh: THREE.InstancedMesh, dirs: THREE.Vector3[]) {
+    const arr = new Float32Array(dirs.length);
+    for (let i = 0; i < dirs.length; i++) arr[i] = plateIndexForDir(dirs[i], plateDefs);
+    mesh.geometry.setAttribute('aPlateIndex', new THREE.InstancedBufferAttribute(arr, 1));
+  }
 
   // One hash per layer — they keep the spacing each one was tuned at
   // (ground cover packs far tighter than a stand of trees), but they all
@@ -610,17 +639,21 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
 
   // ---- fourteen species: two shared materials, one InstancedMesh each ----
 
-  const plantMaterial = new THREE.MeshStandardMaterial({
-    color: '#ffffff',
-    roughness: 0.93,
-    envMapIntensity: 0.1,
-  });
-  const mineralMaterial = new THREE.MeshStandardMaterial({
-    color: '#ffffff',
-    roughness: 0.85,
-    flatShading: true,
-    envMapIntensity: 0.14,
-  });
+  const plantMaterial = withPlateDrift(
+    new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.93,
+      envMapIntensity: 0.1,
+    }),
+  );
+  const mineralMaterial = withPlateDrift(
+    new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.85,
+      flatShading: true,
+      envMapIntensity: 0.14,
+    }),
+  );
 
   const bySpecies = new Map<Species, Placement[]>();
   placements.forEach((p) => {
@@ -656,6 +689,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
       color.offsetHSL(0, (rand() - 0.5) * 0.05, (rand() - 0.5) * 0.09);
       mesh.setColorAt(i, color);
     });
+    setPlateIndexAttribute(mesh, list.map((p) => p.dir));
 
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -701,19 +735,23 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
   const trunkGeometry = new THREE.CylinderGeometry(0.004, 0.006, TRUNK_H, 5);
   trunkGeometry.translate(0, TRUNK_H / 2, 0);
 
-  const trunkMaterial = new THREE.MeshStandardMaterial({
-    color: '#8a5a3a',
-    roughness: 0.95,
-    envMapIntensity: 0.1,
-  });
+  const trunkMaterial = withPlateDrift(
+    new THREE.MeshStandardMaterial({
+      color: '#8a5a3a',
+      roughness: 0.95,
+      envMapIntensity: 0.1,
+    }),
+  );
   // left white on purpose — instanceColor below multiplies against this,
   // so a tinted base color here would compound with (and mute/darken) the
   // per-instance hue instead of showing it cleanly
-  const foliageMaterial = new THREE.MeshStandardMaterial({
-    color: '#ffffff',
-    roughness: 0.9,
-    envMapIntensity: 0.1,
-  });
+  const foliageMaterial = withPlateDrift(
+    new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.9,
+      envMapIntensity: 0.1,
+    }),
+  );
 
   // real diorama foliage ("clump foliage" flock/lichen material) is a
   // distinctly bright, saturated yellow-green — noticeably more lime than
@@ -734,6 +772,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
 
   const trunkMesh = new THREE.InstancedMesh(trunkGeometry, trunkMaterial, trees.length);
   let trunkIndex = 0;
+  const trunkDirs: THREE.Vector3[] = [];
   // Note on the `THREE.SRGBColorSpace` argument passed to every setHSL
   // below: three's working color space is linear-sRGB, so setHSL's default
   // treats the lightness/saturation you give it as *linear* values. Naming
@@ -754,6 +793,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
       dummy.updateMatrix();
       trunkMesh.setMatrixAt(trunkIndex++, dummy.matrix);
       foliageMesh.setMatrixAt(i, dummy.matrix);
+      trunkDirs.push(p.dir);
       // a little per-tree color variance so a forest doesn't look like one
       // flat-shaded cutout repeated hundreds of times
       foliageColor.setHSL(variant.hue[0] + rand() * variant.hue[1], 0.48 + rand() * 0.14, 0.26 + rand() * 0.12, THREE.SRGBColorSpace);
@@ -761,9 +801,11 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
     });
     foliageMesh.instanceMatrix.needsUpdate = true;
     if (foliageMesh.instanceColor) foliageMesh.instanceColor.needsUpdate = true;
+    setPlateIndexAttribute(foliageMesh, pts.map((p) => p.dir));
     group.add(foliageMesh);
   });
   trunkMesh.instanceMatrix.needsUpdate = true;
+  setPlateIndexAttribute(trunkMesh, trunkDirs);
   group.add(trunkMesh);
 
   // ---- mountain rocks: 2 archetypes — angular boulders + flatter slabs ----
@@ -772,14 +814,16 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
   const slabGeometry = new THREE.IcosahedronGeometry(0.028, 0);
   slabGeometry.scale(1.15, 0.6, 1.0);
 
-  const rockMaterial = new THREE.MeshStandardMaterial({
-    // white on purpose: instanceColor multiplies against this, so a tinted
-    // base here compounds with the per-instance color and darkens it.
-    color: '#ffffff',
-    roughness: 0.95,
-    flatShading: true,
-    envMapIntensity: 0.1,
-  });
+  const rockMaterial = withPlateDrift(
+    new THREE.MeshStandardMaterial({
+      // white on purpose: instanceColor multiplies against this, so a tinted
+      // base here compounds with the per-instance color and darkens it.
+      color: '#ffffff',
+      roughness: 0.95,
+      flatShading: true,
+      envMapIntensity: 0.1,
+    }),
+  );
 
   const rockVariants = [boulderGeometry, slabGeometry];
   const rockByVariant: GroundPoint[][] = rockVariants.map(() => []);
@@ -806,18 +850,21 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
     });
     rockMesh.instanceMatrix.needsUpdate = true;
     if (rockMesh.instanceColor) rockMesh.instanceColor.needsUpdate = true;
+    setPlateIndexAttribute(rockMesh, pts.map((p) => p.dir));
     group.add(rockMesh);
   });
 
   // ---- scree: dense loose rubble covering rocky/mountain slopes ----
 
   const screeGeometry = new THREE.IcosahedronGeometry(0.016, 0);
-  const screeMaterial = new THREE.MeshStandardMaterial({
-    color: '#ffffff',
-    roughness: 0.97,
-    flatShading: true,
-    envMapIntensity: 0.08,
-  });
+  const screeMaterial = withPlateDrift(
+    new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.97,
+      flatShading: true,
+      envMapIntensity: 0.08,
+    }),
+  );
   const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
   const screeColor = new THREE.Color();
   screePoints.forEach((p, i) => {
@@ -832,6 +879,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
   });
   screeMesh.instanceMatrix.needsUpdate = true;
   if (screeMesh.instanceColor) screeMesh.instanceColor.needsUpdate = true;
+  setPlateIndexAttribute(screeMesh, screePoints.map((p) => p.dir));
   group.add(screeMesh);
 
   // ---- forest: big clumped canopy masses, not a solid blanket ----
@@ -849,11 +897,13 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
   const canopyVariantCount = 3;
   const coarseVariants = Array.from({ length: canopyVariantCount }, () => buildCanopyBlob(rand, 1));
   const fineVariants = Array.from({ length: 2 }, () => buildCanopyBlob(rand, 2));
-  const canopyMaterial = new THREE.MeshStandardMaterial({
-    color: '#ffffff',
-    roughness: 0.92,
-    envMapIntensity: 0.1,
-  });
+  const canopyMaterial = withPlateDrift(
+    new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.92,
+      envMapIntensity: 0.1,
+    }),
+  );
 
   interface CanopyInstance {
     point: GroundPoint;
@@ -902,6 +952,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
       });
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      setPlateIndexAttribute(mesh, list.map(({ point }) => point.dir));
       group.add(mesh);
     });
   };
@@ -912,11 +963,13 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
 
   const grassGeometry = new THREE.ConeGeometry(0.008, 0.016, 5);
   grassGeometry.translate(0, 0.008, 0);
-  const grassMaterial = new THREE.MeshStandardMaterial({
-    color: '#ffffff',
-    roughness: 0.9,
-    envMapIntensity: 0.08,
-  });
+  const grassMaterial = withPlateDrift(
+    new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.9,
+      envMapIntensity: 0.08,
+    }),
+  );
   const grassMesh = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassPoints.length);
   const grassColor = new THREE.Color();
   grassPoints.forEach((p, i) => {
@@ -937,7 +990,8 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
   });
   grassMesh.instanceMatrix.needsUpdate = true;
   if (grassMesh.instanceColor) grassMesh.instanceColor.needsUpdate = true;
+  setPlateIndexAttribute(grassMesh, grassPoints.map((p) => p.dir));
   group.add(grassMesh);
 
-  return group;
+  return { group, plateMaterials };
 }

@@ -275,6 +275,163 @@ export const PLATE_UV_DRIFT_GLSL = /* glsl */ `
   }
 `;
 
+// ---------------------------------------------------------------------
+// Real instanced-mesh drift (vegetation), not a texture warp.
+// ---------------------------------------------------------------------
+// A tree can't ride a UV trick the way painted terrain does — it's a 3D
+// object, so making it drift means actually rotating its placed position
+// (and its normal, for correct lighting) around its owning plate's axis.
+// Every instance is assigned that owning plate once, forever, at build
+// time (see plateIndexForDir below) — unlike the terrain warp above,
+// which re-derives ownership from the current position every frame, a
+// tree's "which plate is this crust part of" does not need to be
+// re-asked each frame, and permanently fixing it sidesteps that warp's
+// seam/tearing issue entirely for vegetation.
+//
+// Where this has to be spliced in is dictated by how three.js's own
+// instancing works, not by choice: for an InstancedMesh, `transformed`
+// (set by #include <begin_vertex>) is still just the raw per-vertex
+// position *inside one tree's own tiny local model* — instanceMatrix,
+// which is what actually places that tree out on the sphere, is only
+// applied later, fused into #include <project_vertex> together with
+// modelViewMatrix in a single chunk with no break point of its own. So
+// there is no seam to hook between "placed on the sphere" and "moved to
+// view space" without replacing that chunk outright — same story for the
+// normal in #include <defaultnormal_vertex>, which fuses the
+// instance-matrix normal rotation and the object-to-view normalMatrix
+// step together the same way. Both replacements below are therefore the
+// upstream chunk's exact text (pinned to this project's three.js
+// version — see package.json) with one small block spliced into the one
+// safe point in each: after the instance transform has been applied,
+// before the camera/view transform runs.
+export function plateIndexForDir(dir: THREE.Vector3, plates: PlateDef[]): number {
+  let bestIdx = 0;
+  let bestScore = -2;
+  for (let i = 0; i < plates.length; i++) {
+    const score = dir.dot(plates[i].seed);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+// Rotates the already-instance-placed position (still in object space,
+// pre modelViewMatrix) around its instance's owning plate's axis.
+const PLATE_INSTANCE_PROJECT_VERTEX_GLSL = /* glsl */ `
+vec4 mvPosition = vec4( transformed, 1.0 );
+
+#ifdef USE_BATCHING
+
+	mvPosition = batchingMatrix * mvPosition;
+
+#endif
+
+#ifdef USE_INSTANCING
+
+	mvPosition = instanceMatrix * mvPosition;
+
+#endif
+
+{
+  int platePi = int(aPlateIndex + 0.5);
+  mvPosition.xyz = plateRotate(mvPosition.xyz, uPoles[platePi], uSpeeds[platePi] * uSimTime);
+}
+
+mvPosition = modelViewMatrix * mvPosition;
+
+gl_Position = projectionMatrix * mvPosition;
+`;
+
+// Same rotation applied to the normal, at the matching point in
+// #include <defaultnormal_vertex> — after the instance-matrix normal
+// rotation, before normalMatrix carries it into view space.
+const PLATE_INSTANCE_NORMAL_VERTEX_GLSL = /* glsl */ `
+
+vec3 transformedNormal = objectNormal;
+#ifdef USE_TANGENT
+
+	vec3 transformedTangent = objectTangent;
+
+#endif
+
+#ifdef USE_BATCHING
+
+	mat3 bm = mat3( batchingMatrix );
+	transformedNormal /= vec3( dot( bm[ 0 ], bm[ 0 ] ), dot( bm[ 1 ], bm[ 1 ] ), dot( bm[ 2 ], bm[ 2 ] ) );
+	transformedNormal = bm * transformedNormal;
+
+	#ifdef USE_TANGENT
+
+		transformedTangent = bm * transformedTangent;
+
+	#endif
+
+#endif
+
+#ifdef USE_INSTANCING
+
+	mat3 im = mat3( instanceMatrix );
+	transformedNormal /= vec3( dot( im[ 0 ], im[ 0 ] ), dot( im[ 1 ], im[ 1 ] ), dot( im[ 2 ], im[ 2 ] ) );
+	transformedNormal = im * transformedNormal;
+
+	#ifdef USE_TANGENT
+
+		transformedTangent = im * transformedTangent;
+
+	#endif
+
+#endif
+
+{
+  int platePiN = int(aPlateIndex + 0.5);
+  transformedNormal = plateRotate(transformedNormal, uPoles[platePiN], uSpeeds[platePiN] * uSimTime);
+}
+
+transformedNormal = normalMatrix * transformedNormal;
+
+#ifdef FLIP_SIDED
+
+	transformedNormal = - transformedNormal;
+
+#endif
+
+#ifdef USE_TANGENT
+
+	transformedTangent = ( modelViewMatrix * vec4( transformedTangent, 0.0 ) ).xyz;
+
+#endif
+`;
+
+/**
+ * Wires an InstancedMesh material's vertex shader to rotate each instance
+ * (position and normal) around its owning plate's axis by uSimTime. Call
+ * once per material (materials are shared across several meshes here);
+ * every InstancedMesh drawn with it must carry an `aPlateIndex` instanced
+ * attribute (see plateIndexForDir) or the shader will fail to compile.
+ * The returned accessor reads back the live shader.uniforms object each
+ * material's onBeforeCompile captured, for the caller's per-frame
+ * uSimTime refresh — mirrors main.ts's own globeMaterial.userData.shader
+ * pattern.
+ */
+export function attachPlateDrift(material: THREE.Material, plateDefs: PlateDef[]): void {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uPoles = { value: plateDefs.map((p) => p.pole) };
+    shader.uniforms.uSeeds = { value: plateDefs.map((p) => p.seed) };
+    shader.uniforms.uSpeeds = { value: plateDefs.map((p) => p.speed) };
+    shader.uniforms.uSimTime = { value: 0 };
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>\nattribute float aPlateIndex;\n${PLATE_UNIFORMS_GLSL}`,
+      )
+      .replace('#include <project_vertex>', PLATE_INSTANCE_PROJECT_VERTEX_GLSL)
+      .replace('#include <defaultnormal_vertex>', PLATE_INSTANCE_NORMAL_VERTEX_GLSL);
+    material.userData.shader = shader;
+  };
+}
+
 export interface PlateSimulation {
   /** Current height-delta texture, in [0,1] (unpack with *2.0-1.0 in a consuming shader). */
   getTexture: () => THREE.Texture;

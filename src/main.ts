@@ -800,15 +800,22 @@ const globeMaterial = new THREE.MeshStandardMaterial({
 //    See plateSim.ts's PLATE_UV_DRIFT_GLSL for how.
 //
 // Vegetation (species.ts's few hundred thousand InstancedMesh trees etc.)
-// deliberately does NOT follow this drift — re-deriving per-instance
-// placement every frame for that many instances is exactly the kind of
-// per-frame cost this whole project has been fighting to keep off the
-// one real device it keeps crashing on. Over the timescales this sim
-// runs at by default that mismatch isn't visible; at the higher end of
-// the speed toggle it will be, along with visible seams at plate
-// boundaries where two plates' rest frames have drifted apart — both
-// accepted trade-offs of warping a static painted texture instead of
-// actually re-painting it.
+// also rides this same clock — see plateSim.ts's attachPlateDrift — but
+// as a *real* rigid rotation of each already-placed instance around its
+// owning plate's axis, not a texture warp (a tree is a 3D object; there's
+// no "paint" to slide under it). Each instance is assigned its plate once
+// at build time and keeps it forever, which is both cheaper and more
+// correct than re-deriving ownership every frame the way the terrain's
+// texture warp has to: the extra work is a few GPU instructions on
+// vertices these draw calls already process every frame, no CPU loop and
+// no per-frame buffer re-upload, so it doesn't reintroduce the kind of
+// per-frame cost this project fought hard to get off the one real device
+// it keeps crashing on. What's still an accepted trade-off: visible seams
+// at plate boundaries, and terrain color and vegetation drifting apart at
+// the fast end of the speed toggle (the terrain warp re-derives ownership
+// live and can hand a point to a different neighbour over time; a tree's
+// ownership never changes) — both most visible at 10x/100x, not at the
+// default speed.
 const plateSim = createPlateSimulation();
 const plateDefs = plateSim.getPlateDefs();
 globeMaterial.onBeforeCompile = (shader) => {
@@ -937,7 +944,7 @@ globeGroup.add(oceanMesh);
 // trees, mountain rocks, scree, or one of fourteen further species — so
 // adding a kind costs a branch, not another sweep. See species.ts.
 await yieldToBrowser('生物相');
-const species = buildSpecies(RADIUS, BUMP_HEIGHT);
+const { group: species, plateMaterials: vegetationPlateMaterials } = buildSpecies(RADIUS, BUMP_HEIGHT, plateDefs);
 species.traverse((child) => {
   if ((child as THREE.Mesh).isMesh) {
     // Not casting: this group is ~27 InstancedMesh draw calls (grass,
@@ -1031,6 +1038,15 @@ globeTick = (t) => {
     // two must agree, or the painted continents and the boundary bumps
     // riding on them would drift out of sync with each other.
     globeShader.uniforms.uSimTime.value = plateSim.getSimTime();
+  }
+
+  // Vegetation's own real geometric drift (see plateSim.ts's
+  // attachPlateDrift) runs off the same simulated clock, kept in step
+  // with the terrain and height-delta updates above for the same reason.
+  const simTimeNow = plateSim.getSimTime();
+  for (const material of vegetationPlateMaterials) {
+    const shader = material.userData.shader as { uniforms: { uSimTime: { value: number } } } | undefined;
+    if (shader) shader.uniforms.uSimTime.value = simTimeNow;
   }
 };
 
