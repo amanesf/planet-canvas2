@@ -178,8 +178,12 @@ const FRAGMENT_SHADER = /* glsl */ `
 export interface PlateSimulation {
   /** Current height-delta texture, in [0,1] (unpack with *2.0-1.0 in a consuming shader). */
   getTexture: () => THREE.Texture;
-  /** Call every frame; internally throttles actual GPU work to TICK_INTERVAL. */
-  update: (renderer: THREE.WebGLRenderer, elapsedSeconds: number) => void;
+  /**
+   * Call every frame; internally throttles actual GPU work to
+   * TICK_INTERVAL. `speedMultiplier` scales simulated time per tick, not
+   * tick frequency — see the implementation for why.
+   */
+  update: (renderer: THREE.WebGLRenderer, elapsedSeconds: number, speedMultiplier?: number) => void;
 }
 
 function makeRenderTarget(): THREE.WebGLRenderTarget {
@@ -218,12 +222,17 @@ export function createPlateSimulation(): PlateSimulation {
   let accumulator = 0;
   let lastElapsed = 0;
 
-  const update = (renderer: THREE.WebGLRenderer, elapsedSeconds: number) => {
+  const update = (renderer: THREE.WebGLRenderer, elapsedSeconds: number, speedMultiplier = 1) => {
     const dt = Math.max(0, Math.min(elapsedSeconds - lastElapsed, 0.25));
     lastElapsed = elapsedSeconds;
     accumulator += dt;
     if (accumulator < TICK_INTERVAL) return;
-    const stepDt = accumulator;
+    // The tick still only fires at the same real-world cadence (one
+    // render-target switch roughly every TICK_INTERVAL seconds,
+    // regardless of speed) — a multiplier scales how much *simulated*
+    // time that one tick covers, not how often it happens, so speeding
+    // this up costs nothing extra on the GPU.
+    const stepDt = accumulator * speedMultiplier;
     accumulator = 0;
     simTime += stepDt;
 

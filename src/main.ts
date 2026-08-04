@@ -25,6 +25,7 @@ import { createPlateSimulation } from './plateSim';
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
   <div class="ui">
+    <button id="plate-speed" class="mode-button speed-button" title="プレート移動の速さを変える" aria-label="プレート移動の速さを変える">1×</button>
     <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
   </div>
   <div class="loading" id="loading" role="status">組み立て中…</div>
@@ -682,6 +683,26 @@ toggleButton.addEventListener('click', () => {
   toggleButton.setAttribute('aria-label', label);
 });
 
+// ---------- plate speed toggle ----------
+// A plain number, not a call into plateSim directly: plateSim itself is
+// declared much further down (after startRendering() has already been
+// called), so referencing it by name from a handler registered this
+// early would throw on any tick that fires before that line runs — the
+// same reason globeTick below is a deferred `let`. Reading this shared
+// number from inside globeTick, once plateSim is safely in scope, sidesteps
+// that entirely.
+const PLATE_SPEEDS = [1, 10, 100];
+let plateSpeedIndex = 0;
+const speedButton = document.querySelector<HTMLButtonElement>('#plate-speed')!;
+speedButton.addEventListener('click', () => {
+  plateSpeedIndex = (plateSpeedIndex + 1) % PLATE_SPEEDS.length;
+  const speed = PLATE_SPEEDS[plateSpeedIndex];
+  speedButton.textContent = `${speed}×`;
+  const label = `プレート移動の速さ: ${speed}倍`;
+  speedButton.title = label;
+  speedButton.setAttribute('aria-label', label);
+});
+
 // ---------- animation loop ----------
 
 const clock = new THREE.Clock();
@@ -966,7 +987,7 @@ globeTick = (t) => {
   // reassigned each time a tick actually happens because the simulation
   // swaps which of its two render targets is "current" every step; the
   // material's shader object was captured in onBeforeCompile above.
-  plateSim.update(renderer, t);
+  plateSim.update(renderer, t, PLATE_SPEEDS[plateSpeedIndex]);
   const globeShader = globeMaterial.userData.shader as { uniforms: { uPlateSim: { value: THREE.Texture } } } | undefined;
   if (globeShader) globeShader.uniforms.uPlateSim.value = plateSim.getTexture();
 };

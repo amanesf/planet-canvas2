@@ -62,6 +62,7 @@ canvas {
   right: calc(18px + env(safe-area-inset-right, 0px));
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   display: flex;
+  gap: 8px;
   justify-content: flex-end;
   pointer-events: none;
 }
@@ -87,6 +88,16 @@ canvas {
   opacity: 0.4;
   cursor: pointer;
   transition: opacity 0.2s ease, transform 0.15s ease, background 0.2s ease;
+}
+
+/* same pill, but sized to hold "100×" rather than one glyph */
+.speed-button {
+  width: auto;
+  min-width: 38px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .mode-button:hover,
