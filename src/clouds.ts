@@ -63,7 +63,7 @@ function buildCloudBand(
   // reference's cloud masses actually sit at, and several times bigger
   // than the popcorn puffs this replaced.
   const arc = 0.3 + rand() * 0.34;
-  const steps = 16 + Math.floor(rand() * 12);
+  const steps = 10 + Math.floor(rand() * 8);
   // how far the band wanders off a clean great circle, so it isn't a ruler line
   const wander = (rand() - 0.5) * 0.5;
 
@@ -85,7 +85,7 @@ function buildCloudBand(
 
     // more nodules where the band is thickest; the tapering ends thin out
     // to one or two, which is what reads as a wisp
-    const clusterSize = 1 + Math.floor(bulk * 2.4 + rand() * 1.2);
+    const clusterSize = 1 + Math.floor(bulk * 1.5 + rand() * 0.8);
     for (let c = 0; c < clusterSize; c++) {
       const lateral = (rand() - 0.5) * (0.06 + bulk * 0.13);
       const forward = (rand() - 0.5) * 0.05;
@@ -142,9 +142,17 @@ export function buildClouds(radius: number): THREE.Group {
   const rand = mulberry32(4242);
 
   // where the weather systems sit
+  //
+  // Cut from 10: clouds build last, after the terrain textures, the ocean,
+  // and every species/vegetation InstancedMesh are already resident — on a
+  // memory-constrained device that had been surviving everything up to
+  // this point and then stalling exactly here, clouds weren't uniquely
+  // expensive, they were just what finally pushed already-tight memory
+  // over the edge. Fewer weather systems (and fewer nodules per band,
+  // below) trims the very last thing added on top of everything else.
   const seeds: THREE.Vector3[] = [];
   const dir = new THREE.Vector3();
-  for (let i = 0; i < 4000 && seeds.length < 10; i++) {
+  for (let i = 0; i < 4000 && seeds.length < 6; i++) {
     const z = rand() * 2 - 1;
     const t = rand() * Math.PI * 2;
     const r = Math.sqrt(1 - z * z);

@@ -57,14 +57,14 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 // here, not in detecting a GPU vendor and turning shadows off for it.
 const SETTINGS = {
   /** longitudinal / latitudinal segments for the displaced globe */
-  globeSegments: [140, 80] as const,
-  oceanSegments: [56, 32] as const,
-  shadowMapSize: 512,
+  globeSegments: [120, 68] as const,
+  oceanSegments: [48, 28] as const,
+  shadowMapSize: 384,
   /** rings of blur taps in the camera pass; each ring is 8 taps */
   dofRings: 1,
   maxPixelRatio: 1.0,
   /** width of the baked terrain/ocean/bump textures; height is half */
-  textureWidth: 704,
+  textureWidth: 576,
 };
 
 // Building the model blocks the main thread for seconds: the terrain paint

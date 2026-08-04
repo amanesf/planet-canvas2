@@ -512,7 +512,7 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
   // count drives the instance totals across every layer below — fewer
   // candidates means fewer instances means fewer things the shadow pass
   // has to submit every frame, on top of less CPU time spent building it.
-  const CANDIDATES = 220000;
+  const CANDIDATES = 150000;
 
   for (let i = 0; i < CANDIDATES; i++) {
     const z = rand() * 2 - 1;
