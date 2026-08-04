@@ -1408,6 +1408,31 @@ export function buildBumpTexture(width = 1536, height = 768): THREE.CanvasTextur
   return texture;
 }
 
+// Packs the same per-vertex height displaceSphere uses (see below) into a
+// single-channel texture, normalized to [0,1] over [min,max] — for
+// plateSim.ts's color-advection target to carry alongside the terrain's
+// paint, so the globe's actual 3D shape can ride along with plate drift
+// too, not just its color. Cheap: `sampledHeight` is backed by the same
+// cached grid buildTerrainTexture already forced into existence, so this
+// is a repackaging of already-computed numbers, not a second height
+// evaluation pass.
+export function buildElevationTexture(width: number, height: number, min: number, max: number): THREE.DataTexture {
+  const data = new Uint8Array(width * height);
+  const dir = new THREE.Vector3();
+  const range = max - min;
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      dirForPixel(px, py, width, height, dir);
+      const h = sampledHeight(dir).display;
+      const t = THREE.MathUtils.clamp((h - min) / range, 0, 1);
+      data[py * width + px] = Math.round(t * 255);
+    }
+  }
+  const texture = new THREE.DataTexture(data, width, height, THREE.RedFormat);
+  texture.needsUpdate = true;
+  return texture;
+}
+
 // Displaces a SphereGeometry's vertices in place using the same height
 // field the texture was painted from.
 export function displaceSphere(geometry: THREE.SphereGeometry, radius: number, bumpHeight: number) {

@@ -66,8 +66,19 @@ const COLOR_MAX_SUBSTEPS_PER_TICK = 6;
 // dispatched at up to COLOR_MAX_SUBSTEPS_PER_TICK per tick, run
 // continuously, didn't crash or hang on the one real device this project
 // tunes against.
-const COLOR_SIM_WIDTH = 512;
-const COLOR_SIM_HEIGHT = 256;
+export const COLOR_SIM_WIDTH = 512;
+export const COLOR_SIM_HEIGHT = 256;
+
+// terrain.ts's buildElevationTexture packs the mesh's own displayHeight
+// values (see displaceSphere) into [0,1] over this range, so the same
+// alpha channel riding along in the color-advection texture can carry
+// live elevation too — see PLATE_LIVE_ELEVATION_GLSL below. Covers the
+// real range with margin (underwater floor ~0.027, ordinary land into
+// the low ones, an extreme volcano peak or great-range summit can push
+// past 1.9) rather than tuning it exactly, since clipping here would
+// visibly flatten peaks.
+export const ELEVATION_ENCODE_MIN = -0.1;
+export const ELEVATION_ENCODE_MAX = 2.3;
 
 export interface PlateDef {
   pole: THREE.Vector3;
@@ -309,9 +320,19 @@ const COLOR_ADVECT_FRAGMENT_SHADER = /* glsl */ `
 // bug terrain.ts's writeSRGBPixel comment already documents once for
 // this codebase. The consuming side (main.ts's globe fragment shader)
 // does the matching manual decode at final display time.
+// Alpha rides along for free once seeded: COLOR_ADVECT_FRAGMENT_SHADER's
+// per-substep copy already carries the whole vec4 (not just .rgb), and
+// three's sRGB encode/decode functions only ever touch .rgb (confirmed
+// against colorspace_pars_fragment.glsl.js — sRGBTransferEOTF passes
+// value.a through untouched), so packing elevation into alpha needs no
+// extra handling anywhere the color itself doesn't already have.
+// tElevationSource is a plain (non-sRGB) DataTexture — see
+// terrain.ts's buildElevationTexture — so this samples it as-is, no
+// decode needed, unlike tSource.
 const SEED_FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
   uniform sampler2D tSource;
+  uniform sampler2D tElevationSource;
   varying vec2 vUv;
 
   vec3 plateLinearToSRGB(vec3 c) {
@@ -322,7 +343,8 @@ const SEED_FRAGMENT_SHADER = /* glsl */ `
 
   void main() {
     vec3 linearColor = texture2D(tSource, vUv).rgb;
-    gl_FragColor = vec4(plateLinearToSRGB(linearColor), 1.0);
+    float elevation = texture2D(tElevationSource, vUv).r;
+    gl_FragColor = vec4(plateLinearToSRGB(linearColor), elevation);
   }
 `;
 
@@ -414,6 +436,75 @@ export const PLATE_UV_DRIFT_GLSL = /* glsl */ `
     vBumpMapUv = plateUvFromDir(plateRestDir);
   }
   #endif
+`;
+
+// ---------------------------------------------------------------------
+// The globe's actual 3D shape, not just its paint.
+// ---------------------------------------------------------------------
+// Color and vegetation moving while every mountain and coastline stays
+// exactly where displaceSphere first put it does not read as "the
+// continents move" — it reads as paint sliding over a fixed shape,
+// because that is exactly what it was. This makes the shape itself live:
+// the same uColorSim texture that carries advected color (see
+// COLOR_ADVECT_FRAGMENT_SHADER) carries advected *elevation* in its alpha
+// channel too (packed by terrain.ts's buildElevationTexture, decoded
+// with ELEVATION_ENCODE_MIN/MAX below) — riding along in the exact same
+// advection pass at zero extra dispatch cost, since a vec4 copy already
+// carries all four channels whether or not anything reads the fourth.
+//
+// Spliced into #include <beginnormal_vertex>, not #include <begin_vertex>
+// — normal_vertex needs the *object-space* normal, and by the time
+// begin_vertex runs, sampling neighbouring elevation texels for a finite-
+// difference normal would mean redoing the same texture reads a second
+// time. Computing both here and handing the position forward through a
+// plain (non-block-scoped) variable lets begin_vertex's own replacement
+// just use it directly — see main.ts's onBeforeCompile.
+//
+// The static per-vertex normal geometry.computeVertexNormals() baked in
+// once at startup was an acceptable stand-in for the *old*, deliberately
+// subtle height-delta-only displacement (small enough that a slightly
+// wrong normal didn't read as wrong) — it is not an acceptable stand-in
+// once the whole displacement is live, so this reconstructs a real one:
+// sample elevation at two nearby points, build the actual displaced
+// positions there the same way the centre point is built, and take the
+// normal of the resulting surface patch. `uRadius`/`uBumpHeight` mirror
+// the exact numbers displaceSphere used, so a vertex whose plate hasn't
+// carried it anywhere yet reproduces the original static shape exactly.
+export const PLATE_LIVE_ELEVATION_GLSL = /* glsl */ `
+  vec3 objectNormal;
+  vec3 plateLivePosition;
+  #ifdef USE_TANGENT
+  vec3 objectTangent = vec3( tangent.xyz );
+  #endif
+  {
+    float elevMin = ${ELEVATION_ENCODE_MIN.toFixed(6)};
+    float elevRange = ${(ELEVATION_ENCODE_MAX - ELEVATION_ENCODE_MIN).toFixed(6)};
+    float epsU = ${(1.5 / COLOR_SIM_WIDTH).toFixed(6)};
+    float epsV = ${(1.5 / COLOR_SIM_HEIGHT).toFixed(6)};
+
+    vec3 dir0 = plateDirFromUv(uv);
+    float h0 = elevMin + texture2D(uColorSim, uv).a * elevRange;
+    plateLivePosition = dir0 * (uRadius + h0 * uBumpHeight);
+
+    vec2 uvU = uv + vec2(epsU, 0.0);
+    vec3 dirU = plateDirFromUv(uvU);
+    float hU = elevMin + texture2D(uColorSim, uvU).a * elevRange;
+    vec3 posU = dirU * (uRadius + hU * uBumpHeight);
+
+    vec2 uvV = uv + vec2(0.0, epsV);
+    vec3 dirV = plateDirFromUv(uvV);
+    float hV = elevMin + texture2D(uColorSim, uvV).a * elevRange;
+    vec3 posV = dirV * (uRadius + hV * uBumpHeight);
+
+    vec3 liveNormal = normalize(cross(posU - plateLivePosition, posV - plateLivePosition));
+    // Cross-product winding depends on which of the two tangent
+    // directions comes first, which is easy to get backwards by
+    // convention rather than by any actual error — cheaper to just
+    // check against the known-outward radial direction and flip than to
+    // reason it out from the equirectangular parameterization's winding.
+    if (dot(liveNormal, dir0) < 0.0) liveNormal = -liveNormal;
+    objectNormal = liveNormal;
+  }
 `;
 
 // ---------------------------------------------------------------------
@@ -626,8 +717,11 @@ function makeColorRenderTarget(): THREE.WebGLRenderTarget {
  * once (see SEED_FRAGMENT_SHADER) as the color-advection target's
  * starting state, so it moves the actual baked artwork instead of
  * starting from a blank field.
+ * @param elevationSeedTexture terrain.ts's buildElevationTexture output —
+ * copied into the same target's alpha channel, so the globe's actual
+ * displaced shape can ride along too (see PLATE_LIVE_ELEVATION_GLSL).
  */
-export function createPlateSimulation(seedTexture: THREE.Texture): PlateSimulation {
+export function createPlateSimulation(seedTexture: THREE.Texture, elevationSeedTexture: THREE.Texture): PlateSimulation {
   const plates = buildPlates();
 
   let rtA = makeRenderTarget();
@@ -667,7 +761,10 @@ export function createPlateSimulation(seedTexture: THREE.Texture): PlateSimulati
   colorScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), colorMaterial));
 
   const seedMaterial = new THREE.ShaderMaterial({
-    uniforms: { tSource: { value: seedTexture } },
+    uniforms: {
+      tSource: { value: seedTexture },
+      tElevationSource: { value: elevationSeedTexture },
+    },
     vertexShader: VERTEX_SHADER,
     fragmentShader: SEED_FRAGMENT_SHADER,
   });

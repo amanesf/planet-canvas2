@@ -7,6 +7,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import {
   applyCoastalMeniscus,
   buildBumpTexture,
+  buildElevationTexture,
   buildOceanTexture,
   buildTerrainTexture,
   buildWaveTexture,
@@ -19,7 +20,16 @@ import { buildClouds } from './clouds';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
 import { buildWorkshop } from './setDressing';
-import { createPlateSimulation, PLATE_UNIFORMS_GLSL, PLATE_UV_DRIFT_GLSL } from './plateSim';
+import {
+  COLOR_SIM_HEIGHT,
+  COLOR_SIM_WIDTH,
+  createPlateSimulation,
+  ELEVATION_ENCODE_MAX,
+  ELEVATION_ENCODE_MIN,
+  PLATE_LIVE_ELEVATION_GLSL,
+  PLATE_UNIFORMS_GLSL,
+  PLATE_UV_DRIFT_GLSL,
+} from './plateSim';
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -786,21 +796,28 @@ const globeMaterial = new THREE.MeshStandardMaterial({
 });
 
 // Live plate tectonics (see plateSim.ts): a small GPU simulation ticking
-// on its own slow clock, independent of the render frame rate. Three
+// on its own slow clock, independent of the render frame rate. Four
 // things ride on it, all driven by the same plate rotations:
 //
-// 1. A small height *delta* — mountains slowly building where plates
-//    collide, ground slowly relaxing where they pull apart — added on
-//    top of the static terrain this mesh already has, along each
-//    vertex's own (static) normal.
-// 2. The terrain's own paint (the color texture baked by terrain.ts) is
+// 1. The globe's actual displaced shape — every mountain and coastline —
+//    is reconstructed live from an advected elevation field instead of
+//    staying at the shape displaceSphere baked once at startup. See
+//    plateSim.ts's PLATE_LIVE_ELEVATION_GLSL for how and why this had to
+//    replace, not just decorate, the static geometry: color and
+//    vegetation moving while the shape itself never did wasn't "the
+//    continents move", it was paint sliding over a fixed mold.
+// 2. A small additional height *delta* on top of that — mountains
+//    building further where plates collide right now, ground relaxing
+//    where they pull apart — along each vertex's own *live* normal.
+// 3. The terrain's own paint (the color texture baked by terrain.ts) is
 //    advected — physically carried along the plate velocity field one
 //    small step at a time — by plateSim's second, larger ping-pong pair,
 //    rather than warped by a per-vertex UV rewrite. That older UV trick
 //    (still used for bumpMap only, see plateSim.ts's PLATE_UV_DRIFT_GLSL)
 //    tore visibly at boundaries once run for a while at real speed — see
 //    plateSim.ts's long comment on COLOR_ADVECT_FRAGMENT_SHADER for the
-//    mechanism and the fix.
+//    mechanism and the fix. The live elevation in (1) rides in that same
+//    texture's alpha channel, at zero extra dispatch cost.
 //
 // Vegetation (species.ts's few hundred thousand InstancedMesh trees etc.)
 // also rides this same clock — see plateSim.ts's attachPlateDrift — but
@@ -812,12 +829,25 @@ const globeMaterial = new THREE.MeshStandardMaterial({
 // slowly drifting apart from each other at the fast end of the speed
 // toggle (advection re-derives ownership live and can hand a point to a
 // different neighbour over time; a tree's ownership never changes) — most
-// visible at 10x/100x, not at the default speed. All of it is GPU-only,
-// extra instructions on vertices/texels these draw calls already process
-// every frame — no CPU loop, no per-frame buffer re-upload — so it
-// doesn't reintroduce the kind of per-frame cost this project fought hard
-// to get off the one real device it keeps crashing on.
-const plateSim = createPlateSimulation(terrainTexture);
+// visible at 10x/100x, not at the default speed. Vegetation also still
+// sits at the *original* static surface radius (computed once at build
+// time), so once the ground itself is genuinely live too, a tree can end
+// up floating slightly above or embedded slightly into terrain that has
+// since risen or sunk under it — an accepted trade-off for the same
+// reason as the biome-color one: reading vegetation's own live elevation
+// every frame to keep it glued to a moving surface is a further project,
+// not this one. All of this is GPU-only, extra instructions on
+// vertices/texels these draw calls already process every frame — no CPU
+// loop, no per-frame buffer re-upload — so it doesn't reintroduce the
+// kind of per-frame cost this project fought hard to get off the one
+// real device it keeps crashing on.
+const elevationTexture = buildElevationTexture(
+  COLOR_SIM_WIDTH,
+  COLOR_SIM_HEIGHT,
+  ELEVATION_ENCODE_MIN,
+  ELEVATION_ENCODE_MAX,
+);
+const plateSim = createPlateSimulation(terrainTexture, elevationTexture);
 const plateDefs = plateSim.getPlateDefs();
 globeMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uPlateSim = { value: plateSim.getTexture() };
@@ -833,10 +863,16 @@ globeMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uSeeds = { value: plateDefs.map((p) => p.seed) };
   shader.uniforms.uSpeeds = { value: plateDefs.map((p) => p.speed) };
   shader.uniforms.uSimTime = { value: 0 };
+  // Mirrors displaceSphere's own radius/bumpHeight exactly, so
+  // PLATE_LIVE_ELEVATION_GLSL reconstructs precisely the original static
+  // shape for any point whose plate hasn't visibly carried it anywhere
+  // yet — no seam between "hasn't drifted" and "the old static mesh".
+  shader.uniforms.uRadius = { value: RADIUS };
+  shader.uniforms.uBumpHeight = { value: BUMP_HEIGHT };
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
-      `#include <common>\nuniform sampler2D uPlateSim;\nuniform float uPlateUplift;\n${PLATE_UNIFORMS_GLSL}`,
+      `#include <common>\nuniform sampler2D uPlateSim;\nuniform sampler2D uColorSim;\nuniform float uPlateUplift;\nuniform float uRadius;\nuniform float uBumpHeight;\n${PLATE_UNIFORMS_GLSL}`,
     )
     // The height-delta sample two chunks down deliberately keeps reading
     // the raw `uv` attribute directly (not vMapUv/vBumpMapUv) so the
@@ -845,9 +881,15 @@ globeMaterial.onBeforeCompile = (shader) => {
     // warped here now — see PLATE_UV_DRIFT_GLSL's own comment for why
     // color isn't.
     .replace('#include <uv_vertex>', `#include <uv_vertex>\n${PLATE_UV_DRIFT_GLSL}`)
+    // Replaces (not appends to) the default `vec3 objectNormal = vec3(
+    // normal);` — the live displacement below needs a live normal, not
+    // the one baked for the original static shape. See
+    // PLATE_LIVE_ELEVATION_GLSL's own comment for the full reasoning.
+    .replace('#include <beginnormal_vertex>', PLATE_LIVE_ELEVATION_GLSL)
     .replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
+      transformed = plateLivePosition;
       float plateDelta = texture2D(uPlateSim, uv).r * 2.0 - 1.0;
       transformed += objectNormal * plateDelta * uPlateUplift;`,
     );
