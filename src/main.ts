@@ -818,7 +818,16 @@ await yieldToBrowser('生物相');
 const species = buildSpecies(RADIUS, BUMP_HEIGHT);
 species.traverse((child) => {
   if ((child as THREE.Mesh).isMesh) {
-    child.castShadow = true;
+    // Not casting: this group is ~27 InstancedMesh draw calls (grass,
+    // scree, forest canopy, savanna trees, the fourteen species...), many
+    // with tens of thousands of instances apiece, and every one of them
+    // casting doubled the shadow pass's draw submissions on top of an
+    // already real cost. A GPU process crash on a real device traced back
+    // to exactly this — a tile-based mobile renderer paying for a full
+    // depth pass over every blade of grass on the planet is a lot to ask
+    // for a shadow contribution nobody would notice missing at this
+    // scale. Still receiving, so the ground cover reads the terrain's own
+    // shadows (cloud shade, mountains shading valleys) correctly.
     child.receiveShadow = true;
   }
 });
