@@ -32,7 +32,16 @@ const UP = new THREE.Vector3(0, 1, 0);
 // container ship came out a couple of pixels long, so the most alive thing
 // in the scene was invisible unless you already knew where to look. On a
 // model, the ship is a ship-shaped bead you can actually see.
-const TRAFFIC_SCALE = 5;
+//
+// Then five times over-corrected. Surface traffic keeps a third of that —
+// still unmistakably a boat and a plane, no longer a barge the size of
+// Ireland. Satellites go all the way back: they are the one thing here
+// that is *not* pinned to the surface, so they cross the empty space in
+// front of the globe where nothing hides an oversized model, and at 5x
+// they were reading as spacecraft flying past the camera rather than as
+// specks in orbit.
+const SURFACE_TRAFFIC_SCALE = 5 / 3;
+const SATELLITE_SCALE = 1;
 
 /** An orthonormal pair spanning the plane through two directions. */
 function planeBasis(a: THREE.Vector3, b: THREE.Vector3): [THREE.Vector3, THREE.Vector3] {
@@ -132,7 +141,7 @@ export function buildSatellites(radius: number): Traffic {
 
   for (let i = 0; i < 5; i++) {
     const object = template.clone();
-    object.scale.setScalar(TRAFFIC_SCALE);
+    object.scale.setScalar(SATELLITE_SCALE);
     group.add(object);
 
     // a random orbital plane: a normal picked off the sphere, and any two
@@ -248,7 +257,7 @@ export function buildAircraft(radius: number): Traffic {
     const span = a.angleTo(b);
 
     const object = buildAircraftMesh();
-    object.scale.setScalar(TRAFFIC_SCALE);
+    object.scale.setScalar(SURFACE_TRAFFIC_SCALE);
     group.add(object);
 
     // The contrail. A line with per-vertex alpha, rewritten each frame from
@@ -318,7 +327,7 @@ export function buildAircraft(radius: number): Traffic {
       // from the end of the route to the start of the next one reads as a
       // landing and a take-off rather than as a teleport
       const visible = Math.min(1, progress * 14) * Math.min(1, (1 - progress) * 14);
-      flight.object.scale.setScalar(TRAFFIC_SCALE * (0.6 + visible * 0.4));
+      flight.object.scale.setScalar(SURFACE_TRAFFIC_SCALE * (0.6 + visible * 0.4));
       flight.material.opacity = visible;
 
       for (let i = 0; i < TRAIL_POINTS; i++) {
@@ -435,7 +444,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
     if (span < 0.45) continue;
 
     const object = buildShipMesh();
-    object.scale.setScalar(TRAFFIC_SCALE);
+    object.scale.setScalar(SURFACE_TRAFFIC_SCALE);
     group.add(object);
 
     const WAKE_POINTS = 26;
@@ -499,7 +508,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
       onGreatCircle(route.u, route.v, progress * route.span, pos);
       onGreatCircle(route.u, route.v, (progress + 0.004 * direction) * route.span, ahead);
       // sitting *in* the resin, not on top of it
-      route.object.position.copy(pos).multiplyScalar(seaRadius + 0.012);
+      route.object.position.copy(pos).multiplyScalar(seaRadius + 0.006);
       orient(route.object, pos, ahead.sub(pos));
 
       for (let i = 0; i < route.wakeAlpha.length; i++) {

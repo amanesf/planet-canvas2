@@ -510,7 +510,7 @@ const MATERIALS: Record<MaterialKey, THREE.MeshStandardMaterial> = {
 // (a pine is not taller than the Eiffel Tower) and useless — you could not
 // tell what any of them were. A souvenir globe solves this by making the
 // building absurdly too big, and so does this.
-const LANDMARK_SCALE = 1.9;
+const LANDMARK_SCALE = 3.8;
 
 export function buildLandmarks(radius: number, bumpHeight: number): THREE.Group {
   const group = new THREE.Group();
