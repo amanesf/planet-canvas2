@@ -40,31 +40,27 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
 // WebGL contexts because too many tabs were open — nothing to do with what
 // the device could sustain. These numbers are picked for a current phone
 // and used everywhere.
-// Turned down twice now from where these first sat: a build/render on a
-// mid/low-end Android phone crashed outright during the "組み立て中"
-// phase, not after — the one stretch where the heavy synchronous build
-// work (texture painting, the scatter passes) and the ongoing render loop
-// (shadows, the bokeh/DOF composer pass) are both live at once, so it's
-// the single most resource-hungry moment the page ever hits.
-//
-// A standalone stress test of that same device (gpgpu-test.html) ran a
-// per-frame render-target switch — the same shape of work shadows and
-// the camera pass both need — clean for 200+ seconds and 5000+ frames in
-// isolation. So the switching itself isn't the problem; the *combined*
-// footprint of this scene while switching is. These numbers, and
-// species.ts's CANDIDATES, are the knobs that bring that combined
-// footprint down without giving up the feature outright — the fix belongs
-// here, not in detecting a GPU vendor and turning shadows off for it.
+// Chased a crash on a real mid/low-end Android phone through several
+// rounds here: cutting these numbers hard, on their own, never got a
+// stable combination with shadows on. What actually fixed it was turning
+// shadow mapping off (see renderer.shadowMap.enabled below) — a
+// standalone stress test of the same device (gpgpu-test.html) ran a
+// per-frame render-target switch, the same shape of work the camera pass
+// alone needs, clean for 200+ seconds and 5000+ frames, and post-
+// processing by itself turned out to be fine at these numbers too. So
+// these are restored most of the way back toward their original values
+// now that the actual culprit is isolated and off, rather than left at
+// the hardest cuts that turned out not to be what mattered.
 const SETTINGS = {
   /** longitudinal / latitudinal segments for the displaced globe */
-  globeSegments: [120, 68] as const,
-  oceanSegments: [48, 28] as const,
-  shadowMapSize: 384,
+  globeSegments: [200, 112] as const,
+  oceanSegments: [76, 44] as const,
+  shadowMapSize: 768,
   /** rings of blur taps in the camera pass; each ring is 8 taps */
   dofRings: 1,
-  maxPixelRatio: 1.0,
+  maxPixelRatio: 1.2,
   /** width of the baked terrain/ocean/bump textures; height is half */
-  textureWidth: 576,
+  textureWidth: 1024,
 };
 
 // Building the model blocks the main thread for seconds: the terrain paint

@@ -7,48 +7,52 @@ import { mulberry32 } from './spatialHash';
 export const SEA_LEVEL = 0.072;
 const COAST_WIDTH = 0.006;
 
-// Toned down across the board — high-saturation primary colors are what
-// made this read as "cheap mobile game" regardless of how much detail
-// sat on top of them. Real terrain photography has much narrower,
-// muddier, more correlated color ranges than a clean color wheel.
-const shoreColor = new THREE.Color('#a89b80');
-// muted/soil-toned on purpose — the vivid green now comes from actually
-// covering the ground in grass/tree instances, not from painting the
-// terrain itself bright green underneath them
-const landColor = new THREE.Color('#6a6a50');
+// Pushed a step more vivid than the original "toned down across the
+// board" pass — that rule was reacting against flat primary-color-wheel
+// saturation, and it overcorrected into looking washed out next to the
+// reference target (a painted, lit miniature, not a satellite photo).
+// Real terrain photography has narrower, muddier ranges than a color
+// wheel, but a *lit, varnished model* reads with noticeably more
+// chroma than raw ground does — that's the gap being closed here, not a
+// reversal of the original reasoning.
+const shoreColor = new THREE.Color('#b8a578');
+// the vivid green mostly still comes from actually covering the ground in
+// grass/tree instances, not from painting the terrain itself bright green
+// underneath them — but the bare soil between them reads richer now too
+const landColor = new THREE.Color('#5e7a3f');
 // Two separate deserts, because sand and stone desert look nothing alike:
 // pale wind-sorted sand, and the darker gravel pavement that surrounds it.
-const desertColor = new THREE.Color('#c0a878');
-const desertGravelColor = new THREE.Color('#8a7554');
+const desertColor = new THREE.Color('#d6a855');
+const desertGravelColor = new THREE.Color('#9c7a48');
 // Warm sedimentary rock, for the foothills a forest could grow on.
-const rockColor = new THREE.Color('#6f5c4a');
+const rockColor = new THREE.Color('#7d5c3e');
 // Alpine stone is a *different rock*, and it is the difference the eye
 // reads first at altitude: cold grey granite scoured bare, not the warm
 // brown of a lowland outcrop. Colouring high ground as merely a darker
 // version of the same brown is what made every mountain read as a big hill.
-const alpineRockColor = new THREE.Color('#7a7a80');
+const alpineRockColor = new THREE.Color('#7d7d8c');
 const alpineShadowColor = new THREE.Color('#4e5058');
 // Boreal forest floor: needle litter and peat, much darker and cooler than
 // temperate soil.
-const taigaColor = new THREE.Color('#4a5344');
+const taigaColor = new THREE.Color('#3d5c3a');
 // Tropical soil: the red laterite that shows through equatorial jungle.
-const tropicalSoilColor = new THREE.Color('#6b5138');
+const tropicalSoilColor = new THREE.Color('#7a4a2c');
 const snowColor = new THREE.Color('#e7eef2');
-const riverColor = new THREE.Color('#3184a0');
-const tundraColor = new THREE.Color('#8b8a6e');
+const riverColor = new THREE.Color('#2f95c2');
+const tundraColor = new THREE.Color('#928d5c');
 const iceColor = new THREE.Color('#dce8ee');
 // exposed sedimentary rock strata — badlands/canyon country
-const badlandsColorA = new THREE.Color('#6f5b47');
-const badlandsColorB = new THREE.Color('#948269');
-const badlandsColorC = new THREE.Color('#5e463a');
+const badlandsColorA = new THREE.Color('#7d6248');
+const badlandsColorB = new THREE.Color('#a8916c');
+const badlandsColorC = new THREE.Color('#68482f');
 
 // Rich, saturated sapphire blue — darker in the depths but never reading
 // as black; a real poured-resin ocean over blue paint keeps its color
 // even in shadow; only the *highlight* should go near-white, not the
 // whole sea.
-const deepOceanColor = new THREE.Color('#0e3a5c');
-const midOceanColor = new THREE.Color('#186a95');
-const shallowOceanColor = new THREE.Color('#3ba3b6');
+const deepOceanColor = new THREE.Color('#0a4a78');
+const midOceanColor = new THREE.Color('#1479ad');
+const shallowOceanColor = new THREE.Color('#2bbccf');
 
 // The seabed, which until now was painted one flat blue on the assumption
 // that nothing would ever see it. In the reference photograph the resin is

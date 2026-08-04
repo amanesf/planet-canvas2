@@ -337,16 +337,16 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
 function speciesColor(species: Species, temperature: number, out: THREE.Color): THREE.Color {
   switch (species) {
     case 'conifer':
-      return out.setHSL(0.31, 0.34, 0.23, THREE.SRGBColorSpace);
+      return out.setHSL(0.31, 0.44, 0.24, THREE.SRGBColorSpace);
     case 'palm':
-      return out.setHSL(0.22, 0.5, 0.3, THREE.SRGBColorSpace);
+      return out.setHSL(0.22, 0.58, 0.32, THREE.SRGBColorSpace);
     case 'bamboo':
-      return out.setHSL(0.19, 0.52, 0.33, THREE.SRGBColorSpace);
+      return out.setHSL(0.19, 0.6, 0.35, THREE.SRGBColorSpace);
     case 'mangrove':
-      return out.setHSL(0.25, 0.42, 0.32, THREE.SRGBColorSpace);
+      return out.setHSL(0.25, 0.5, 0.33, THREE.SRGBColorSpace);
     case 'shrub':
       // the savanna belt yellows off as it dries
-      return out.setHSL(0.16 + temperature * 0.06, 0.42, 0.34, THREE.SRGBColorSpace);
+      return out.setHSL(0.16 + temperature * 0.06, 0.5, 0.35, THREE.SRGBColorSpace);
     case 'deadTree':
       return out.setHSL(0.08, 0.1, 0.55, THREE.SRGBColorSpace);
     case 'cactus':
@@ -402,18 +402,18 @@ function canopyClimate(
 
   // temperate baseline
   let hue = 0.215;
-  let saturation = 0.48;
-  let lightness = 0.3;
+  let saturation = 0.56;
+  let lightness = 0.32;
 
   // jungle: yellower and brighter
   hue = THREE.MathUtils.lerp(hue, 0.195, tropical);
-  saturation = THREE.MathUtils.lerp(saturation, 0.58, tropical);
-  lightness = THREE.MathUtils.lerp(lightness, 0.34, tropical);
+  saturation = THREE.MathUtils.lerp(saturation, 0.66, tropical);
+  lightness = THREE.MathUtils.lerp(lightness, 0.36, tropical);
 
   // taiga: bluer, darker, less saturated — spruce, not meadow
   hue = THREE.MathUtils.lerp(hue, 0.3, boreal);
-  saturation = THREE.MathUtils.lerp(saturation, 0.3, boreal);
-  lightness = THREE.MathUtils.lerp(lightness, 0.19, boreal);
+  saturation = THREE.MathUtils.lerp(saturation, 0.38, boreal);
+  lightness = THREE.MathUtils.lerp(lightness, 0.2, boreal);
 
   // and everything thins and dulls as it climbs toward the tree line
   const alpine = smoothstep(elevation, 0.09, 0.16);
@@ -506,13 +506,11 @@ export function buildSpecies(radius: number, bumpHeight: number): THREE.Group {
   // sampled at least as well as it was from its own dedicated sweep,
   // for roughly half the combined candidate count the five sweeps used.
   //
-  // Cut further on top of that: a real device crashed with the full
-  // scene rendering (shadows + post-processing) even after every other
-  // load-bearing setting came down (see SETTINGS in main.ts), and this
-  // count drives the instance totals across every layer below — fewer
-  // candidates means fewer instances means fewer things the shadow pass
-  // has to submit every frame, on top of less CPU time spent building it.
-  const CANDIDATES = 150000;
+  // Was cut hard chasing a crash on a real device that turned out to be
+  // caused by shadow mapping specifically, not by scene weight (see
+  // SETTINGS in main.ts and renderer.shadowMap.enabled in main.ts) —
+  // restored most of the way back now that shadows are off there instead.
+  const CANDIDATES = 300000;
 
   for (let i = 0; i < CANDIDATES; i++) {
     const z = rand() * 2 - 1;
