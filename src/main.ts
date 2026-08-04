@@ -1079,3 +1079,75 @@ globeTick = (t) => {
 };
 
 document.querySelector<HTMLDivElement>('#loading')?.remove();
+
+// Temporary, opt-in (`?debug=1`) numeric readout of this exact page's own
+// live plateSim.getColorTexture() — not a separate test instance. The
+// isolated advect-test.html diagnostic already proved the render-target
+// write itself works on a device that still shows no visible terrain
+// movement here; this settles whether that gap is in how *this* material
+// consumes the texture, or in the *combined* scene (this plateSim
+// instance running alongside the height-delta pass, vegetation drift,
+// and everything else the real page renders) versus the isolated test's
+// much simpler scene. Remove once that's answered.
+if (new URLSearchParams(location.search).get('debug') === '1') {
+  const debugEl = document.createElement('div');
+  debugEl.style.cssText =
+    'position:fixed;top:0;left:0;z-index:9999;background:rgba(0,0,0,0.75);color:#e8dfd0;' +
+    'font:12px monospace;padding:8px;white-space:pre-wrap;max-width:90vw;pointer-events:none;';
+  debugEl.textContent = 'debug: waiting for first sample…';
+  document.body.appendChild(debugEl);
+
+  const DEBUG_POINTS: [number, number][] = [
+    [256, 128],
+    [768, 128],
+    [256, 384],
+    [768, 384],
+    [512, 256],
+  ];
+  const debugPixelBuf = new Uint8Array(4);
+  let debugBaseline: number[][] | null = null;
+  let lastDebugSampleAt = 0;
+
+  const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const debugReadTarget = new THREE.WebGLRenderTarget(1, 1);
+  const debugBlitMaterial = new THREE.MeshBasicMaterial();
+  const debugBlitScene = new THREE.Scene();
+  debugBlitScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), debugBlitMaterial));
+
+  const sampleDebugPixels = (): number[][] => {
+    const colorTexture = plateSim.getColorTexture();
+    debugBlitMaterial.map = colorTexture;
+    const results: number[][] = [];
+    const prevTarget = renderer.getRenderTarget();
+    for (const [px, py] of DEBUG_POINTS) {
+      const u = (px + 0.5) / TEX_W;
+      const v = (py + 0.5) / TEX_H;
+      colorTexture.offset.set(u - 0.5, v - 0.5);
+      renderer.setRenderTarget(debugReadTarget);
+      renderer.render(debugBlitScene, orthoCam);
+      renderer.readRenderTargetPixels(debugReadTarget, 0, 0, 1, 1, debugPixelBuf);
+      results.push([debugPixelBuf[0], debugPixelBuf[1], debugPixelBuf[2]]);
+    }
+    renderer.setRenderTarget(prevTarget);
+    return results;
+  };
+
+  const debugTick = (t: number) => {
+    if (t - lastDebugSampleAt < 2) return;
+    lastDebugSampleAt = t;
+    const samples = sampleDebugPixels();
+    if (!debugBaseline) debugBaseline = samples;
+    let totalDiff = 0;
+    for (let i = 0; i < samples.length; i++) {
+      for (let c = 0; c < 3; c++) totalDiff += Math.abs(samples[i][c] - debugBaseline[i][c]);
+    }
+    const lines = samples.map((s, i) => `${i + 1}: (${s[0]},${s[1]},${s[2]})`);
+    debugEl.textContent = `t=${t.toFixed(0)}s uColorSim差分=${totalDiff}\n${lines.join('  ')}`;
+  };
+
+  const priorGlobeTick = globeTick;
+  globeTick = (t) => {
+    priorGlobeTick?.(t);
+    debugTick(t);
+  };
+}
