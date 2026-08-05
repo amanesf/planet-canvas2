@@ -13,6 +13,7 @@ import {
   canopyAt,
   temperatureAt,
   terracedElevation,
+  habitabilityAt,
   urbanAt,
   type ClimateGroup,
 } from './terrain';
@@ -375,6 +376,7 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
       break;
     }
     case 'dune': {
+      const rand0 = rand() * 6.283;
       // A dune is a ridge, not a lump.
       //
       // This used to be a sphere scaled to (1.5, 0.18, 0.55). An ellipsoid
@@ -389,32 +391,70 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
       // is that the mounds are long, that they all run the same way (see
       // duneBearing at the placement loop), and that they sink back into
       // the ground at their ends. Only the last of those is geometry.
-      const g = new THREE.SphereGeometry(0.05, 14, 8);
+      const R = 0.05;
+      const g = new THREE.SphereGeometry(R, 16, 8);
       // Gentle: sand is a smooth material. The noise amplitude that reads
       // as "weathered rock" on a butte reads as "gravel" here.
       displaceWithNoise(g, 0.09, 3.4, rand() * 500);
 
-      const CREST = 0.095; // half-length of the ridge along its crest line
+      const HALF = 0.1; // half-length of the ridge along its crest line
+      const HALF_WIDTH = 0.03;
+      const HEIGHT = 0.017;
       const pos = g.attributes.position as THREE.BufferAttribute;
       for (let i = 0; i < pos.count; i++) {
-        const x = pos.getX(i) * 1.9;
-        let y = pos.getY(i);
-        let z = pos.getZ(i) * 0.7;
-        // Flatten the underside. Only the half above the ground is ever
-        // seen, and carrying a buried lower hemisphere is what forced the
-        // whole shape to be so thin in the first place.
-        y = Math.max(y, 0) * 0.3;
+        const x0 = pos.getX(i);
+        const y0 = pos.getY(i);
+        const z0 = pos.getZ(i);
+        // Off the sphere's own cross-section first.
+        //
+        // Scaling a sphere along one axis was the whole bug, and tapering
+        // the *height* afterwards (the first fix) did not undo it: at a
+        // given x the sphere's cross-section is already narrowed by
+        // sqrt(R²−x²), so the plan outline stayed a lens whatever was done
+        // to y. Seen from above — which is how a globe is seen — a lens is
+        // an almond, and the sand still read as a scatter of almonds.
+        // Dividing that factor out gives a lateral coordinate that runs
+        // −1..1 at every station along the crest, so the plan shape can be
+        // stated outright instead of inherited.
+        const cross = Math.sqrt(Math.max(R * R - x0 * x0, 1e-6));
+        const ny = y0 / cross;
+        const nz = z0 / cross;
+        const t = x0 / R; // −1..1 along the crest
+        const a = Math.abs(t);
+        // A ridge holds its width nearly to its ends and then rounds off,
+        // rather than coming to a point: this is flat until about 0.8 and
+        // falls to zero over the last fifth.
+        const widthProfile = Math.pow(Math.max(0, 1 - Math.pow(a, 7)), 0.4);
+        // The crest itself runs level for most of the length and sinks into
+        // the sand at both ends.
+        const heightProfile = Math.pow(Math.max(0, 1 - a * a), 0.8);
+        // Sinuous, not ruled. A real linear dune wanders by a fraction of
+        // its own width along its length; dead-straight ridges laid in
+        // parallel read as corduroy.
+        const meander = Math.sin(t * 2.3 + rand0) * 0.5;
+        let z = (nz + meander) * HALF_WIDTH * widthProfile;
         // The slip face. A dune is not symmetric — the windward side
         // climbs gently and the lee side drops at the angle of repose, and
         // that asymmetry is most of what says "wind put this here" rather
         // than "something was dropped here".
         if (z > 0) z *= 0.55;
-        // Taper the crest down into the sand at both ends instead of
-        // leaving it hanging, which is what made the outline an almond.
-        const along = Math.min(1, Math.abs(x) / CREST);
-        y *= 1 - along * along;
-        pos.setXYZ(i, x, y, z);
+        // A crest, not a tube. The sphere's own cross-section is a
+        // semicircle, so taking the height straight off it gave a rounded
+        // bolster lying on the sand — read as a sausage where the old
+        // version read as an almond. Sand does not hold that shape: it
+        // stands at the angle of repose, which makes a ridge with a line
+        // along the top, gentle on the windward side and steep on the lee
+        // (the z compression above). Stating the profile against the
+        // lateral coordinate instead gives that ridge line.
+        //
+        // Flat underneath either way: only the half above the ground is
+        // ever seen, and carrying a buried lower hemisphere is what forced
+        // the whole shape to be so thin in the first place.
+        const flank = Math.pow(Math.max(0, 1 - Math.abs(nz)), 0.62);
+        const y = ny > 0 ? HEIGHT * heightProfile * flank : 0;
+        pos.setXYZ(i, t * HALF, y, z);
       }
+      g.computeVertexNormals();
       pos.needsUpdate = true;
       parts.push(g);
       break;
@@ -790,7 +830,14 @@ export function buildSpecies(
   // green, more contrast between wood and clearing.
   const FOREST_SPACING_DENSE = 0.0057;
   const FOREST_SPACING_SPARSE = 0.017;
-  const forestHash = new SpatialHash(FOREST_SPACING_SPARSE);
+  // Farmed country stands its trees further apart (see `farmed` below).
+  // The hash has to be built at the largest spacing anything will ever ask
+  // for or it silently misses neighbours three cells away — the note in
+  // §7 of the gap analysis, and the reason this constant exists rather
+  // than the sparse one being handed straight to the hash.
+  const FARM_MAX_THIN = 0.62;
+  const FOREST_SPACING_MAX = FOREST_SPACING_SPARSE / Math.sqrt(1 - FARM_MAX_THIN);
+  const forestHash = new SpatialHash(FOREST_SPACING_MAX);
   const forestPoints: GroundPoint[] = [];
 
   const grassMinSpacing = 0.011;
@@ -872,12 +919,35 @@ export function buildSpecies(
     // Note the patches are small — about 0.018 rad even for Tokyo — so any
     // measurement of this has to use city-sized bands. Averaged over a
     // 0.03 rad cap the effect vanishes into ground that was never urban.
-    const urban = Math.min(1, urbanAt(dir) * 2.6);
+    const urban = Math.min(1, urbanAt(dir) * 3.4);
+    // Farmland, without a cropland raster.
+    //
+    // Cities are not the only mark people leave and they are far from the
+    // biggest one: the country around them is farmed. With nothing saying
+    // so, every temperate continent came out under one unbroken canopy
+    // from coast to coast — a fair picture of what the Köppen classes say
+    // *could* grow there, and a poor picture of what is there, which is
+    // fields. The globe already has one answer to "is this settled land"
+    // (habitabilityAt: climate, elevation, and the halo round the city
+    // list — the same field the night lights are drawn from), so the trees
+    // read that rather than a second invented one.
+    //
+    // Thinning, never clearing, and only where the field is emphatic:
+    // it opens the canopy over Iowa, the Ganges and the North China plain
+    // and leaves the Amazon, the Congo and the taiga shut. Grass and scrub
+    // are untouched — a cleared field is not bare ground, and the layers
+    // below are what keep it from reading as scorched.
+    const farmed = THREE.MathUtils.smoothstep(habitabilityAt(dir, s.height), 0.35, 0.85) * 0.62;
     const clearedByCity = (strength: number) => strength > 0 && rand() < strength;
 
     // ---- fourteen-species classification ----
     const species = classify(s, rand);
-    if (species && !clearedByCity(urban) && !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)) {
+
+    // Trees only: a field is cleared of forest, not of the butte standing
+    // in it, and the scrub layer is what a hedgerow reads as.
+    const clearable = species !== null && !MINERAL.has(species) && species !== 'shrub';
+    const thinned = urban + (1 - urban) * (clearable ? farmed : 0);
+    if (species && !clearedByCity(thinned) && !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)) {
       const point = dir.clone();
       coreHash.add(point);
       placements.push({ dir: point, height: s.height, species });
@@ -943,11 +1013,19 @@ export function buildSpecies(
       // stands with gaps between them, not to have less of it.
       const density = s.canopy * (1.5 + patch * 1.5) * (0.55 + clearing * 0.75);
       // Closed canopy packs tight, open woodland stands apart.
-      const spacing = THREE.MathUtils.lerp(
-        FOREST_SPACING_SPARSE,
-        FOREST_SPACING_DENSE,
-        THREE.MathUtils.clamp(s.canopy, 0, 1),
-      );
+      //
+      // Farmland opens it further, and it has to do that *here*, in the
+      // spacing, rather than by rejecting candidates. A closed stand is
+      // packing-limited: throw a candidate away and the next one along
+      // simply takes the place it would have had, so a rejection test
+      // measured a 44% thinning over the Ganges and removed 2% of the
+      // trees. Distance is the only thing a Poisson-disc layer listens to.
+      const spacing =
+        THREE.MathUtils.lerp(
+          FOREST_SPACING_SPARSE,
+          FOREST_SPACING_DENSE,
+          THREE.MathUtils.clamp(s.canopy, 0, 1),
+        ) / Math.sqrt(1 - farmed);
       if (
         rand() < density &&
         !clearedByCity(urban) &&

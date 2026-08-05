@@ -2578,17 +2578,21 @@ interface UrbanFeature {
 // reliably survives to the screen, and a good deal wider than the real
 // conurbation. A souvenir globe exaggerates its landmarks.
 //
-// This used to be 0.014 + size*0.026 for 28 cities. The list is now four
-// times as long, and the measured total urban area was already in the right
-// band (about 1% of land) at 28 — the layer's problem was count and
-// distribution, never area — so the per-patch radius comes down to hold the
-// total where it was.
+// This was cut to 0.0085 + size*0.0135 when the list went from 28 cities to
+// 186, to hold the *area* where it had been. Correct arithmetic, wrong
+// target: measured at the shipped camera, that made Tokyo 7 pixels across
+// and Cairo the same, on a globe that fills about 500. A city that small is
+// not a place, it is a speck of grey — and with the tree line running over
+// it there was nothing to see at all. Legibility, not census accuracy, is
+// what the patch radius is for on a hand-sized model; the size term is what
+// keeps Tokyo bigger than Perth, and the absolute scale is set by what can
+// be seen.
 const cityPatch = (lat: number, lon: number, size: number): UrbanFeature => ({
   a: latLonToDir(lat, lon),
   b: null,
   n: null,
   cosSpan: 1,
-  radius: 0.0085 + size * 0.0135,
+  radius: 0.015 + size * 0.023,
   peak: 0.55 + size * 0.45,
 });
 
@@ -2618,7 +2622,7 @@ for (const [lat1, lon1, lat2, lon2, width, intensity] of CONURBATIONS) {
 // ragged edge entirely.
 const URBAN_BUCKET_LAT = 36;
 const URBAN_BUCKET_LON = 72;
-const URBAN_BUCKETS: Int32Array[] = (() => {
+const buildUrbanBuckets = (): Int32Array[] => {
   const lists: number[][] = Array.from(
     { length: URBAN_BUCKET_LAT * URBAN_BUCKET_LON },
     () => [],
@@ -2641,7 +2645,9 @@ const URBAN_BUCKETS: Int32Array[] = (() => {
     }
   }
   return lists.map((l) => Int32Array.from(l));
-})();
+};
+
+const URBAN_BUCKETS = buildUrbanBuckets();
 
 /** Angular distance from `dir` to a feature's centre point or centre line. */
 function urbanDistance(dir: THREE.Vector3, f: UrbanFeature): number {
@@ -2666,7 +2672,7 @@ function urbanDistance(dir: THREE.Vector3, f: UrbanFeature): number {
   return Math.min(dir.angleTo(f.a), dir.angleTo(f.b));
 }
 
-function urbanBucketFor(dir: THREE.Vector3): Int32Array {
+function bucketIndex(dir: THREE.Vector3): number {
   const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
   let phi = Math.atan2(dir.z, -dir.x);
   if (phi < 0) phi += Math.PI * 2;
@@ -2675,7 +2681,11 @@ function urbanBucketFor(dir: THREE.Vector3): Int32Array {
     URBAN_BUCKET_LON - 1,
     Math.floor((phi / (Math.PI * 2)) * URBAN_BUCKET_LON),
   );
-  return URBAN_BUCKETS[iy * URBAN_BUCKET_LON + ix];
+  return iy * URBAN_BUCKET_LON + ix;
+}
+
+function urbanBucketFor(dir: THREE.Vector3): Int32Array {
+  return URBAN_BUCKETS[bucketIndex(dir)];
 }
 
 /**
@@ -2784,8 +2794,17 @@ function settlementHaloAt(dir: THREE.Vector3): number {
 
 let settlementClimateGrid: Float32Array | null = null;
 
-/** How plausible it is that anyone lives at this point, 0..1. */
-function habitabilityAt(dir: THREE.Vector3, height: number): number {
+/**
+ * How plausible it is that anyone lives at this point, 0..1.
+ *
+ * Exported because the vegetation scatter thins the forest by it (see
+ * species.ts): people do not only build cities, they clear the country
+ * around them, and this — climate, elevation, and a halo round the city
+ * list — is already this project's one answer to "is this settled land".
+ * Inventing a second one for the trees is the split this codebase keeps
+ * having to undo.
+ */
+export function habitabilityAt(dir: THREE.Vector3, height: number): number {
   if (height < SEA_LEVEL) return 0;
   const temperature = temperatureAt(dir, height);
   if (temperature < 0.02) return 0; // nobody lights up the ice caps
