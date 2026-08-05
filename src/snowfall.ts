@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { zonalWind } from './clouds';
 import { mulberry32 } from './spatialHash';
-import { sampledHeight, snowinessAt } from './terrain';
+import { precipitationProfileAt, sampledHeight, snowinessAt } from './terrain';
 
 // ---------------------------------------------------------------------
 // Falling snow
@@ -41,6 +42,38 @@ import { sampledHeight, snowinessAt } from './terrain';
 // is exactly the split this project keeps having to undo (see §2-6 and the
 // urbanAt unification in the doc), so the falling snow reads the paint's
 // field rather than re-deriving one.
+//
+// Fixed sites are the right answer to *where snow belongs*; they were the
+// wrong answer to *where it is snowing now*. Measured before this change:
+// of 2600 flakes, 2390 were falling at any given instant and the set barely
+// moved — 10.7% of it turned over in ten seconds, and all of that churn was
+// the fade at the top and bottom of a flake's own fall, not weather. The
+// planet's snow was therefore a fixture: a viewer could watch for a minute
+// and see nothing begin and nothing end.
+//
+// What decides "now" is the same pair the rain uses — the season clock and
+// `precipitationAtSeason` — plus a front that drifts. The first two are
+// cheap to keep honest without touching the CPU each frame: the site is
+// fixed, so its rainfall *profile* can be baked (mean amount, and how hard
+// the year swings it), and the shader replays `precipitationAtSeason`'s own
+// arithmetic against the season uniform. That gives a Mediterranean coast
+// that snows in the winter half and a monsoon slope that does not, from the
+// same numbers the clouds and the rain veils read.
+//
+// The drift is a wave in longitude carried by `zonalWind(lat)`, the wind
+// the clouds and the ash plumes already share — a second wind field here
+// would be the same duplication the paragraph above is about. Four fronts
+// around the planet make each band about 1.6 world units wide, roughly
+// 170 px at the shipped camera, so an edge is a thing you can watch cross a
+// mountain range rather than a flicker; they come round every 30–90 s
+// depending on the latitude's wind, against a 60 s year.
+//
+// Rainfall sets how much of that cycle is open: a genuinely wet snow
+// climate snows through most of the passage of a front, a dry one only at
+// its very crest. Note it is rainfall, not cloud cover, that does the
+// gating. Gating on the actual clouds is settled as impossible at this
+// cloud budget — mean cover is 5.5% of the globe and 1.0% over the snow
+// sites, so it deletes the snow (§2-19, G36). Do not re-try it.
 
 export interface Snowfall {
   points: THREE.Points;
@@ -69,6 +102,14 @@ export function buildSnowfall(
   const snowiness = new Float32Array(COUNT);
   /** how much this flake needs local winter before it may fall */
   const seasonality = new Float32Array(COUNT);
+  /** mean annual rainfall at this site, the `amount` of its profile */
+  const wetness = new Float32Array(COUNT);
+  /** how far the year swings that rainfall, already folded for hemisphere */
+  const swing = new Float32Array(COUNT);
+  /** the site's longitude, which is what a front sweeps along */
+  const lons = new Float32Array(COUNT);
+  /** and how fast longitude runs under the wind at its latitude */
+  const omegas = new Float32Array(COUNT);
 
   const probe = new THREE.Vector3();
 
@@ -125,6 +166,28 @@ export function buildSnowfall(
     // number carries both: the less reliably snowy the site, the more it
     // has to wait for its own winter.
     seasonality[i] = 1 - Math.min(1, w);
+
+    // The weather half, baked once because the site never moves. This is
+    // `precipitationAtSeason` taken apart: it is
+    // `amount * (1 + seasonality * summerBias * localSummer)`, and the only
+    // term in it that changes with the clock is `localSummer`, which is the
+    // season uniform with the hemisphere sign folded in. Everything else is
+    // a property of this point, so the shader can finish the expression for
+    // the cost of one multiply-add and still agree exactly with what the
+    // clouds and the rain veils compute on the CPU.
+    const profile = precipitationProfileAt(probe);
+    wetness[i] = profile.amount;
+    swing[i] = profile.seasonality * profile.summerBias * (probe.y >= 0 ? 1 : -1);
+    // Same convention as terrain's latLonToDir, so a front here runs the
+    // same way round the planet as the cloud bands overhead.
+    lons[i] = Math.atan2(probe.z, -probe.x) - Math.PI;
+    // The wind is `zonalWind`, shared; what is done to it here is only the
+    // conversion from a speed along the great circle to a rate of change of
+    // longitude, clamped exactly as clouds.ts clamps it so the 1/cos does
+    // not run away at the pole itself.
+    const lat = Math.asin(THREE.MathUtils.clamp(probe.y, -1, 1));
+    omegas[i] = zonalWind(lat) / Math.max(Math.cos(lat), 0.22);
+
     phases[i] = rand();
     speeds[i] = 0.05 + rand() * 0.05;
     sizes[i] = 1.0 + rand() * 1.5;
@@ -150,6 +213,10 @@ export function buildSnowfall(
   geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
   geometry.setAttribute('aSnow', new THREE.BufferAttribute(snowiness, 1));
   geometry.setAttribute('aSeasonal', new THREE.BufferAttribute(seasonality, 1));
+  geometry.setAttribute('aWet', new THREE.BufferAttribute(wetness, 1));
+  geometry.setAttribute('aSwing', new THREE.BufferAttribute(swing, 1));
+  geometry.setAttribute('aLon', new THREE.BufferAttribute(lons, 1));
+  geometry.setAttribute('aOmega', new THREE.BufferAttribute(omegas, 1));
 
   const uniforms = {
     uTime: { value: 0 },
@@ -169,6 +236,10 @@ export function buildSnowfall(
       attribute float aSize;
       attribute float aSnow;
       attribute float aSeasonal;
+      attribute float aWet;
+      attribute float aSwing;
+      attribute float aLon;
+      attribute float aOmega;
       uniform float uTime;
       uniform float uSeasonTilt;
       uniform float uRadius;
@@ -205,7 +276,26 @@ export function buildSnowfall(
         // fade in as it leaves the cloud and out as it reaches the ground,
         // so flakes neither pop into existence nor pile up as a bright ring
         float ends = smoothstep(0.0, 0.12, fall) * (1.0 - smoothstep(0.82, 1.0, fall));
-        vAlpha = aSnow * season * ends * 0.42;
+
+        // Is it snowing *here, now*. Rainfall at this instant of the year,
+        // finishing precipitationAtSeason from the baked profile.
+        float wetNow = clamp(aWet * (1.0 + aSwing * uSeasonTilt), 0.0, 1.0);
+        // The front: one wave in longitude drifting at this latitude's own
+        // wind. The tilt on aDir.y is what stops it reading as a set of
+        // rings around the axis — the band crosses a coastline at an angle,
+        // the way a front does.
+        float front = 0.5 + 0.5 * sin(4.0 * (aLon - aOmega * uTime) + 2.6 * aDir.y);
+        // How much of the front's passage this place is open for. Measured
+        // over the snow sites the mean rainfall is 0.196 against a planet
+        // mean of 0.393 — snow country is dry country — so the edges are
+        // set low: at 0.42 a site snows through most of a front, at 0.06 it
+        // only catches the crest, and the difference between the two is
+        // what makes the snow arrive in one place while it stops in
+        // another instead of the whole field pulsing together.
+        float openness = smoothstep(0.10, 0.32, wetNow);
+        float gate = 0.85 - 0.80 * openness;
+        float live = smoothstep(gate, gate + 0.16, front);
+        vAlpha = aSnow * season * ends * live * 0.42;
       }
     `,
     fragmentShader: `
