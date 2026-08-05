@@ -622,6 +622,32 @@ const KOPPEN_BADLANDS = [
 ];
 
 /**
+ * How densely people settle each climate, 0..1 — the shape of the night
+ * lights map, not of the biosphere.
+ *
+ * The scattered night-lights pass used to score habitability as "warm, low,
+ * not arid", which is a description of a *rainforest*: the Amazon, the
+ * Congo and island south-east Asia came out brighter than Europe or the
+ * eastern United States, the exact inverse of the photograph everybody has
+ * seen. Warmth is not the variable. People live where the climate is
+ * temperate-humid or monsoonal — Cfa, Cfb, Cwa, Dwa, Dfa/Dfb, the
+ * Mediterranean Cs — and they conspicuously do not live in everwet
+ * rainforest (Af), sand desert (BW), taiga (Dfc/Dwc) or tundra.
+ */
+const KOPPEN_SETTLEMENT = [
+  0.15, // 0: no data
+  0.10, 0.32, 0.50, // Af Am Aw — rainforest is emphatically not where people live
+  0.03, 0.03, 0.26, 0.24, // BWh BWk BSh BSk — the Sahara and the outback go dark
+  0.85, 0.80, 0.35, // Csa Csb Csc — the Mediterranean rim, California
+  0.95, 0.68, 0.30, // Cwa Cwb Cwc — south China, the Indian plateau, highland Mexico
+  1.00, 1.00, 0.45, // Cfa Cfb Cfc — the US east, western Europe, Japan, east China
+  0.38, 0.34, 0.14, 0.05, // Dsa Dsb Dsc Dsd
+  0.70, 0.44, 0.10, 0.03, // Dwa Dwb Dwc Dwd — Manchuria and the Korean peninsula
+  0.68, 0.58, 0.06, 0.02, // Dfa Dfb Dfc Dfd — Dfc is Siberia and it is empty
+  0.02, 0.00, // ET EF
+];
+
+/**
  * The Köppen group a class belongs to — the first one or two letters,
  * which is the level the eye actually reads: "rainforest", "savanna",
  * "sand desert", "steppe", "Mediterranean", "taiga", "tundra". Species
@@ -787,32 +813,220 @@ const FIELD_H = 192;
 // competing for attention, and against that backdrop those hard cell edges
 // showed up as a visible grid of lines once the (also newly sensitive)
 // relief/wash paint picked up the tiny slope spike at every boundary.
-function sampleField(grid: Float32Array, dir: THREE.Vector3): number {
+function sampleGrid(
+  grid: Float32Array,
+  width: number,
+  height: number,
+  dir: THREE.Vector3,
+): number {
   const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
   let phi = Math.atan2(dir.z, -dir.x);
   if (phi < 0) phi += Math.PI * 2;
-  const fx = (phi / (Math.PI * 2)) * FIELD_W;
-  const fy = (theta / Math.PI) * FIELD_H;
+  const fx = (phi / (Math.PI * 2)) * width;
+  const fy = (theta / Math.PI) * height;
 
   const x0 = Math.floor(fx);
-  const y0 = THREE.MathUtils.clamp(Math.floor(fy), 0, FIELD_H - 1);
+  const y0 = THREE.MathUtils.clamp(Math.floor(fy), 0, height - 1);
   const tx = fx - x0;
   const ty = fy - y0;
-  const x0w = ((x0 % FIELD_W) + FIELD_W) % FIELD_W;
-  const x1w = (x0w + 1) % FIELD_W;
-  const y1 = Math.min(y0 + 1, FIELD_H - 1);
+  const x0w = ((x0 % width) + width) % width;
+  const x1w = (x0w + 1) % width;
+  const y1 = Math.min(y0 + 1, height - 1);
 
-  const g00 = grid[y0 * FIELD_W + x0w];
-  const g10 = grid[y0 * FIELD_W + x1w];
-  const g01 = grid[y1 * FIELD_W + x0w];
-  const g11 = grid[y1 * FIELD_W + x1w];
+  const g00 = grid[y0 * width + x0w];
+  const g10 = grid[y0 * width + x1w];
+  const g01 = grid[y1 * width + x0w];
+  const g11 = grid[y1 * width + x1w];
   return THREE.MathUtils.lerp(THREE.MathUtils.lerp(g00, g10, tx), THREE.MathUtils.lerp(g01, g11, tx), ty);
+}
+
+function sampleField(grid: Float32Array, dir: THREE.Vector3): number {
+  return sampleGrid(grid, FIELD_W, FIELD_H, dir);
 }
 
 let aridityGrid: Float32Array | null = null;
 export function aridityAt(dir: THREE.Vector3): number {
   aridityGrid ??= bakeField(FIELD_W, FIELD_H, rawAridityAt);
   return sampleField(aridityGrid, dir);
+}
+
+/**
+ * How much rain falls here over a year, 0..1 — where 1 is an everwet
+ * equatorial rainforest and 0 is the core of a hyper-arid desert.
+ *
+ * This is deliberately a *table*, not a simulation. The second letter of a
+ * Köppen class is itself a precipitation classification (f everwet, m
+ * monsoon, w winter-dry, s summer-dry), so the information is already in
+ * the raster the globe has been loading all along; it was simply never read
+ * as rainfall. Values are eyeballed against real annual totals normalised
+ * with 1.0 ≈ 3000 mm/yr, so the ordering — not the absolute number — is the
+ * thing that has to be right.
+ */
+const KOPPEN_PRECIPITATION = [
+  0.35, // 0: no data — only reached where the class map calls this sea
+  1.00, 0.92, 0.58, // Af Am Aw — everwet, monsoon, savanna
+  0.02, 0.05, 0.22, 0.25, // BWh BWk BSh BSk — the deserts, then the steppes
+  0.34, 0.42, 0.44, // Csa Csb Csc — Mediterranean: a real wet season, a dry year
+  0.62, 0.60, 0.54, // Cwa Cwb Cwc — monsoonal subtropics
+  0.72, 0.68, 0.66, // Cfa Cfb Cfc — everwet temperate
+  0.30, 0.33, 0.34, 0.28, // Dsa Dsb Dsc Dsd
+  0.50, 0.48, 0.42, 0.34, // Dwa Dwb Dwc Dwd
+  0.60, 0.58, 0.46, 0.38, // Dfa Dfb Dfc Dfd
+  0.20, 0.06, // ET EF — cold and therefore dry; the ice sheet gets almost nothing
+];
+
+/**
+ * How concentrated that rain is into part of the year, 0..1. An f class is
+ * ~0 (it rains all year), a w or s class is high (Aw and Cs are *defined*
+ * by when the rain falls, not by how much of it there is).
+ */
+const KOPPEN_PRECIP_SEASONALITY = [
+  0.3, // 0: no data
+  0.08, 0.55, 0.85, // Af Am Aw
+  0.5, 0.5, 0.7, 0.6, // BWh BWk BSh BSk
+  0.8, 0.75, 0.7, // Csa Csb Csc
+  0.8, 0.78, 0.7, // Cwa Cwb Cwc
+  0.15, 0.12, 0.15, // Cfa Cfb Cfc
+  0.7, 0.68, 0.6, 0.6, // Dsa Dsb Dsc Dsd
+  0.72, 0.7, 0.62, 0.6, // Dwa Dwb Dwc Dwd
+  0.18, 0.15, 0.2, 0.25, // Dfa Dfb Dfc Dfd
+  0.35, 0.3, // ET EF
+];
+
+/**
+ * *When* it falls, −1..+1: +1 means the rain comes in the local summer
+ * (monsoon, savanna wet season, continental thunderstorm season), −1 means
+ * the local winter (Mediterranean, the marine west coasts' winter storm
+ * track). "Local" is the point's own hemisphere — a consumer that knows the
+ * calendar has to fold in the sign of `dir.y` itself, or use
+ * `precipitationAtSeason` below, which does it.
+ */
+const KOPPEN_PRECIP_SUMMER_BIAS = [
+  0, // 0: no data
+  0, 0.8, 1.0, // Af Am Aw
+  0.2, 0.1, 0.7, 0.2, // BWh BWk BSh BSk
+  -1.0, -1.0, -1.0, // Csa Csb Csc — dry summer, by definition
+  1.0, 1.0, 1.0, // Cwa Cwb Cwc — dry winter, by definition
+  0.2, -0.4, -0.5, // Cfa Cfb Cfc — Cfb's rain leans to the winter storm track
+  -0.9, -0.9, -0.8, -0.8, // Dsa Dsb Dsc Dsd
+  1.0, 1.0, 0.9, 0.9, // Dwa Dwb Dwc Dwd
+  0.4, 0.3, 0.4, 0.3, // Dfa Dfb Dfc Dfd — convective summer maximum inland
+  0.3, 0.2, // ET EF
+];
+
+/**
+ * What the class map cannot tell us: rainfall over the open ocean, where
+ * there is no Köppen class at all and `climateClassAt` falls back to 0.
+ *
+ * Clouds and rain are the first consumers of this field and most of the
+ * planet's surface is water, so a flat no-data value there would hand the
+ * sky a uniform world. The zonal mean is the one piece of climatology that
+ * survives having no map: the ITCZ is wet, the subtropical highs at ±25°
+ * are the driest places on the planet including at sea, the mid-latitude
+ * storm tracks are wet again, and the poles are dry.
+ */
+function zonalPrecipitation(y: number): number {
+  const lat = Math.asin(THREE.MathUtils.clamp(y, -1, 1)) * (180 / Math.PI);
+  const bell = (centre: number, width: number, amp: number): number =>
+    amp * Math.exp(-Math.pow((lat - centre) / width, 2));
+  return THREE.MathUtils.clamp(
+    0.12 + bell(0, 11, 0.78) + bell(50, 17, 0.42) + bell(-50, 17, 0.42),
+    0,
+    1,
+  );
+}
+
+function rawPrecipitationAt(dir: THREE.Vector3): number {
+  const climate = climateClassAt(dir);
+  // Over water, always the zonal profile. `climateClassAt` deliberately
+  // reaches outward for the nearest classified pixel so that no coastline
+  // falls back to no-data, which is right for paint but wrong here: out in
+  // the Pacific it finds a speck of an island and paints its Af rainforest
+  // rainfall across a whole grid cell of open sea, and the map came out
+  // with cyan rectangles scattered over the tropics.
+  const sea = sampledHeight(dir).raw < SEA_LEVEL;
+  const base = sea || climate === 0
+    ? zonalPrecipitation(dir.y)
+    : KOPPEN_PRECIPITATION[climate];
+  // Same treatment aridity gets, for the same reason: the raster is
+  // 2048×1024 nearest-neighbour and its class edges read as rectangular
+  // steps unless something breaks them up. Committed classes (true desert,
+  // true rainforest) hold the noise back so the region stays one thing;
+  // the middling classes, where the real boundary genuinely is a gradient,
+  // take more of it.
+  const local = fbm3(dir.x * 2.9 - 314.1, dir.y * 2.9 - 314.1, dir.z * 2.9 - 314.1, 3);
+  const commitment = Math.abs(base - 0.5) * 2;
+  return THREE.MathUtils.clamp(base + local * 0.24 * (1 - commitment), 0, 1);
+}
+
+let precipitationGrid: Float32Array | null = null;
+let precipSeasonalityGrid: Float32Array | null = null;
+let precipSummerBiasGrid: Float32Array | null = null;
+
+/**
+ * Annual precipitation at a direction, roughly 0..1.
+ *
+ * The single source every weather system is meant to hang off — clouds,
+ * rain, snow, lightning and the river weights — instead of each one
+ * inventing its own weather from its own basis, which is how a clear sky
+ * came to snow and a rainless desert came to have rivers.
+ *
+ * Baked and bilinearly sampled like the canopy field: unlike the class
+ * index, rainfall genuinely is continuous, and a rainforest fades toward
+ * its margin rather than stopping at a line.
+ */
+export function precipitationAt(dir: THREE.Vector3): number {
+  precipitationGrid ??= bakeField(FIELD_W, FIELD_H, rawPrecipitationAt);
+  return sampleField(precipitationGrid, dir);
+}
+
+/** Annual rainfall plus the shape of its year. See `precipitationAt`. */
+export interface PrecipitationSample {
+  /** Annual total, roughly 0..1. */
+  amount: number;
+  /** How concentrated into one part of the year, 0 (even) .. 1 (one season). */
+  seasonality: number;
+  /** −1 the wet season is local winter … +1 it is local summer. */
+  summerBias: number;
+}
+
+/**
+ * The full profile. A single scalar cannot carry Aw and Cs, whose entire
+ * identity is *when* the rain falls rather than how much of it there is —
+ * a savanna and a Mediterranean coast can have the same annual total and
+ * opposite years — so the seasonal part is exposed here alongside it.
+ */
+export function precipitationProfileAt(dir: THREE.Vector3): PrecipitationSample {
+  // Same sea rule as `rawPrecipitationAt`: an ocean cell takes the no-data
+  // entry rather than the rainfall calendar of the nearest island.
+  precipSeasonalityGrid ??= bakeField(FIELD_W, FIELD_H, (d) =>
+    KOPPEN_PRECIP_SEASONALITY[sampledHeight(d).raw < SEA_LEVEL ? 0 : climateClassAt(d)]);
+  precipSummerBiasGrid ??= bakeField(FIELD_W, FIELD_H, (d) =>
+    KOPPEN_PRECIP_SUMMER_BIAS[sampledHeight(d).raw < SEA_LEVEL ? 0 : climateClassAt(d)]);
+  return {
+    amount: precipitationAt(dir),
+    seasonality: sampleField(precipSeasonalityGrid, dir),
+    summerBias: sampleField(precipSummerBiasGrid, dir),
+  };
+}
+
+/**
+ * Precipitation as it stands at one moment of the year.
+ *
+ * `northernSummer` runs −1 (northern midwinter) .. +1 (northern midsummer),
+ * which is the form the season animation already thinks in; the hemisphere
+ * flip is done here from `dir.y` so no consumer has to remember it. A
+ * monsoon savanna swings hard between the two ends, an everwet rainforest
+ * barely moves, and a Mediterranean coast runs exactly out of phase with
+ * the savanna at the same latitude.
+ */
+export function precipitationAtSeason(dir: THREE.Vector3, northernSummer: number): number {
+  const p = precipitationProfileAt(dir);
+  const localSummer = dir.y >= 0 ? northernSummer : -northernSummer;
+  // Seasonality only redistributes the year, it does not add water: at
+  // seasonality 1 the wet half gets twice the mean and the dry half nothing.
+  const swing = p.seasonality * p.summerBias * localSummer;
+  return THREE.MathUtils.clamp(p.amount * (1 + swing), 0, 1);
 }
 
 // same threshold biomeColor uses to start blending toward desert — shared
@@ -2274,24 +2488,75 @@ function drawGlow(
   ctx.fill();
 }
 
+// How thickly the country around a point is settled, at the scale of a
+// region rather than of a town: the same URBAN_FEATURES table the paint and
+// the vegetation cull already read, blurred out to a few hundred kilometres.
+//
+// This is what tells the scatter that the Ganges plain, the North China
+// plain, the Rhine and the Nile are full of people while the Amazon and
+// central Siberia are not. The climate table above says which climates are
+// habitable; this says which of them humanity actually filled. Deliberately
+// the *same* source as the city dots, because two systems computing "where
+// the people are" from two different expressions is precisely how the snow
+// line and the snow flecks came to disagree.
+//
+// Baked coarse (192×96, a 1.9° cell) on purpose. The urban buckets cannot
+// serve this — they are built for a 0.02 rad patch and reject anything
+// further away — and at this scale smearing is the point, so the objection
+// that killed a bake for `urbanAt` does not apply.
+const SETTLEMENT_W = 192;
+const SETTLEMENT_H = 96;
+// ~0.13 rad ≈ 800 km: wide enough that the Ganges corridor and the North
+// China plain merge into single lit regions, narrow enough that Manaus
+// stays a dot in the dark rather than lighting the whole Amazon.
+const SETTLEMENT_REACH = 0.13;
+let settlementHaloGrid: Float32Array | null = null;
+
+function settlementHaloAt(dir: THREE.Vector3): number {
+  settlementHaloGrid ??= bakeField(SETTLEMENT_W, SETTLEMENT_H, (d) => {
+    // Combined as independent probabilities rather than a max, so a dense
+    // cluster of medium cities (the Rhine–Ruhr, the Kansai) reads brighter
+    // than one isolated large one, which is the actual difference between
+    // Europe and, say, Buenos Aires.
+    let miss = 1;
+    for (const f of URBAN_FEATURES) {
+      const dist = urbanDistance(d, f);
+      const reach = SETTLEMENT_REACH + f.radius * 2;
+      if (dist > reach * 2.2) continue;
+      const w = f.peak * Math.exp(-Math.pow(dist / reach, 2));
+      miss *= 1 - THREE.MathUtils.clamp(w, 0, 0.97);
+    }
+    return 1 - miss;
+  });
+  return sampleGrid(settlementHaloGrid, SETTLEMENT_W, SETTLEMENT_H, dir);
+}
+
+let settlementClimateGrid: Float32Array | null = null;
+
 /** How plausible it is that anyone lives at this point, 0..1. */
 function habitabilityAt(dir: THREE.Vector3, height: number): number {
   if (height < SEA_LEVEL) return 0;
   const temperature = temperatureAt(dir, height);
-  if (temperature < 0.2) return 0; // nobody lights up the ice caps
+  if (temperature < 0.02) return 0; // nobody lights up the ice caps
+  // High country is thin country — the Tibetan plateau, the altiplano and
+  // the high Andes are dark on every night image.
   const elevationPenalty = smoothstep(height - SEA_LEVEL, 0.05, 0.22);
-  // The Sahara has to actually go dark. A gentler ramp here left the whole
-  // desert belt glowing as brightly as Europe, which is the one thing
-  // everybody knows a night-lights image does *not* look like.
-  const dryPenalty = smoothstep(aridityAt(dir), DESERT_ARIDITY_THRESHOLD - 0.16, 0.6);
-  const cold = smoothstep(temperature, 0.2, 0.42);
-  // Population is clustered, not uniform: one low-frequency field decides
-  // where the settled regions are at all, so the scatter comes out as
-  // populated belts with genuinely empty country between them rather than
-  // an even dusting over every habitable pixel.
-  const settled = smoothstep(clumpDensity(dir, 8123, 2.2), 0.3, 0.62);
-  return cold * (1 - elevationPenalty) * (1 - dryPenalty) * settled;
+  // Which climates people fill, and which of those they actually filled.
+  // Warmth used to stand in for both, which is why the wettest, hottest,
+  // emptiest places on the planet were the brightest ones here.
+  settlementClimateGrid ??= bakeField(FIELD_W, FIELD_H, (d) => KOPPEN_SETTLEMENT[climateClassAt(d)]);
+  const climate = sampleField(settlementClimateGrid, dir);
+  const halo = settlementHaloAt(dir);
+  // Population is clustered, not uniform: a low-frequency field breaks the
+  // scatter into towns and empty country instead of an even dusting, but it
+  // only modulates now — it is texture on top of geography, not geography.
+  const settled = 0.3 + 0.7 * smoothstep(clumpDensity(dir, 8123, 2.2), 0.3, 0.62);
+  // The floor on the halo keeps genuinely remote settlement alive (the
+  // Siberian rail towns, the Australian coast) instead of making the world
+  // outside the city table perfectly black.
+  return climate * (0.14 + 0.86 * halo) * (1 - elevationPenalty) * settled;
 }
+
 
 export function buildCityLightsTexture(width = 1024, height = 512): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
