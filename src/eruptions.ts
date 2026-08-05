@@ -42,7 +42,16 @@ export interface Eruptions {
   tick: (t: number) => void;
 }
 
-export function buildEruptions(radius: number, bumpHeight: number, pixelRatio: number): Eruptions {
+export function buildEruptions(
+  radius: number,
+  bumpHeight: number,
+  pixelRatio: number,
+  /**
+   * The fixed key light's direction, if the caller wants the vents to know
+   * about night. Optional so the module still stands alone.
+   */
+  sunDirection?: THREE.Vector3,
+): Eruptions {
   const group = new THREE.Group();
   const rand = mulberry32(31337);
   const count = VOLCANOES.length * PARTICLES_PER_VOLCANO;
@@ -177,6 +186,7 @@ export function buildEruptions(radius: number, bumpHeight: number, pixelRatio: n
   // immediately, so without this there is nothing actually glowing at the
   // bottom of it and the whole thing reads as smoke from a chimney.
   const ventMaterials: THREE.MeshBasicMaterial[] = [];
+  const ventBeads: THREE.Mesh[] = [];
   VOLCANOES.forEach((_, vi) => {
     const mat = new THREE.MeshBasicMaterial({
       color: '#ff7a24',
@@ -188,8 +198,29 @@ export function buildEruptions(radius: number, bumpHeight: number, pixelRatio: n
     const bead = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), mat);
     bead.position.copy(summits[vi]).multiplyScalar(1.001);
     bead.frustumCulled = false;
+    ventBeads.push(bead);
     group.add(bead);
   });
+
+  // Hot rock is the one thing in this scene whose brightness is not the
+  // sun's to give. Everything else here — the ash, the sea, the paint —
+  // goes dark when the globe turns away from the light, and the vents used
+  // to go with it, so a volcano erupting on the night side was a grey
+  // smudge on black. In life it is the opposite: daylight washes a vent
+  // out to a dull orange smear, and darkness is when it reads as molten.
+  // The vent is emissive already; all that was missing was letting it know
+  // which side of the terminator it is on.
+  const ventWorld = new THREE.Vector3();
+  const ventQuat = new THREE.Quaternion();
+  const nightAtVent = (vi: number): number => {
+    if (!sunDirection) return 0;
+    group.getWorldQuaternion(ventQuat);
+    ventWorld.copy(summits[vi]).normalize().applyQuaternion(ventQuat);
+    // the same soft terminator the globe's own city lights use, so a vent
+    // does not brighten a beat before or after the lights around it
+    const sun = ventWorld.dot(sunDirection);
+    return THREE.MathUtils.clamp((0.16 - sun) / 0.28, 0, 1);
+  };
 
   // Active cones erupt often; dormant ones are rare events, not never.
   const schedules: Schedule[] = VOLCANOES.map((v) =>
@@ -213,7 +244,15 @@ export function buildEruptions(radius: number, bumpHeight: number, pixelRatio: n
       const power =
         age < 0 || age > 1 ? 0 : Math.min(1, age * 6) * Math.pow(1 - age, 0.7);
       intensity.setComponent(i, power);
-      ventMaterials[i].opacity = Math.min(1, power * 1.6);
+      // Kept clearly visible by day — the vent is what stops the ash column
+      // reading as smoke from a chimney, which is why it was put here — but
+      // given room to become the brightest thing on that side of the globe
+      // once the sun is off it. The bead grows a little too: a glow throws
+      // light around itself in the dark, and a bead that only brightens
+      // without spreading reads as a decal being turned up.
+      const night = nightAtVent(i);
+      ventMaterials[i].opacity = Math.min(1, power * 1.6 * (0.7 + 0.75 * night));
+      ventBeads[i].scale.setScalar(1 + night * 0.55);
     }
     uniforms.uTime.value = t;
   };

@@ -1100,7 +1100,12 @@ globeGroup.add(snowfall.points);
 
 // The four volcanoes stop being scenery and start being events.
 await yieldToBrowser('火山');
-const eruptions = buildEruptions(RADIUS, BUMP_HEIGHT, renderer.getPixelRatio());
+const eruptions = buildEruptions(
+  RADIUS,
+  BUMP_HEIGHT,
+  renderer.getPixelRatio(),
+  dayNightUniforms.uSunDir.value,
+);
 globeGroup.add(eruptions.group);
 
 // Famous buildings at their real coordinates, absurdly out of scale, which
