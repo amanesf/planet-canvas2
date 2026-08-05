@@ -25,7 +25,7 @@ import { buildLandmarks } from './landmarks';
 import { buildAircraft, buildSatellites, buildShips } from './traffic';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
-import { buildWorkshop } from './setDressing';
+import { buildWorkshop, GLOBE_CENTRE_Y, GLOBE_RADIUS, KEY_LIGHT_POSITION } from './setDressing';
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -153,7 +153,10 @@ window.addEventListener('unhandledrejection', (event) => {
   setStatus(`読み込みに失敗しました: ${String(event.reason)}`);
 });
 
-const RADIUS = 2;
+// Shared with setDressing.ts rather than restated here: the shadow the
+// globe throws on the desk is a projection of *this* sphere under *that*
+// lamp, and a second copy of either number is free to drift out of step.
+const RADIUS = GLOBE_RADIUS;
 const BUMP_HEIGHT = 0.36; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
 // The globe *sits on* the pedestal. It used to hover above it with a
 // visible gap, as a nod to a magnetic-levitation idea — and that gap was
@@ -162,7 +165,7 @@ const BUMP_HEIGHT = 0.36; // exaggerated on purpose — mountains were reading a
 // it is lit or painted. In the reference the sphere nests into a brass
 // collar on the wood, which is what this height and the cradle ring below
 // are set up to reproduce.
-const GLOBE_SEAT_Y = 0.6;
+const GLOBE_SEAT_Y = GLOBE_CENTRE_Y;
 
 // ---------- renderer / scene / camera ----------
 
@@ -183,11 +186,40 @@ const camera = new THREE.PerspectiveCamera(
 // leaves a lot of dim, blurred workshop visible above and below the
 // globe; filling the whole frame edge-to-edge with the globe (the old
 // distance) left no room for that surrounding context to read at all.
-const BASE_CAMERA_DISTANCE = 7.0;
+//
+// 7.0 was still not far enough, and the arithmetic says so rather than the
+// eye. At 7.0, a 40 degree lens and this polar angle, the bottom edge of
+// the frame crossed the desk plane at z = -0.37 — *behind* the globe's own
+// centre. Nothing in front of the sphere's own silhouette could be in the
+// picture at all: not the pedestal it stands on (front face at z = 1.85),
+// not one millimetre of the desk under it. The globe's lower limb landed
+// within a twentieth of a degree of the frame's bottom edge, which is why
+// the stand looked sliced off — it was not cropped by accident, there was
+// no room for it by construction. A photograph of an object on a table
+// shows the table; this one could not. 9.6 puts the bottom edge on the
+// desk at z = 2.5, which is the pedestal's foot plus about two thirds of a
+// base-radius of bare desk in front of it. The cost is the globe going
+// from 84% to 63% of the frame height — still by a distance the largest
+// thing in the picture, and the set dressing that was already built (the
+// book piles, the plants) finally reads at a size where it can do its job.
+const BASE_CAMERA_DISTANCE = 9.6;
+// Portrait pulls back, but not by the full 1/aspect it used to.
+//
+// The old rule divided the distance by the aspect ratio outright, which
+// frames the globe's *width* consistently and lets its height do whatever
+// falls out. That was survivable while the landscape distance was 7; at
+// 9.6 the same rule puts a phone at 17 units back, where the globe is a
+// third of the frame height sitting above an enormous empty apron of desk.
+// A fractional exponent keeps the pullback (the sphere still has to fit
+// across a narrow frame) while stopping it from running away, and it is
+// still exactly 1 at aspect 1, so there is no step at the orientation
+// change. 0.6 lands a 9:16 phone at 13.5 units — the same apparent globe
+// size that shipped before this change.
+const PORTRAIT_PULLBACK_EXPONENT = 0.6;
 function cameraDistanceForViewport() {
   const aspect = window.innerWidth / window.innerHeight;
   if (aspect >= 1) return BASE_CAMERA_DISTANCE;
-  return BASE_CAMERA_DISTANCE / Math.max(aspect, 0.45);
+  return BASE_CAMERA_DISTANCE * Math.pow(1 / Math.max(aspect, 0.45), PORTRAIT_PULLBACK_EXPONENT);
 }
 
 // The single biggest thing separating "a planet floating in space" from
@@ -200,8 +232,31 @@ function cameraDistanceForViewport() {
 // the bench between camera and subject could enter the frame at all — and
 // a defocused object in the near foreground is the single clearest signal
 // that a photograph was taken of something small and real.
-const CAMERA_POLAR_ANGLE = Math.PI * 0.43; // ~77° from vertical = ~13° above horizon
-const TARGET_Y = 1.0;
+//
+// Raised from 0.43pi (13° above the horizon) to 0.405pi. Not to make it
+// look more like a miniature — the reason is that pulling the camera back
+// to get the desk into the frame flattens the angle between the lens and
+// the fixed key light, and that angle is what fixes the terminator's
+// position on the disc. Measured: at the new distance and 0.43pi the
+// terminator's centre moves from 0.578 of the disc radius to 0.53, because
+// the direction from globe to camera swings toward the horizontal and away
+// from the sun. Lifting the lens by four degrees puts it back at 0.567 —
+// the same read documented in gap-analysis 2-12, a fixed line about
+// three-fifths out on the anti-sun side that terrain crosses rather than a
+// line that sweeps. Anything the eye notices about the daylight boundary
+// stays where it was.
+const CAMERA_POLAR_ANGLE = Math.PI * 0.405; // ~73° from vertical = ~17° above horizon
+// The aim point, and it is *not* the globe's centre (0.6) any more.
+//
+// The frame has to hold the sphere, the pedestal below it and a strip of
+// desk in front of the pedestal, and that whole subject has its mass above
+// its base. Aiming at 0.15 — a little below the sphere's own centre —
+// leaves the globe sitting slightly high in the frame with the stand and
+// the desk filling the lower quarter, which is where a photographer of an
+// object on a table would put it. Aiming at the sphere's centre instead
+// costs about a degree and a half of headroom for nothing: the space is
+// needed at the bottom, not the top.
+const TARGET_Y = 0.15;
 function cameraStartPosition() {
   const dist = cameraDistanceForViewport();
   return new THREE.Vector3(
@@ -398,7 +453,15 @@ controls.enableZoom = true;
 controls.enableRotate = true;
 let viewportScale = cameraDistanceForViewport() / BASE_CAMERA_DISTANCE;
 controls.minDistance = 5 * viewportScale;
-controls.maxDistance = 14 * viewportScale;
+// Pulled in from 14. The far limit is not about the subject getting small,
+// it is about the room running out: the backdrop photograph is a plane 34
+// units wide at z = -13 (setDressing.ts), and past roughly 12.5 units of
+// camera distance a 16:9 frame is wider than that plane at its depth, so
+// its left and right edges come into shot with page background either side
+// of them. That was already true of the old 14 — it just took a deliberate
+// zoom out to reach, whereas the default view now starts at 9.6 rather
+// than 7 and has less of that margin to spend.
+controls.maxDistance = 12.5 * viewportScale;
 // keep the user inside "looking down at a diorama" territory — never let
 // them drop to a flat eye-level view (which reads as "planet in space"
 // again) or flip to looking sharply up from underneath the stand
@@ -432,7 +495,7 @@ const keyLight = new THREE.DirectionalLight(0xfff1dc, 3.4);
 // side costs some fill on the right of the globe and buys shadows that
 // land *across* the visible face, which is what makes the clouds read as
 // floating above the surface rather than stuck to it.
-keyLight.position.set(-5.0, 4.4, 3.2);
+keyLight.position.copy(KEY_LIGHT_POSITION);
 keyLight.castShadow = true;
 keyLight.shadow.mapSize.set(SETTINGS.shadowMapSize, SETTINGS.shadowMapSize);
 // the subject is a 2-unit globe floating at a known height on a 1.85-unit
@@ -985,6 +1048,105 @@ await yieldToBrowser('水面');
 const waveTexture = buildWaveTexture();
 await yieldToBrowser('植生');
 
+// ---------- what the resin is reflecting ----------
+//
+// The single loudest "this is a render" cue left on the sphere was a small
+// round blown-out white dot on its upper left. Traced with temporary
+// switches rather than guessed at, and the first two guesses were both
+// wrong: zeroing the key light left the dot exactly as it was, and so did
+// zeroing the bench lamp. Zeroing every light in the scene — with the
+// environment map still on — removed it, which settles that it is direct
+// light and not the environment. It turns out to be the *rim* light, a
+// directional at (-4, 2, -3) with an intensity of 0.45; confirmed by
+// switching that one light off on its own.
+//
+// The count is worse than one. Photographed against open ocean, the old
+// shading puts *four* of these on the sphere, one per light: the key's, the
+// bench lamp's, the fill's and the rim's, all of them small hard circles.
+// Only the rim's was in open water in the frame that got reviewed — the
+// others happened to be sitting on North America. Nothing about this is a
+// tuning error either: the ocean carries clearcoat 0.85 at
+// clearcoatRoughness 0.16, and a punctual light has no angular size at all.
+// A GGX lobe that narrow, fed by a source that is mathematically a point,
+// can only ever be a circle; at exposure 1.9 it clips to flat white and
+// reads as a lens flare stuck to a ball.
+//
+// Nothing in a photograph of a glossy sphere looks like that. What a resin
+// sphere on a desk shows is a picture of the room: the *shape* of whatever
+// is lighting it — a shade, a softbox, a window — with a soft edge and an
+// area falloff, plus dimmer, larger, vaguer reflections of everything else
+// bright in the room. So the fix is in the shading, in two halves, and it
+// adds no light and no draw call (see gap-analysis section 9: another light
+// source is what makes the frame look like two photographs stuck together).
+//
+// Half one, in the shader below: the punctual lights get their clearcoat
+// roughness widened *for the direct lobe only* — an honest stand-in for the
+// angular size the light source in the story actually has. The GGX peak
+// falls with the square of alpha, so 0.16 -> 0.52 drops it by two orders of
+// magnitude and spreads its energy across a broad wash. The dot stops being
+// a dot. Restored immediately afterwards so the environment map's own
+// reflection, which is what gives the resin its wet look, keeps the sharp
+// value it was tuned at.
+//
+// Half two, here: the sources get drawn back in with a shape. Each one is a
+// rounded rectangle in the direction domain — evaluated against the mirror
+// direction, so it behaves like a reflection and not like a decal: it stays
+// put in the room while the planet turns under it, it compresses toward the
+// limb the way a real reflection does, and because it is evaluated against
+// the bump-mapped normal the swell breaks its edge up. Two of them: the
+// bench lamp's shade above and to the left (bright, near-white, the size of
+// a shade at that distance) and the lit part of the room off to the right
+// (large, dim, warm — the secondary the eye reads as "there is a room
+// here"). Warm rather than cool for the second one because what is being
+// reflected is walnut and book cloth under the same lamp, not daylight.
+function shapedSource(x: number, y: number, z: number) {
+  const axis = new THREE.Vector3(x, y, z).normalize();
+  // world up is only a reference for which way "sideways" is; neither
+  // source is anywhere near vertical, so the degenerate case cannot arise
+  const right = new THREE.Vector3().crossVectors(axis, new THREE.Vector3(0, 1, 0)).normalize();
+  const up = new THREE.Vector3().crossVectors(right, axis).normalize();
+  return { axis, right, up };
+}
+// the direction from the globe's centre to the bench lamp at (-3, 7, 4)
+const LAMP_SOURCE = shapedSource(-3, 6.4, 4);
+// and to the lit part of the room off to the right. Pointed well round the
+// side on purpose: a secondary this dim only reads as a reflection if it
+// hugs the limb, where a reflection is compressed and strengthened. A first
+// pass aimed it at (4.2, 1.8, 2.6), which put it two thirds of the way in
+// from the edge as a broad flat grey oval — over dark ocean that is not a
+// reflection of a room, it is a smudge on the lens.
+const CARD_SOURCE = shapedSource(5.0, 1.5, -1.6);
+
+/**
+ * Rounded-rectangle emitter in the direction domain.
+ *
+ * Returns (belly, face, spill), three nested falloffs off one signed
+ * distance. One smoothstep is not enough and the first attempt proved it:
+ * a single ramp gives a flat plateau clipped to white with an edge on it,
+ * which is a sticker of a softbox rather than a reflection of one. A real
+ * diffuser is brightest across the middle and falls off before it reaches
+ * its own frame (belly), has a definite but soft boundary (face), and
+ * throws a much fainter, much larger haze into the room around it (spill).
+ */
+const SHAPED_SOURCE_GLSL = `
+  vec3 sourceLobe(
+    vec3 mirrorDir, vec3 axis, vec3 right, vec3 up,
+    vec2 halfSize, float corner, float feather
+  ) {
+    vec2 q = vec2(dot(mirrorDir, right), dot(mirrorDir, up));
+    vec2 d = abs(q) - halfSize + corner;
+    float sd = min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - corner;
+    // the emitter is in front of the surface, not behind it
+    float front = step(0.0, dot(mirrorDir, axis));
+    // the shorter half-axis is the only length scale the interior has
+    float depth = min(halfSize.x, halfSize.y);
+    return front * vec3(
+      smoothstep(0.0, -depth * 0.9, sd),
+      smoothstep(feather * 0.34, -feather * 0.12, sd),
+      smoothstep(feather * 1.2, -feather * 0.05, sd));
+  }
+`;
+
 // Real vertex motion, on top of the scrolled bump map above. A moving
 // bump texture alone makes the *highlights* shimmer, but the surface
 // itself never actually moves — up close, or in a still frame, that
@@ -1029,6 +1191,14 @@ oceanMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uCloudShadow = cloudShadowUniforms.uCloudShadow;
   shader.uniforms.uCloudTime = cloudShadowUniforms.uCloudTime;
   shader.uniforms.uOmegaScale = cloudShadowUniforms.uOmegaScale;
+  // the two reflected sources, in world space and therefore constant: the
+  // room does not turn with the planet, which is the whole point of them
+  shader.uniforms.uLampAxis = { value: LAMP_SOURCE.axis };
+  shader.uniforms.uLampRight = { value: LAMP_SOURCE.right };
+  shader.uniforms.uLampUp = { value: LAMP_SOURCE.up };
+  shader.uniforms.uCardAxis = { value: CARD_SOURCE.axis };
+  shader.uniforms.uCardRight = { value: CARD_SOURCE.right };
+  shader.uniforms.uCardUp = { value: CARD_SOURCE.up };
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
@@ -1062,8 +1232,73 @@ oceanMaterial.onBeforeCompile = (shader) => {
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
-      '#include <common>\nuniform vec3 uSunDir;\nvarying vec3 vOceanNormal;\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nvarying vec3 vObjNormal;' +
-        CLOUD_SHADOW_GLSL,
+      '#include <common>\nuniform vec3 uSunDir;\nvarying vec3 vOceanNormal;\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nvarying vec3 vObjNormal;\nuniform vec3 uLampAxis;\nuniform vec3 uLampRight;\nuniform vec3 uLampUp;\nuniform vec3 uCardAxis;\nuniform vec3 uCardRight;\nuniform vec3 uCardUp;' +
+        CLOUD_SHADOW_GLSL +
+        SHAPED_SOURCE_GLSL,
+    )
+    // Half one of the highlight rework (see the shapedSource block above):
+    // give the punctual lights the angular size they do not have, for the
+    // direct lobe only. material.clearcoatRoughness is read by the punctual
+    // loop inside lights_fragment_begin and by the environment reflection
+    // inside lights_fragment_maps/_end, which run after it — so widening it
+    // here and putting it back immediately affects the light-source
+    // reflections and leaves the resin's environment sheen at the sharp
+    // 0.16 it was tuned to. 0.52 is where the rim light's disc stops being
+    // a disc; below about 0.4 a bright core survives at the centre of the
+    // wash and still reads as a dot.
+    .replace(
+      '#include <lights_fragment_begin>',
+      `#ifdef USE_CLEARCOAT
+        float oceanSharpClearcoat = material.clearcoatRoughness;
+        material.clearcoatRoughness = 0.52;
+      #endif
+      #include <lights_fragment_begin>
+      #ifdef USE_CLEARCOAT
+        material.clearcoatRoughness = oceanSharpClearcoat;
+      #endif`,
+    )
+    // Half two: the sources, with a shape. Added to the clearcoat's own
+    // direct term rather than to emissive, because that is physically what
+    // this is — a reflection in the varnish — and because the emissive path
+    // gets multiplied by (1 - clearcoat * Fresnel) further down, which would
+    // dim the highlight exactly where a real one gets brightest, at the
+    // grazing angles near the limb.
+    .replace(
+      '#include <lights_fragment_end>',
+      `#include <lights_fragment_end>
+      {
+        vec3 worldNormal = transformDirectionByInverseViewMatrix(geometryNormal, viewMatrix);
+        vec3 worldView = transformDirectionByInverseViewMatrix(geometryViewDir, viewMatrix);
+        vec3 mirrorDir = reflect(-worldView, worldNormal);
+
+        vec3 lamp = sourceLobe(
+          mirrorDir, uLampAxis, uLampRight, uLampUp, vec2(0.26, 0.15), 0.07, 0.20);
+        vec3 card = sourceLobe(
+          mirrorDir, uCardAxis, uCardRight, uCardUp, vec2(0.55, 0.30), 0.15, 0.45);
+
+        // A reflection gets stronger toward the limb, and on a sphere that
+        // is most of what stops a highlight looking pasted on. Deliberately
+        // a gentle version of Schlick rather than the real thing: the full
+        // fifth power makes the shade invisible over the middle of the disc,
+        // where this one has to live.
+        float grazing = pow(1.0 - saturate(dot(worldNormal, worldView)), 4.0);
+        float sheen = mix(0.85, 1.5, grazing);
+
+        // Peak about 0.64 linear once the 0.85 clearcoat weighting further
+        // down has taken its cut, which at exposure 1.9 through ACES comes
+        // out just short of clipping: bright enough to be the brightest
+        // thing on the sphere, graded enough that it is still a surface.
+        // The face on its own at 0.78 (the first attempt) clipped flat
+        // across its whole width and read as a hole cut in the ocean.
+        vec3 shaped =
+          vec3(1.0, 0.94, 0.84) * (lamp.y * 0.40 + lamp.x * 0.34 + lamp.z * 0.14) * sheen
+          + vec3(0.92, 0.78, 0.58) * (card.y * 0.030 + card.z * 0.018) * sheen;
+        #ifdef USE_CLEARCOAT
+          clearcoatSpecularDirect += shaped;
+        #else
+          reflectedLight.directSpecular += shaped;
+        #endif
+      }`,
     )
     .replace(
       '#include <map_fragment>',
@@ -1222,7 +1457,7 @@ window.addEventListener('resize', () => {
   offset.setLength(offset.length() * zoomRatio);
   camera.position.copy(controls.target).add(offset);
   controls.minDistance = 5 * newScale;
-  controls.maxDistance = 14 * newScale;
+  controls.maxDistance = 12.5 * newScale;
   viewportScale = newScale;
   controls.update();
 });

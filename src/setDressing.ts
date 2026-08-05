@@ -28,6 +28,142 @@ import { mulberry32 } from './spatialHash';
 // something the globe can be *in*. The far wall is the one exception, and
 // for the opposite reason: see buildWorkshop.
 
+/**
+ * Where the one key light is.
+ *
+ * Exported because two things now need to agree about it — the light itself
+ * in main.ts, and the shadow the globe throws across the desk below. Having
+ * each of them state the direction separately is the exact failure this
+ * project keeps rediscovering: the snow line and the snowflakes computed
+ * "where is it cold" twice and disagreed, the plume and the clouds computed
+ * the wind twice and disagreed. A cast shadow that does not point away from
+ * the lamp is worse than no cast shadow, because it reads as a stain.
+ */
+export const KEY_LIGHT_POSITION = new THREE.Vector3(-5.0, 4.4, 3.2);
+
+/** Top of the desk, in world units. */
+const DESK_Y = -2.08;
+
+/**
+ * How big the subject is and how high it sits. Exported for the same reason
+ * as the light position: the shadow's shape is a projection of this sphere,
+ * so it has to be *this* sphere and not a second copy of its numbers that
+ * can drift out of step with main.ts's.
+ */
+export const GLOBE_RADIUS = 2;
+export const GLOBE_CENTRE_Y = 0.6;
+
+// ---------------------------------------------------------------------
+// The shadow the globe throws on the desk
+// ---------------------------------------------------------------------
+// The last of the shadows this scene was missing. Shadow maps are off for
+// mobile stability and are not coming back, so the globe — a two-unit
+// sphere sitting under a hard warm lamp, on a polished desk — threw nothing
+// at all, and an object that lights the surface under it but never darkens
+// it does not read as being on that surface. It reads as pasted over it,
+// which is the whole thing the framing is trying to argue against.
+//
+// It cannot be painted into the desk texture, which was the cheap idea and
+// is wrong for a specific reason worth writing down: that texture is tiled
+// (`repeat.set(2, 2)`) across a 60-unit plane, so the world origin — where
+// the globe stands — lands exactly on the corner where four tiles meet.
+// Anything drawn at the centre of that canvas appears four times, fifteen
+// units away in each diagonal, and never underneath the globe.
+//
+// So it is one quad with a soft gradient. It costs one draw call and writes
+// no depth.
+//
+// The first version of it multiply-blended a white-surround texture, on the
+// reasoning that multiplying keeps the desk's own grain reading through the
+// shade instead of covering it with a grey fill. That reasoning is sound and
+// it rendered as a *white sheet lying on the desk*, because MultiplyBlending
+// in three requires premultiplied alpha and silently does nothing useful
+// without it — the console says so in as many words. Rather than turn that
+// on for one quad, this uses the ordinary way to lay a contact shadow: a
+// dark fill whose *alpha* falls off. At these opacities the grain still
+// reads through it, which was the only thing multiply was buying.
+//
+// The geometry is the real projection, not a guess. The lamp is up and to
+// the left and behind the subject, so the shadow is thrown to the right and
+// toward the viewer, and it is long — the globe's centre stands 2.68 above
+// the desk and the light is only about 40 degrees up, so the far end of it
+// lands three and a half units out. That length is most of the effect: a
+// neat circular pool under an object reads as an overhead studio light,
+// which is not the light this room has.
+function buildContactShadow(): THREE.Mesh {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  // Two gradients, because a shadow is not evenly dark along its length.
+  // A single blob centred on the quad puts its darkest point halfway down
+  // the throw, hanging in the middle of the desk with lighter wood between
+  // it and the thing casting it — which reads as a smudge rather than as
+  // contact. What sells contact is the near end: an occlusion pool right
+  // where the stand meets the wood, darker and much tighter than the rest,
+  // with the cast throw fading away from it. Canvas +X is the throw
+  // direction (see the mesh rotation below), so the pool sits at 0.3 along
+  // it and the throw runs out past the far edge.
+  //
+  // Never fully opaque even at the core: this is a shadow cast into a room
+  // with bounce in it, and a hole of pure black in a walnut desktop reads as
+  // a gap in the desk rather than as shade on it. The tint is the desk's own
+  // deep brown rather than neutral black, which is what stops it going grey.
+  const throwGradient = ctx.createRadialGradient(
+    size * 0.42, size / 2, 0,
+    size * 0.42, size / 2, size * 0.5,
+  );
+  throwGradient.addColorStop(0, 'rgba(18, 10, 6, 0.5)');
+  throwGradient.addColorStop(0.45, 'rgba(19, 11, 6, 0.33)');
+  throwGradient.addColorStop(0.78, 'rgba(20, 12, 7, 0.1)');
+  throwGradient.addColorStop(1, 'rgba(20, 12, 7, 0)');
+  ctx.fillStyle = throwGradient;
+  ctx.fillRect(0, 0, size, size);
+
+  const pool = ctx.createRadialGradient(
+    size * 0.3, size / 2, 0,
+    size * 0.3, size / 2, size * 0.26,
+  );
+  pool.addColorStop(0, 'rgba(14, 8, 4, 0.62)');
+  pool.addColorStop(0.55, 'rgba(15, 9, 5, 0.34)');
+  pool.addColorStop(1, 'rgba(16, 9, 5, 0)');
+  ctx.fillStyle = pool;
+  ctx.fillRect(0, 0, size, size);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+
+  // Project the globe's centre onto the desk along the light direction.
+  const height = GLOBE_CENTRE_Y - DESK_Y;
+  const toSubject = new THREE.Vector3(0, 0, 0).sub(KEY_LIGHT_POSITION);
+  const perUnit = -1 / toSubject.y;
+  const tipX = toSubject.x * perUnit * height;
+  const tipZ = toSubject.z * perUnit * height;
+  const throwLength = Math.hypot(tipX, tipZ);
+
+  // The blob spans from roughly under the pedestal to the projected tip,
+  // plus the globe's own width at each end, and it is centred halfway along.
+  const long = throwLength + GLOBE_RADIUS * 2.6;
+  const wide = GLOBE_RADIUS * 2.3;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(long, wide),
+    new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false,
+    }),
+  );
+  // YXZ so the Y turn is applied after the plane has been laid flat: with
+  // the default XYZ order the two rotations fight and the ellipse points
+  // somewhere else entirely.
+  mesh.rotation.set(-Math.PI / 2, Math.atan2(-tipZ, tipX), 0, 'YXZ');
+  // A whisker above the desk, or it z-fights with it.
+  mesh.position.set(tipX * 0.5, DESK_Y + 0.004, tipZ * 0.5);
+  mesh.renderOrder = 1;
+  return mesh;
+}
+
 function buildDeskTexture(): THREE.CanvasTexture {
   const w = 512;
   const h = 512;
@@ -261,6 +397,8 @@ export function buildWorkshop(): THREE.Group {
   desk.receiveShadow = true;
   group.add(desk);
 
+  group.add(buildContactShadow());
+
   // The far wall of the room, so the frame doesn't open onto void above
   // the desk.
   //
@@ -288,7 +426,14 @@ export function buildWorkshop(): THREE.Group {
   // 16:9 so the books are not stretched into the wrong shape — visible
   // even through the blur.
   const wall = new THREE.Mesh(
-    new THREE.PlaneGeometry(34, 19.1),
+    // Widened from 34 x 19.1 when the camera pulled back to get the desk
+    // into shot. The rule §9 states is that this plane has to be as big as
+    // the frame can see at its own depth, and the new distance broke it:
+    // anything wider than about 1.97:1 ran past the old plane's edges at
+    // z = -13 and showed page background beside the bookcases. 44 restores
+    // headroom to ~2.55:1, which covers 21:9. The 16:9 proportion of the
+    // source image is kept so the photograph is not stretched.
+    new THREE.PlaneGeometry(44, 24.7),
     // Unlit on purpose. The photograph already contains its own lamplight,
     // its own shadows and its own exposure; running it through the scene's
     // key light would light the room a second time and lay a contradictory
