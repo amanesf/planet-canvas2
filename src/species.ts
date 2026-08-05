@@ -1382,6 +1382,55 @@ export function buildSpecies(
           climate.lightness - 0.05 + rand() * 0.22,
           THREE.SRGBColorSpace,
         );
+
+        // Shade inside the canopy, as opposed to shade scattered across it.
+        //
+        // The lightness spread above is per-clump `rand()`, so it is white
+        // noise: it varies every neighbouring clump against every other and
+        // therefore reads as speckle on one flat mass, not as a mass with
+        // depth. A forest's actual value structure is the opposite of white
+        // noise — it is strongly *organised*. The floor of a closed stand is
+        // dark because its neighbours roof it over; the margin of the same
+        // stand is bright because each crown there still sees the sky; and
+        // the emergents that stand clear above the roof are the brightest
+        // thing in it. None of that was represented, which is why the census
+        // could put eleven thousand instances in the Amazon and still have it
+        // read as one bright green carpet.
+        //
+        // This is the same argument as the ground shade the terrain paint now
+        // carries, and it has to be made here as well as there for a reason
+        // measurement made plain: at this density the paint is almost
+        // entirely *hidden* by the instances standing on it, so darkening the
+        // ground alone changes what you see between the trees and nothing
+        // about the trees themselves. The two together are the effect.
+        //
+        // Three terms, all free — no geometry, no material, no draw call,
+        // just the instance colour that was already being written:
+        //  - `closed` is how much roof the climate says is over this point,
+        //    the same field the spacing is drawn from;
+        //  - `buried` keys off the size hierarchy the scale curve above
+        //    already built, so the small clumps that make up the floor take
+        //    the shading and the rare emergents keep their light;
+        //  - `patch` is spatially coherent rather than per-instance, which is
+        //    the whole difference between shadow and speckle. Its frequency
+        //    matches the mid-scale term the scatter's own clumping uses, so
+        //    the dark patches are the size of the stands, not of the clumps.
+        const closed = canopyAt(point.dir);
+        if (closed > 0.05) {
+          const buried = 1 - smoothstep(scale, 0.55, 1.35);
+          const patch = fbm3(
+            point.dir.x * 13 + 5150,
+            point.dir.y * 13 + 5150,
+            point.dir.z * 13 + 5150,
+            2,
+          );
+          const shade = closed * buried * (0.62 + patch * 0.5);
+          // Multiplied, not subtracted. THREE.Color works in linear space, so
+          // taking a constant off the lightness of an already-dark taiga
+          // green clamps it to black while barely touching a bright one — the
+          // terrain paint hit exactly that and came back wearing keylines.
+          canopyColor.multiplyScalar(1 - 0.42 * Math.max(shade, 0));
+        }
         mesh.setColorAt(i, canopyColor);
       });
       mesh.instanceMatrix.needsUpdate = true;
