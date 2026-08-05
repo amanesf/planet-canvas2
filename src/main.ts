@@ -66,7 +66,7 @@ const SETTINGS = {
   // whole archipelago was two vertices wide however good the height field
   // underneath it was.
   globeSegments: [384, 216] as const,
-  oceanSegments: [76, 44] as const,
+  oceanSegments: [176, 100] as const,
   shadowMapSize: 768,
   /** rings of blur taps in the camera pass; each ring is 8 taps */
   dofRings: 1,
@@ -1239,25 +1239,101 @@ oceanMaterial.onBeforeCompile = (shader) => {
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
-      '#include <common>\nuniform float uTime;\nvarying vec3 vOceanNormal;\nvarying vec3 vObjNormal;',
+      '#include <common>\nuniform float uTime;\nuniform sampler2D uCloudShadow;\nuniform float uOmegaScale;\nvarying vec3 vOceanNormal;\nvarying vec3 vObjNormal;',
+    )
+    .replace(
+      '#include <beginnormal_vertex>',
+      `#include <beginnormal_vertex>
+      // The swell, and — the part that was missing — its slope.
+      //
+      // There has been a vertex swell on this sphere for a long time and it
+      // could not be seen, for a reason worth writing down: it moved the
+      // vertices and left the normal alone. A displacement that does not
+      // change the shading normal can only be seen in the silhouette, and
+      // this one stood 0.002 units tall on a globe carrying about 108
+      // pixels per unit — a fifth of a pixel. It was a wave the light knew
+      // nothing about.
+      //
+      // Both waves are plain sinusoids in object space, so their gradient
+      // is closed form: d/dp of A*sin(k·p + wt) is A*k*cos(k·p + wt). The
+      // surface is p + n*s(p), so tilting the normal against the part of
+      // that gradient which lies along the surface is the whole of it —
+      // exact, four cosines, no finite differences and no extra passes.
+      // What the eye reads is the *slope* A*|k|, not the height, and this
+      // surface is far more sensitive to it than open water would be —
+      // the clearcoat is sharp (roughness 0.16) and the sea is nearly the
+      // darkest thing on the sphere, so a tilt that reflects the room
+      // instead of the lamp goes almost black. The first pass ran at four
+      // degrees and laid visible dark diagonal streaks across both oceans:
+      // a corduroy of swell rather than a sheet of poured resin with a
+      // slow movement in it. Half that is where it stops announcing the
+      // wave vector and starts reading as water.
+      vec3 oceanUp = normalize(position);
+      // The swell travels with the wind belt it is in, which is the last
+      // thing on this planet that was still turning as one rigid piece.
+      //
+      // The wind profile itself is not repeated here. clouds.ts bakes each
+      // latitude's drift rate into the green channel of the cloud-shade map
+      // — row-constant, decoded exactly as cloudShade does it in the
+      // fragment stage — and this shader already has that texture bound for
+      // the shade. So the sea reads the same trades and westerlies the sky
+      // does, off a texture fetch that costs nothing, instead of carrying a
+      // second copy of zonalWind() in GLSL that would drift out of step the
+      // first time anyone tuned one of them.
+      float oceanLat = asin(clamp(oceanUp.y, -1.0, 1.0));
+      float oceanOmega =
+        (texture2D(uCloudShadow, vec2(0.5, oceanLat / 3.14159265 + 0.5)).g - 0.5) * uOmegaScale;
+      // Turning the sample point back by omega*t is the same as sliding the
+      // whole wave field forward along the parallel: east in the
+      // westerlies, west in the trades, and stalled at the doldrums and the
+      // horse latitudes where the profile crosses zero.
+      float oceanDrift = -oceanOmega * uTime * 12.0;
+      float driftCos = cos(oceanDrift);
+      float driftSin = sin(oceanDrift);
+      vec2 oceanXZ = vec2(
+        position.x * driftCos - position.z * driftSin,
+        position.x * driftSin + position.z * driftCos
+      );
+      float wavePhaseA = oceanXZ.x * 9.0 + oceanXZ.y * 5.5 + uTime * 1.1;
+      float wavePhaseB = oceanXZ.x * 4.5 - oceanXZ.y * 6.5 - uTime * 0.7;
+      float oceanSwell = sin(wavePhaseA) * 0.0034 + sin(wavePhaseB) * 0.0024;
+      // Gradients in the drifted frame, rotated back into object space —
+      // the wave vectors turn with the sample point, so the crests keep
+      // running the way the wind put them however far the field has slid.
+      vec2 kA = vec2(9.0, 5.5);
+      vec2 kB = vec2(4.5, -6.5);
+      vec2 gradXZ = kA * (cos(wavePhaseA) * 0.0034) + kB * (cos(wavePhaseB) * 0.0024);
+      vec3 oceanGrad = vec3(
+        gradXZ.x * driftCos + gradXZ.y * driftSin,
+        0.0,
+        -gradXZ.x * driftSin + gradXZ.y * driftCos
+      );
+      // only the component along the surface tilts it; the radial part is
+      // just the height change, which the displacement below already does
+      oceanGrad -= oceanUp * dot(oceanUp, oceanGrad);
+      objectNormal = normalize(oceanUp - oceanGrad);`,
     )
     .replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
-      // object-space position on this sphere already points outward from
-      // its center, so it doubles as the per-vertex swell direction —
-      // two overlapping frequencies so it doesn't read as one uniform
-      // pulse breathing in and out
-      vec3 swellDir = normalize(position);
-      float swell = sin(position.x * 14.0 + position.z * 9.0 + uTime * 1.3) * 0.0011
-                  + sin(position.x * 6.0 - position.z * 8.0 - uTime * 0.8) * 0.0008;
-      transformed += swellDir * swell;
+      // Wavelength, set against the mesh rather than by eye. At a
+      // wavenumber of 9 the swell runs about 0.7 radians from crest to
+      // crest, and the ocean shell (SETTINGS.oceanSegments) puts eight or
+      // nine vertices across that — the old pair ran at 14 and 6 on a
+      // 76-segment shell, which is two or three vertices per wavelength,
+      // i.e. below the point where a sine can exist at all in the
+      // geometry. Anything finer than this belongs in the bump map, which
+      // is not tessellation-limited.
+      transformed += oceanUp * oceanSwell;
       // same world-space outward direction the globe material carries, for
       // the same reason: the terminator has to travel with the sphere as it
-      // turns under the fixed key light
-      vOceanNormal = mat3(modelMatrix) * swellDir;
+      // turns under the fixed key light. Deliberately the *undisturbed*
+      // radial, not the swell-tilted normal above: day and night are a
+      // property of where this point is on the planet, and letting a wave
+      // tilt it would make the terminator crawl with the swell.
+      vOceanNormal = mat3(modelMatrix) * oceanUp;
       // and the object-space one, which is the frame the cloud deck drifts in
-      vObjNormal = swellDir;`,
+      vObjNormal = oceanUp;`,
     );
   // The night half of the sea was pure black — a glossy poured-resin surface
   // that simply stops existing wherever the sun does not reach it, which is
@@ -1469,6 +1545,10 @@ const eruptions = buildEruptions(
   dayNightUniforms.uSunDir.value,
   // the same profile the clouds ride, so ash and sky agree about the wind
   zonalWind,
+  // and the same season clock the snow and the rain veils read, so the
+  // dust storms' dry season is the globe's dry season and not a second
+  // calendar keeping its own time
+  seasonUniforms,
 );
 globeGroup.add(eruptions.group);
 
