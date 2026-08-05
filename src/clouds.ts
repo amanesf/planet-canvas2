@@ -314,8 +314,17 @@ const WIND_SCALE = 0.02;
 /**
  * Eastward wind speed at a latitude, in radians of great circle per second.
  * Negative is an easterly (blowing toward the west).
+ *
+ * Exported because the volcanic ash plumes need the same answer. They used
+ * to lean by a hardcoded constant in one fixed direction at every volcano
+ * on the planet, while the clouds passing overhead reverse three times
+ * between the equator and the pole — so in the trades the ash and the sky
+ * above it visibly disagreed about which way the air was moving. Copying
+ * the profile into eruptions.ts would have fixed the picture and recreated
+ * the "two systems, two expressions" split this codebase keeps having to
+ * undo, so it is read from here instead.
  */
-function zonalWind(lat: number): number {
+export function zonalWind(lat: number): number {
   const deg = Math.abs(lat) * (180 / Math.PI);
   if (deg < 30) return -0.85 * WIND_SCALE * Math.sin((Math.PI * deg) / 30); // trades
   if (deg < 60) return 1.35 * WIND_SCALE * Math.sin((Math.PI * (deg - 30)) / 30); // westerlies

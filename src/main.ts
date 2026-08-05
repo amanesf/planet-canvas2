@@ -18,7 +18,7 @@ import {
   seaLevelRadius,
 } from './terrain';
 import { buildSpecies } from './species';
-import { buildClouds } from './clouds';
+import { buildClouds, zonalWind } from './clouds';
 import { buildSnowfall } from './snowfall';
 import { buildEruptions } from './eruptions';
 import { buildLandmarks } from './landmarks';
@@ -1105,6 +1105,8 @@ const eruptions = buildEruptions(
   BUMP_HEIGHT,
   renderer.getPixelRatio(),
   dayNightUniforms.uSunDir.value,
+  // the same profile the clouds ride, so ash and sky agree about the wind
+  zonalWind,
 );
 globeGroup.add(eruptions.group);
 
