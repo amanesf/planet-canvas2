@@ -51,6 +51,13 @@ export function buildEruptions(
    * about night. Optional so the module still stands alone.
    */
   sunDirection?: THREE.Vector3,
+  /**
+   * The same zonal wind profile the clouds ride, in radians of longitude
+   * per second, positive eastward. Optional for the same reason, but
+   * passing it is what stops the ash and the clouds directly above it
+   * disagreeing about which way the air is moving.
+   */
+  windAt?: (lat: number) => number,
 ): Eruptions {
   const group = new THREE.Group();
   const rand = mulberry32(31337);
@@ -106,11 +113,33 @@ export function buildEruptions(
   geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
   geometry.setAttribute('aJitter', new THREE.BufferAttribute(jitter, 2));
 
+  // Each cone stands at a fixed latitude, so the wind over it is a
+  // constant — four numbers decided once, not a field to sample per
+  // particle. Normalised against the strongest wind the profile produces
+  // (the mid-latitude westerlies) so the shader's drift constant means
+  // "how far a plume in the fastest wind on the planet gets blown", which
+  // is a number that can be tuned by eye.
+  //
+  // With no profile supplied this degrades to a single modest easterly
+  // drift shared by every cone — which is what the old hardcoded lean was.
+  // The module keeps working standalone, and wiring the real wind in is
+  // then strictly an improvement rather than the difference between a
+  // plume that bends and one that stands straight up.
+  const windPerVolcano = new THREE.Vector4(0.45, 0.45, 0.45, 0.45);
+  if (windAt) {
+    const peak = Math.max(1e-6, Math.abs(windAt(Math.PI / 4)));
+    VOLCANOES.forEach((_, vi) => {
+      const lat = Math.asin(THREE.MathUtils.clamp(summits[vi].clone().normalize().y, -1, 1));
+      windPerVolcano.setComponent(vi, windAt(lat) / peak);
+    });
+  }
+
   const uniforms = {
     uTime: { value: 0 },
     uIntensity: { value: new THREE.Vector4() },
     uRadius: { value: radius },
     uPixelRatio: { value: pixelRatio },
+    uWind: { value: windPerVolcano },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -126,6 +155,7 @@ export function buildEruptions(
       attribute vec2 aJitter;
       uniform float uTime;
       uniform vec4 uIntensity;
+      uniform vec4 uWind;
       uniform float uRadius;
       uniform float uPixelRatio;
       varying float vLife;
@@ -139,18 +169,47 @@ export function buildEruptions(
         vLife = life;
 
         vec3 up = normalize(aOrigin);
+        // cross(up, +Y) points along the parallel. At up = +X it is +Z, and
+        // +Z is *decreasing* longitude under this project's convention
+        // (lon = atan2(z,-x)*180/PI - 180), so east is -side. Getting this
+        // backwards is invisible on a still frame and obvious the moment
+        // the plume is compared with the clouds passing over it.
         vec3 side = normalize(cross(up, vec3(0.0, 1.0, 0.0)) + vec3(1e-4, 0.0, 0.0));
         vec3 other = cross(up, side);
+        vec3 east = -side;
 
         // Rise fast, then slow and spread: the column loses its momentum
         // and the ash flattens out against the top of the troposphere,
         // which is what gives a real eruption its anvil.
         float rise = (1.0 - pow(1.0 - life, 2.2)) * 0.42 * power;
         float spread = (0.012 + pow(life, 1.8) * 0.11) * power;
-        // and it leans downwind as it climbs
-        float lean = pow(life, 1.6) * 0.09 * power;
 
-        vec3 lateral = side * (aJitter.x * spread + lean) + other * (aJitter.y * spread);
+        // Downwind drift, with shear.
+        //
+        // This used to be a single hardcoded lean, in one fixed direction,
+        // identical at every volcano on the planet — so a cone in the
+        // trades leaned the same way as one in the westerlies while the
+        // clouds directly above them drifted opposite ways. The wind now
+        // comes from the same profile the clouds ride, per volcano.
+        //
+        // It scales with height rather than with age because that is what
+        // shear means: air moves faster the higher you go, so the top of a
+        // column is dragged much further than its base, and the column
+        // ends up bent rather than tilted. Squaring the height ratio is
+        // what turns a straight lean into the hockey-stick profile a real
+        // ash column has.
+        float wind = dot(aOwner, uWind);
+        float heightFrac = rise / max(0.42 * power, 1e-4);
+        float drift = wind * heightFrac * heightFrac * 0.30 * power;
+
+        // The spread goes with the wind too: a plume in still air puffs out
+        // as a circle, one in a wind is drawn out into a streak that is far
+        // longer downwind than it is wide. Without this the anvil stayed a
+        // round blob that had merely been moved sideways.
+        float along = spread * (1.0 + abs(wind) * 1.9);
+        float across = spread * (1.0 - abs(wind) * 0.35);
+
+        vec3 lateral = east * (aJitter.x * along + drift) + other * (aJitter.y * across);
         vec3 pos = normalize(aOrigin + lateral) * (uRadius + rise + 0.004);
 
         vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
