@@ -1,11 +1,55 @@
 import * as THREE from 'three';
 import { fbm3 } from './noise';
 import { displaceWithNoise, mulberry32 } from './spatialHash';
+import { precipitationAtSeason, zonalPrecipitationAt } from './terrain';
 
 // Low-frequency "weather system" noise — clouds cluster into patches
 // instead of scattering uniformly, like real cloud cover does.
 function cloudDensityAt(dir: THREE.Vector3): number {
   return fbm3(dir.x * 1.1 + 150, dir.y * 1.1 + 150, dir.z * 1.1 + 150, 2);
+}
+
+// ---------------------------------------------------------------------
+// Where the weather is, and where it merely happens to be
+// ---------------------------------------------------------------------
+// The sky used to be laid out by that noise alone: patches of cotton in
+// places the noise happened to like, with the *type* picked off a latitude
+// ladder. Nothing in it had ever read the rainfall the ground is painted
+// from, which is the split §3 of the gap analysis is about — the globe knew
+// the Sahara was a desert and the sky did not, so a cloud deck sat over it
+// as readily as over the Congo.
+//
+// Two couplings, because a cloud is a thing that *moves* and the two halves
+// of "where does it rain" behave completely differently under that:
+//
+// - Latitude is invariant under the zonal wind. A band seeded at 8° is
+//   still at 8° an hour later, so the structural decision — how much cloud
+//   exists at all at this latitude, and what kind — is taken against
+//   `zonalPrecipitationAt`: the ITCZ gets bands, the subtropical highs at
+//   ±25° get very few, the storm tracks get them back.
+// - Longitude is not. So the local half is read *live*, every frame, at
+//   wherever each nodule has drifted to: cloud swells crossing the Amazon
+//   and thins to a fray crossing the Sahara. Baking that at build time
+//   would have been the baked-bearing mistake again (§2-17) — right for
+//   one minute, wrong afterwards.
+//
+// Which is also why this is per nodule rather than per band. A band is
+// thousands of kilometres long; over the Sahel one end of it is in the
+// monsoon and the other is over sand, and thinning only the dry end is the
+// whole point.
+
+/**
+ * How much cloud belongs over ground with this much rain falling on it.
+ *
+ * Bounded, and deliberately not bounded at zero. The deck's shade is a
+ * texture baked once from the nodule positions (`buildCloudShadowTexture`),
+ * which cannot know about this modulation — so a nodule allowed to vanish
+ * would leave its own shadow lying on the desert underneath it with nothing
+ * overhead to cast it. Half size and full size is as far as that can be
+ * pushed while every shadow still has a visible cloud over it.
+ */
+function coverageFor(precipitation: number): number {
+  return 0.35 + 0.8 * THREE.MathUtils.smoothstep(precipitation, 0.06, 0.55);
 }
 
 // ---------------------------------------------------------------------
@@ -741,7 +785,14 @@ function typhoonIntensity(age: number): number {
   return age < 0 ? 0 : Math.pow(Math.sin(age * Math.PI), 0.7);
 }
 
-function typhoonCentre(sys: TyphoonSystem, age: number, out: THREE.Vector3): THREE.Vector3 {
+function typhoonCentre(sys: TyphoonSystem, rawAge: number, out: THREE.Vector3): THREE.Vector3 {
+  // `typhoonAge` returns −1 for "no storm right now", and a negative base
+  // under a fractional exponent is NaN — which put every one of this
+  // cyclone's 256 instance matrices at NaN for the whole quiet half of the
+  // cycle. It never showed because a NaN matrix draws nothing, i.e. the
+  // gaps between storms were working by accident; `advect` now folds the
+  // storm away explicitly (liveScale 0) and this only has to stay finite.
+  const age = Math.max(rawAge, 0);
   // 12°N-ish at formation, recurving out to about 34°
   const lat = (0.21 + 0.38 * Math.pow(age, 1.7)) * sys.hemi;
   // carried west by the trades, then east again once it is in the westerlies
@@ -958,7 +1009,15 @@ function buildCloudShadowTexture(
   return { texture, omegaScale };
 }
 
-export function buildClouds(radius: number): CloudSystem {
+/**
+ * @param season the globe's own season clock, −1 northern midwinter ..
+ *   +1 northern midsummer — shared by reference, exactly as the falling
+ *   snow takes it, so the sky cannot drift out of step with the paint.
+ */
+export function buildClouds(
+  radius: number,
+  season: { uSeasonTilt: { value: number } },
+): CloudSystem {
   const group = new THREE.Group();
   const rand = mulberry32(4242);
 
@@ -975,17 +1034,28 @@ export function buildClouds(radius: number): CloudSystem {
     const r = Math.sqrt(1 - z * z);
     dir.set(r * Math.cos(t), z, r * Math.sin(t));
     if (cloudDensityAt(dir) < 0.16) continue; // only inside a weather patch
+    // ...and only at a latitude that actually gets weather. Rejection
+    // against the zonal mean, normalised by the wettest band so the ITCZ
+    // is accepted outright rather than the whole planet being thinned:
+    // this is what empties the horse latitudes, which is where every
+    // subtropical desert on the globe underneath is.
+    const zonal = zonalPrecipitationAt(dir.y);
+    if (rand() > THREE.MathUtils.smoothstep(zonal, 0.16, 0.46)) continue;
     if (seeds.some((s) => s.dir.dot(dir) > 0.68)) continue; // keep the bands apart
 
-    // Type follows latitude, loosely, the way real weather does: storm
-    // cells cluster in the tropics, thin cirrus favours higher latitude,
-    // stratus sheets sit over the temperate belt, cumulus fills the rest.
+    // Type follows the climate the band lives in rather than a latitude
+    // ladder, so the same rainfall field decides both how much cloud there
+    // is and what it is made of. Thunderheads need heat *and* water, so
+    // they are the tropics' wet bands only; the mid-latitude storm track is
+    // where sheets of stratus belong; the dry, cold, high latitudes get
+    // cirrus, which is the one type that is ice rather than rain.
     const lat = Math.abs(dir.y);
     let type: CloudType;
     const roll = rand();
-    if (lat < 0.3) type = roll < 0.4 ? 'storm' : 'cumulus';
-    else if (lat < 0.65) type = roll < 0.35 ? 'stratus' : 'cumulus';
-    else type = roll < 0.45 ? 'cirrus' : 'stratus';
+    const wet = THREE.MathUtils.smoothstep(zonal, 0.2, 0.5);
+    if (lat < 0.35) type = roll < 0.15 + 0.5 * wet ? 'storm' : 'cumulus';
+    else if (lat < 0.72) type = roll < 0.2 + 0.4 * wet ? 'stratus' : 'cumulus';
+    else type = roll < 0.7 - 0.4 * wet ? 'cirrus' : 'stratus';
 
     seeds.push({ dir: dir.clone(), type });
   }
@@ -1297,7 +1367,11 @@ export function buildClouds(radius: number): CloudSystem {
         // spins up, opening its eye on the way. Pulling the spiral in
         // toward its own centre at low intensity, while keeping the
         // cotton nearly full size, gets that.
-        n.liveScale = 0.6 + sys.intensity * 0.4;
+        // Between lives the storm is not there at all. Intensity 0 left it
+        // at 0.6 of full size, which only stayed off screen because the
+        // centre was NaN (see typhoonCentre); with that fixed it has to be
+        // folded away here instead.
+        n.liveScale = age < 0 ? 0 : 0.6 + sys.intensity * 0.4;
       });
     });
 
@@ -1328,7 +1402,14 @@ export function buildClouds(radius: number): CloudSystem {
         // directly over a pole, where a bearing means nothing; any tangent
         n.grain.set(1, 0, 0).addScaledVector(n.live, -n.live.x).normalize();
       }
-      n.liveScale = 1 + Math.sin(t * bandBreathSpeed[n.band] + bandBreathPhase[n.band]) * 0.09;
+      // Breathing, times what the ground below is entitled to (see
+      // coverageFor). Read at `n.live`, i.e. after the drift, and against
+      // the season the rest of the globe is in — so a monsoon band over
+      // the Sahel is cotton in July and a fray in January, out of phase
+      // with the Mediterranean band at the same longitude, because
+      // `precipitationAtSeason` carries the Köppen second letter.
+      const breath = 1 + Math.sin(t * bandBreathSpeed[n.band] + bandBreathPhase[n.band]) * 0.09;
+      n.liveScale = breath * coverageFor(precipitationAtSeason(n.live, season.uSeasonTilt.value));
     });
   };
 

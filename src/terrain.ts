@@ -980,6 +980,48 @@ export function precipitationAt(dir: THREE.Vector3): number {
   return sampleField(precipitationGrid, dir);
 }
 
+const ZONAL_BANDS = 181;
+let zonalPrecipTable: Float32Array | null = null;
+
+/**
+ * Mean annual rainfall around a whole circle of latitude.
+ *
+ * The part of the rainfall map that survives being blown around the planet.
+ * Anything carried by the wind — a cloud band, most obviously — spends its
+ * life travelling in longitude, so *where* it was seeded says nothing about
+ * where it will be a minute later; only its latitude is invariant. Placing
+ * such a thing by `precipitationAt` bakes in an answer that decays (the
+ * same trap the baked cloud bearings fell into, §2-17), while placing it by
+ * this stays true for as long as it exists.
+ *
+ * The longitudinal half of the coupling is not lost, it just belongs on the
+ * other side of the clock: read `precipitationAt`/`precipitationAtSeason`
+ * live at wherever the thing has drifted to.
+ */
+export function zonalPrecipitationAt(y: number): number {
+  if (!zonalPrecipTable) {
+    zonalPrecipTable = new Float32Array(ZONAL_BANDS);
+    const probe = new THREE.Vector3();
+    const SAMPLES = 180;
+    for (let b = 0; b < ZONAL_BANDS; b++) {
+      const sinLat = (b / (ZONAL_BANDS - 1)) * 2 - 1;
+      const c = Math.sqrt(Math.max(0, 1 - sinLat * sinLat));
+      let sum = 0;
+      for (let s = 0; s < SAMPLES; s++) {
+        const lon = (s / SAMPLES) * Math.PI * 2;
+        probe.set(c * Math.cos(lon), sinLat, c * Math.sin(lon));
+        sum += precipitationAt(probe);
+      }
+      zonalPrecipTable[b] = sum / SAMPLES;
+    }
+  }
+  // equal steps in sin(latitude), i.e. in area — the same parameterisation
+  // the flake and cloud samplers draw from
+  const f = (THREE.MathUtils.clamp(y, -1, 1) + 1) * 0.5 * (ZONAL_BANDS - 1);
+  const i = Math.min(ZONAL_BANDS - 2, Math.floor(f));
+  return THREE.MathUtils.lerp(zonalPrecipTable[i], zonalPrecipTable[i + 1], f - i);
+}
+
 /** Annual rainfall plus the shape of its year. See `precipitationAt`. */
 export interface PrecipitationSample {
   /** Annual total, roughly 0..1. */

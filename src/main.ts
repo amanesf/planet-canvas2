@@ -1382,7 +1382,7 @@ globeGroup.add(species);
 // real puffy 3D clouds with cast shadows — matches the design memo's
 // "evaporation + rain shadow" sky layer with an actual visible presence
 await yieldToBrowser('雲');
-const clouds = buildClouds(RADIUS);
+const clouds = buildClouds(RADIUS, seasonUniforms);
 // The globe's and the sea's shaders were compiled before the sky existed,
 // so they hold the uniform objects and get the contents now.
 cloudShadowUniforms.uCloudShadow.value = clouds.shadowTexture;
