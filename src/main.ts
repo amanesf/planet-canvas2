@@ -869,6 +869,35 @@ globeMaterial.onBeforeCompile = (shader) => {
         // globe rather than as the edge of the daylight
         float night = smoothstep(0.16, -0.12, sun);
         totalEmissiveRadiance += texture2D(uCityLights, vMapUv).rgb * night * 2.4;
+
+        // Dusk. Until now the only thing that happened at the terminator was
+        // the city lights fading up out of nothing; the daylight itself just
+        // ran out. On a real lit object the line carries two bands: a warm
+        // one on the daylight side, where the light is grazing and reddened,
+        // and a cold desaturated one just past it — the blue hour, ground
+        // lit by sky rather than by sun. Both are windows on the same dot
+        // product, feathered on both edges for the same reason the night
+        // term above is: a hard edge reads as a stencil laid over the ball.
+        // Added to emissive and multiplied by the surface's own colour, so
+        // it tints the paint that is there instead of painting over it.
+        // The strength and the width are both load-bearing, and the first
+        // pass got both wrong in the same way. Multiplying purely by
+        // diffuseColor makes the band proportional to albedo, so it showed
+        // up on bright land and vanished on exactly the surface that most
+        // needed it — the dark ocean, which is what the terminator crosses
+        // for most of its length. And a window 0.08 wide in the dot product
+        // is about four degrees of arc, roughly twenty pixels at this
+        // framing, which tone mapping at exposure 1.9 then flattened away.
+        // Measured on a hard zoom into the terminator: no visible band at
+        // all. Widened, strengthened, and given a floor so the tint still
+        // lands on dark water while still being the surface's own colour
+        // that gets tinted.
+        float warmBand = smoothstep(0.42, 0.06, sun) * smoothstep(-0.16, 0.04, sun);
+        float coolBand = smoothstep(0.06, -0.12, sun) * smoothstep(-0.46, -0.22, sun);
+        totalEmissiveRadiance +=
+          mix(vec3(0.34), diffuseColor.rgb, 0.62) * vec3(1.0, 0.44, 0.14) * warmBand * 1.45;
+        totalEmissiveRadiance +=
+          mix(vec3(0.28), diffuseColor.rgb, 0.5) * vec3(0.26, 0.44, 0.95) * coolBand * 0.95;
       }`,
     )
     .replace(
@@ -951,8 +980,12 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
 });
 oceanMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
+  shader.uniforms.uSunDir = dayNightUniforms.uSunDir;
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform float uTime;')
+    .replace(
+      '#include <common>',
+      '#include <common>\nuniform float uTime;\nvarying vec3 vOceanNormal;',
+    )
     .replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
@@ -963,7 +996,52 @@ oceanMaterial.onBeforeCompile = (shader) => {
       vec3 swellDir = normalize(position);
       float swell = sin(position.x * 14.0 + position.z * 9.0 + uTime * 1.3) * 0.0011
                   + sin(position.x * 6.0 - position.z * 8.0 - uTime * 0.8) * 0.0008;
-      transformed += swellDir * swell;`,
+      transformed += swellDir * swell;
+      // same world-space outward direction the globe material carries, for
+      // the same reason: the terminator has to travel with the sphere as it
+      // turns under the fixed key light
+      vOceanNormal = mat3(modelMatrix) * swellDir;`,
+    );
+  // The night half of the sea was pure black — a glossy poured-resin surface
+  // that simply stops existing wherever the sun does not reach it, which is
+  // half the sphere. Real water is never the darkest thing in a night scene:
+  // it is the one thing still catching a highlight. This is a dim cool lobe
+  // centred on the antisolar point (read as the moon roughly opposite the
+  // sun) plus the same two dusk bands the globe material paints, so the sea
+  // does not jump from dusk-tinted to void across the terminator.
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      '#include <common>',
+      '#include <common>\nuniform vec3 uSunDir;\nvarying vec3 vOceanNormal;',
+    )
+    .replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      {
+        vec3 oceanN = normalize(vOceanNormal);
+        float sun = dot(oceanN, uSunDir);
+        float night = smoothstep(0.10, -0.16, sun);
+        // broad, then a tighter core: a wide sheen over the whole night sea
+        // with a brighter patch where the moon would stand overhead
+        float moon = max(-sun, 0.0);
+        float sheen = moon * 0.10 + pow(moon, 6.0) * 0.16;
+        totalEmissiveRadiance += vec3(0.34, 0.46, 0.72) * sheen * night;
+
+        // Same two bands as the globe material, at the same widths, so the
+        // sea does not leave dusk at a different moment than the coast it
+        // touches. The warm one is deliberately much weaker here than on
+        // land, and that is not timidity: orange light added to dark blue
+        // water does not read as sunset, it reads as dirt. Measured at the
+        // land strength the whole ocean side of the terminator went a muddy
+        // brown-mauve. On water the cool band carries the moment instead,
+        // which is also what water actually does — it holds the sky's blue
+        // long after the land beside it has gone dark.
+        float warmBand = smoothstep(0.42, 0.06, sun) * smoothstep(-0.16, 0.04, sun);
+        float coolBand = smoothstep(0.06, -0.12, sun) * smoothstep(-0.46, -0.22, sun);
+        totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.5, 0.2) * warmBand * 0.5;
+        totalEmissiveRadiance +=
+          mix(vec3(0.26), diffuseColor.rgb, 0.5) * vec3(0.26, 0.46, 0.98) * coolBand * 0.85;
+      }`,
     );
   oceanWaveUniforms = shader.uniforms as unknown as { uTime: { value: number } };
 };
