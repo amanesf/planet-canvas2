@@ -1239,6 +1239,21 @@ const outColor = new THREE.Color();
 const badlandsScratch = new THREE.Color();
 const saltScratch = new THREE.Color();
 
+// Nudges a direction by a fine noise before it is used to look up the
+// climate-derived canopy density, so the class raster's axis-aligned
+// staircase edges (§2-9) wander instead of being drawn straight. The offset
+// is a couple of tenths of a degree — about a quarter of a cell of the
+// 384x192 field `canopyAt` bakes onto — which is enough to dither a boundary
+// and far too small to move a forest.
+const canopyWarpScratch = new THREE.Vector3();
+function canopyWarp(dir: THREE.Vector3): THREE.Vector3 {
+  const a = fbm3(dir.x * 38 + 1301, dir.y * 38 + 1301, dir.z * 38 + 1301, 2);
+  const b = fbm3(dir.x * 38 + 2609, dir.y * 38 + 2609, dir.z * 38 + 2609, 2);
+  return canopyWarpScratch
+    .set(dir.x + a * 0.02, dir.y + b * 0.02, dir.z + a * b * 0.02)
+    .normalize();
+}
+
 // Purely cosmetic: perturbs where a pixel's color band boundary falls,
 // without touching the height value used for geometry, sea level, or
 // vegetation placement. Perfectly smooth, mathematically clean coastlines
@@ -1401,20 +1416,77 @@ function biomeColor(
 // Real shadow maps are off (mobile GPU stability), so the coastline's
 // geometric "step" never actually casts a shadow onto the beach — without
 // this the carved edge just looks like a color boundary, not a relief.
-// Baking a fake AO crease directly into the paint fakes the same read.
-// Steeper/darker right where a mountain belt meets the sea, matching the
-// fjord-style cliff coastline used there (see terrainColor).
+// Baking a fake AO crease directly into the paint fakes the same read, and
+// it is the single most load-bearing piece of the "the land is a raised
+// shell sitting on the sea, not a picture printed on it" argument. There is
+// a real step there to justify it: `displayHeight` lifts land by
+// `coastalStep` = 0.028 + cliffiness * 0.15 as it crosses the shoreline.
 //
-// The 0.05 falloff was a narrow strip on the old fictional coastlines, but
-// real elevation data put enormous flat interior regions (the whole US
-// Midwest, most of the Amazon and Congo basins) at barely more than 0.05
-// above sea level too — so this "coastal shadow" was darkening huge tracts
-// of ordinary flat land, and fluctuating with every small per-pixel
-// elevation wobble from the real data's own bilinear sampling, into a
-// dark speckled wash instead of a clean crease at the water's edge.
-function coastalAO(height: number, cliffiness: number): number {
-  const t = smoothstep(height, SEA_LEVEL, SEA_LEVEL + 0.006);
-  return -0.16 * (1 - t) * (1 + cliffiness * 1.3);
+// This used to be gated on *height above sea level* — a narrow window from
+// SEA_LEVEL to SEA_LEVEL + 0.006 — and measurement says that was barely
+// doing anything at all. Over the whole planet the mean |AO| on land came
+// out at 0.0040 against a possible 0.16, i.e. 2.5% of full strength; only
+// 3.6% of land got even 0.02. Worse, it was landing in the wrong places in
+// both directions at once. Of the land actually within three texels of a
+// coastline — 10.2% of all land, the strip this effect exists for — only
+// 16.5% received |AO| >= 0.08, because a cliff coast clears 0.006 of
+// elevation in a single texel and so gets no crease at the exact place a
+// crease is most obviously missing. Meanwhile the flat interiors sit *under*
+// that threshold for thousands of kilometres (the Congo basin's mean height
+// above sea level is 0.007), so the effect leaked inland as a dim wash.
+// This is the same mistake §2-10 of the gap analysis records for the surf,
+// found the same way and with the same fix: **the quantity is distance from
+// the shoreline, not depth or height near it.** Height cannot express it —
+// a delta is low a long way inland and a headland is high right at the edge.
+//
+// So it is measured off the chamfer distance field instead, in texels of the
+// 1536-wide reference map like the surf widths are. Width and depth both
+// scale with `coastCliffiness`, which is the same field driving the actual
+// geometric step, so a rocky headland gets the tall step *and* the deep
+// crease and a sandy shelf coast gets neither — the crease describes the
+// relief that is really there rather than being applied at one strength to
+// every shore. The along-shore noise term matters as much as the width does:
+// a crease of even depth all the way round every landmass is a drawn outline,
+// which is the decal read this model keeps having to fight off.
+// The first attempt at the new formulation subtracted an HSL lightness
+// offset, the way the old height-gated one did, and the flat map showed
+// immediately why that was wrong quite apart from any question of taste:
+// THREE.Color works in linear space, so subtracting a constant 0.24 of
+// lightness from a coastal green whose linear luminance is about 0.15 does
+// not darken it, it clamps it to black. Every landmass came back with a hard
+// black keyline round it — the drawn-outline, decal-on-a-sphere read this
+// model spends most of its effort avoiding, arrived at by accident.
+//
+// Occlusion scales the light that reaches a surface, it does not subtract a
+// fixed quantity from it, so all three shading terms in this file multiply
+// now. That is both the physically right operation and the one that cannot
+// produce a keyline: a dark texel and a bright texel in the same crease lose
+// the same *proportion*, so the crease reads as shading on a form instead of
+// as ink along a boundary.
+const COAST_SHADOW_TEXELS = 6.5;
+
+/**
+ * How much of the light is occluded at a land texel by the step it sits
+ * behind, 0..1. `texels` is distance to the nearest water.
+ */
+function coastalAO(dir: THREE.Vector3, texels: number, cliffiness: number, scale: number): number {
+  const reach = COAST_SHADOW_TEXELS * scale * 2.2;
+  if (texels <= 0 || texels > reach) return 0;
+  // Same frequency as the surf's along-shore term, so the two bands gather
+  // and thin out over the same stretches of coast: where the water is
+  // breaking hardest is also where the land above it stands highest.
+  const along = fbm3(dir.x * 14 + 4242, dir.y * 14 + 4242, dir.z * 14 + 4242, 3);
+  const width = COAST_SHADOW_TEXELS * scale * (0.4 + cliffiness * 0.9 + along * 0.8);
+  if (texels > width) return 0;
+  // Deepest hard against the water and gone by the inner edge. Not linear:
+  // an occlusion crease has most of its darkness in the first fraction of
+  // its width, and a linear ramp reads as a soft airbrushed band instead.
+  const band = 1 - smoothstep(texels, width * 0.08, width);
+  // Depth has to vary along the shore as much as width does. Varying only
+  // the width still gives every coast the same maximum darkness and so still
+  // reads as one continuous line, just a line that gets thinner in places.
+  const depth = 0.07 + cliffiness * 0.2 + Math.max(along, 0) * 0.13;
+  return band * depth;
 }
 
 // Where snow lies, agreed on by the paint, the wash and the bump texture.
@@ -1642,7 +1714,13 @@ function applyReliefPaint(
   return color;
 }
 
-function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number): THREE.Color {
+function terrainColor(
+  dir: THREE.Vector3,
+  height: number,
+  riverStrength: number,
+  inlandTexels: number,
+  texelScale: number,
+): THREE.Color {
   const h = height + coastlineJitter(dir);
   const temperature = temperatureAt(dir, terracedElevation(Math.max(h, SEA_LEVEL)));
   const seaIce = smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE - 0.08);
@@ -1737,6 +1815,64 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
     const urban = urbanAt(dir);
     if (urban > 0) color.lerp(urbanColor, urban * 0.45);
 
+    // Ground shade under the canopy.
+    //
+    // The scatter puts thirty-odd thousand trees on this globe and the paint
+    // underneath them never acknowledged any of them: the Amazon and the
+    // savanna twenty degrees south were painted at the same value, so the
+    // rainforest instances stood on ground exactly as bright as open country
+    // and read as models placed *on* a picture rather than as a forest. That
+    // is the "the land is floating above the sphere" tell, and the review put
+    // it first — a closed canopy is the largest single area of the model that
+    // ought to be in shadow and had none.
+    //
+    // Real shadow maps are off, so this is painted rather than cast, which
+    // costs nothing per frame and nothing in draw calls: a forest floor is
+    // occluded by its own crowns from every direction, so the darkening is
+    // genuinely view- and light-independent and a baked texture is the right
+    // place for it. It has to be baked, in fact — the globe spins, so
+    // anything keyed to the light direction would have to live in the shader.
+    //
+    // `canopyAt` is the same field the scatter thins the forest by, which is
+    // the whole point: the paint darkens exactly where the trees are dense
+    // rather than approximating it from latitude. Measured over land it means
+    // 22% of the surface at >= 0.7 and a mean of 0.31, so this is a broad
+    // regional value change and not a local detail.
+    //
+    // Three things hold it back from becoming a flat green stain:
+    //  - the mottle, at the same frequency as `clumpDensity`'s fine term, so
+    //    the darker patches are the size of the clumps the scatter actually
+    //    gathers into instead of an even wash;
+    //  - the tree line, since `canopyAt` is climate only and does not know
+    //    that this particular texel is bare alpine rock;
+    //  - the city, since `urbanAt` has already felled the trees here (see the
+    //    scatter's clearing gain) and shading ground that has no canopy left
+    //    on it would put a dark halo round every forest-belt city.
+    // A fourth thing had to be added after the first flat map came back: the
+    // climate raster is a nearest-neighbour class index, so its boundaries
+    // are axis-aligned staircases (§2-9 of the gap analysis records this as a
+    // known cosmetic flaw), and a darkening keyed straight to it drew those
+    // staircases at full contrast — south-east Asia came back as a set of
+    // rectangles. Reducing the strength alone does not fix that, it only
+    // makes the rectangles fainter. The lookup *direction* is warped by a
+    // fine noise instead, so the forest edge wanders across a couple of grid
+    // cells and the staircase stops being straight; warping the query rather
+    // than blurring the answer keeps the margin crisp where it is genuinely
+    // crisp. The mottle doubles as one of the two warp axes so this costs one
+    // extra noise evaluation rather than three, on a loop that already runs
+    // over two million texels.
+    const canopy = canopyAt(canopyWarp(dir));
+    if (canopy > 0.04) {
+      const mottle = fbm3(dir.x * 16.5 + 907, dir.y * 16.5 + 907, dir.z * 16.5 + 907, 3);
+      const shade =
+        canopy * (1 - smoothstep(elevation, 0.13, 0.26)) * (1 - urban) * (0.78 + mottle * 0.55);
+      color.multiplyScalar(1 - 0.3 * shade);
+      // Shaded foliage is a deeper green, not a grey one, and a pure
+      // multiply desaturates nothing — this leans the shaded ground very
+      // slightly further into its own hue so the darker forest stays green.
+      color.offsetHSL(0.004 * shade, 0.05 * shade, 0);
+    }
+
     // Volcano: a crater's lava pool or lake overrides whatever the
     // elevation band said, and an active crater bleeds a glowing basalt
     // flow down its flank.
@@ -1758,7 +1894,16 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
       }
     }
 
-    color.offsetHSL(0, 0, coastalAO(h, beltCloseness));
+    // The crease wanders on the same jitter field as the painted coastline
+    // and the surf, rather than tracing a mathematically clean offset curve
+    // a fixed distance in from a line that is itself irregular.
+    const crease = coastalAO(
+      dir,
+      inlandTexels + coastlineJitter(dir) * 220 * texelScale,
+      coastCliffiness(dir),
+      texelScale,
+    );
+    if (crease > 0) color.multiplyScalar(1 - crease);
   }
 
   return color.offsetHSL(0, 0, paintGrain(dir));
@@ -1797,14 +1942,30 @@ function terrainColor(dir: THREE.Vector3, height: number, riverStrength: number)
 const SURF_TEXELS = 3.4;
 
 /**
- * Distance from every ocean texel to the nearest land texel, in texels.
- * Two-pass chamfer (1 orthogonal, √2 diagonal), wrapping at the seam.
+ * Distance from every texel on one side of the coastline to the nearest
+ * texel on the other, in texels. Two-pass chamfer (1 orthogonal, √2
+ * diagonal), wrapping at the seam.
+ *
+ * `side` says which half is being measured. 'sea' gives every ocean texel
+ * its distance to the nearest shore — that is the surf band. 'land' gives
+ * every land texel its distance to the nearest water, which is the only
+ * honest way to draw the contact shadow at the foot of the coastal step:
+ * the shadow belongs a fixed distance in from the water's edge, and the
+ * height above sea level does not tell you that distance. Texels on the
+ * other side of the line come back 0 either way, so the caller (which
+ * already has the height) can tell "wrong side" from "right at the edge".
  */
-function coastDistanceField(heights: Float32Array, width: number, height: number): Float32Array {
+function coastDistanceField(
+  heights: Float32Array,
+  width: number,
+  height: number,
+  side: 'sea' | 'land' = 'sea',
+): Float32Array {
   const size = width * height;
   const dist = new Float32Array(size);
   const FAR = 1e9;
-  for (let i = 0; i < size; i++) dist[i] = heights[i] >= SEA_LEVEL ? 0 : FAR;
+  const isSeed = side === 'sea' ? (h: number) => h >= SEA_LEVEL : (h: number) => h < SEA_LEVEL;
+  for (let i = 0; i < size; i++) dist[i] = isSeed(heights[i]) ? 0 : FAR;
   const D = 1;
   const DD = Math.SQRT2;
   const at = (x: number, y: number) => dist[y * width + ((x % width) + width) % width];
@@ -1855,7 +2016,47 @@ function surfAt(dir: THREE.Vector3, texels: number, scale: number): number {
   return THREE.MathUtils.clamp(band * strength, 0, 1);
 }
 
-function oceanColor(dir: THREE.Vector3, height: number, surf: number): THREE.Color {
+// The other half of the contact crease, on the water side.
+//
+// `coastalAO` darkens the land just inside the shoreline; this darkens the
+// resin just outside it. Between them they are what stands in for the one
+// shadow this model most obviously lacks — the raised land shell dropping a
+// shadow onto the sea shell it sits on. §2-14 of the gap analysis lists it
+// as one of the two shadow surrogates still missing after the cloud shadows
+// went in.
+//
+// It has to be an *occlusion*, not a cast shadow, and that is not a cosmetic
+// preference: the globe spins inside a fixed key light, so anything with a
+// light direction baked into it would swing round with the sphere and be
+// wrong for most of the rotation. Water in the angle at the foot of a coast
+// genuinely sees less of the sky than open ocean does regardless of where
+// the sun is, so a direction-free darkening is both the cheap answer and the
+// correct one.
+//
+// It goes on *under* the surf, which is the whole reason it reads rather
+// than muddying: foam stays at full brightness and now sits on a darker
+// collar instead of beside undifferentiated blue, so the white gains the
+// contrast it was missing. The band is deliberately narrower than the surf's
+// and driven by the same along-shore noise, because an even dark rim all the
+// way round every landmass is the "decal stuck on the sphere" failure §2-10
+// warns about — the thing to avoid is a *tidy* outline, not a dark one.
+const SHORE_OCCLUSION_TEXELS = 5.0;
+
+function shoreOcclusion(dir: THREE.Vector3, texels: number, scale: number): number {
+  const reach = SHORE_OCCLUSION_TEXELS * scale * 2;
+  if (texels <= 0 || texels > reach) return 0;
+  const cliff = coastCliffiness(dir);
+  const along = fbm3(dir.x * 14 + 4242, dir.y * 14 + 4242, dir.z * 14 + 4242, 3);
+  const width = SHORE_OCCLUSION_TEXELS * scale * (0.45 + cliff * 0.8 + along * 0.7);
+  if (texels > width) return 0;
+  const band = 1 - smoothstep(texels, width * 0.1, width);
+  // Multiplicative, and weaker than the land side: shallow water over pale
+  // sand is one of the brightest things on the model and a heavy hand here
+  // put a black ring round every island (see coastalAO).
+  return band * (0.05 + cliff * 0.13 + Math.max(along, 0) * 0.08);
+}
+
+function oceanColor(dir: THREE.Vector3, height: number, surf: number, occlusion: number): THREE.Color {
   // Turquoise belongs to the last stretch of the shelf, not to most of the
   // sea. Splitting the ramp at 0.6 put the pale colour over everything
   // within reach of a continent and left a broad milky ring around every
@@ -1879,6 +2080,9 @@ function oceanColor(dir: THREE.Vector3, height: number, surf: number): THREE.Col
   const temperature = temperatureAt(dir, 0);
   const seaIce = smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE - 0.08);
   outColor.lerp(iceColor, seaIce);
+  // Under the foam, over the ice: pack ice against a rocky coast sits in the
+  // same angle and is shaded by it too.
+  if (occlusion > 0) outColor.multiplyScalar(1 - occlusion);
   // Surf goes on last, over the ice too — a frozen shore still has a white
   // rim, it just stops being the interesting part.
   if (surf > 0) outColor.lerp(surfColor, surf * 0.92);
@@ -2003,6 +2207,11 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
   const river = computeRiverFlow(384, 192);
   const relief = buildReliefField(width, height);
   const heights = sharedHeightField(width, height).raw;
+  // How far in from the water every land texel is — the contact crease at
+  // the foot of the coastal step is drawn from this and not from height
+  // above sea level, which cannot express it. See coastalAO.
+  const inland = coastDistanceField(heights, width, height, 'land');
+  const texelScale = width / 1536;
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
@@ -2010,7 +2219,7 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
 
       const h = heights[py * width + px];
       const riverStrength = h >= SEA_LEVEL ? sampleRiverFlow(river, dir) : 0;
-      const c = terrainColor(dir, h, riverStrength);
+      const c = terrainColor(dir, h, riverStrength, inland[py * width + px], texelScale);
       // the wash/drybrush passes go on over the finished base coat, exactly
       // as they do on the workbench — and only on land, since the sea is a
       // poured surface nobody drybrushes
@@ -2673,8 +2882,10 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
       // picks up a positive distance out of nothing and the whole interior of
       // every continent foams.
       const d = coastDist[py * width + px];
-      const surf = d > 0 ? surfAt(dir, d + coastlineJitter(dir) * 220 * texelScale, texelScale) : 0;
-      const c = oceanColor(dir, h, surf);
+      const jittered = d > 0 ? d + coastlineJitter(dir) * 220 * texelScale : 0;
+      const surf = d > 0 ? surfAt(dir, jittered, texelScale) : 0;
+      const occlusion = d > 0 ? shoreOcclusion(dir, jittered, texelScale) : 0;
+      const c = oceanColor(dir, h, surf, occlusion);
 
       const idx = (py * width + px) * 4;
       writeSRGBPixel(image.data, idx, c);
