@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mulberry32 } from './spatialHash';
+import { sampledHeight, snowinessAt } from './terrain';
 
 // ---------------------------------------------------------------------
 // Falling snow
@@ -18,11 +19,28 @@ import { mulberry32 } from './spatialHash';
 // mapped from the cloud deck down to the ground, so a flake that lands
 // immediately reappears at the top, and the field never needs restocking.
 //
-// Where they are *visible* is decided in the same shader, from the same
-// two quantities the globe's own snow line uses: the season tilt and the
-// flake's own latitude. That way the flakes are always falling exactly
-// over the hemisphere that is currently white, and stop when it thaws —
-// rather than being a separate effect that has to be kept in step by hand.
+// Where they fall used to be decided by latitude alone — the flake's own
+// `dir.y` against a snow line, a copy of the expression the globe's paint
+// uses. That is only half a climate. Latitude cannot know that the
+// Himalaya, the Andes, the Alps and the Rockies are white all year at
+// latitudes where the lowlands never see a flake, and it cannot know that
+// a maritime temperate ocean at 55° is not snowy at all. So it snowed on
+// the North Atlantic and never on Everest.
+//
+// The flakes each own a *fixed* base direction, which is the thing that
+// makes the fix cheap: a fixed point on the sphere can be classified once,
+// at build time, by the same `snowinessAt` the terrain paint reads —
+// climate and elevation, not a latitude band — and the answer baked into a
+// vertex attribute. The shader then has real climate available to it
+// without being able to call into any of it. Sites are rejection-sampled
+// against that same field, so all 2600 flakes land somewhere it actually
+// snows instead of being spread evenly over a band that is mostly not
+// snowing; the visible density goes up without the count going up.
+//
+// Two systems computing "where is it snowy" from two different expressions
+// is exactly the split this project keeps having to undo (see §2-6 and the
+// urbanAt unification in the doc), so the falling snow reads the paint's
+// field rather than re-deriving one.
 
 export interface Snowfall {
   points: THREE.Points;
@@ -47,22 +65,76 @@ export function buildSnowfall(
   const phases = new Float32Array(COUNT);
   const speeds = new Float32Array(COUNT);
   const sizes = new Float32Array(COUNT);
+  /** how snowy this flake's own patch of ground is, all year round */
+  const snowiness = new Float32Array(COUNT);
+  /** how much this flake needs local winter before it may fall */
+  const seasonality = new Float32Array(COUNT);
 
-  for (let i = 0; i < COUNT; i++) {
-    // Snow only ever falls in the cold latitudes, so there is no point
-    // spending flakes on the tropics — they would be invisible every
-    // frame of the year. Sampled uniformly in sin(latitude) *within* the
-    // cold band, which keeps the density even over the area it covers.
-    const sign = rand() < 0.5 ? 1 : -1;
-    const sinLat = sign * (0.34 + rand() * 0.66);
+  const probe = new THREE.Vector3();
+
+  /**
+   * How much snow belongs at this point, 0..1.
+   *
+   * Over land this is the terrain's own field, so the flakes agree with
+   * the paint by construction. Over water `snowinessAt` returns 0 — the
+   * paint has nothing to whiten there — but the polar seas are a real and
+   * large part of what reads as "winter" on a globe, and losing the
+   * Arctic Ocean entirely was a worse picture than the bug being fixed.
+   * They get their own, weaker allowance, gated hard on latitude so it
+   * cannot leak into the temperate oceans that were the original
+   * complaint.
+   */
+  function snowWeight(dir: THREE.Vector3): number {
+    const h = sampledHeight(dir).raw;
+    const land = snowinessAt(dir, h);
+    if (land > 0) return land;
+    // sin(latitude), not degrees: 0.84 is about 57°, 0.93 about 68°. The
+    // first pass opened this at 0.72 (≈46°) and measured 82 flakes over the
+    // open North Atlantic at 55° — the temperate-ocean snow that was the
+    // original complaint, reintroduced by the exemption meant to save the
+    // Arctic. It has to start where the sea itself starts reading as ice.
+    const lat = Math.abs(dir.y);
+    return lat <= 0.84 ? 0 : Math.min(1, (lat - 0.84) / 0.09) * 0.5;
+  }
+
+  // Rejection sampling against that field. Capped: if the climate data
+  // somehow yields almost nothing snowy, this must not spin forever — it
+  // falls back to placing the flake wherever the last candidate landed,
+  // where its baked weight will simply keep it invisible.
+  let accepted = 0;
+  let attempts = 0;
+  const MAX_ATTEMPTS = COUNT * 200;
+  while (accepted < COUNT && attempts < MAX_ATTEMPTS) {
+    attempts++;
+    const sinLat = rand() * 2 - 1;
     const lon = rand() * Math.PI * 2;
     const c = Math.sqrt(Math.max(0, 1 - sinLat * sinLat));
-    dirs[i * 3] = c * Math.cos(lon);
-    dirs[i * 3 + 1] = sinLat;
-    dirs[i * 3 + 2] = c * Math.sin(lon);
+    probe.set(c * Math.cos(lon), sinLat, c * Math.sin(lon));
+
+    const w = snowWeight(probe);
+    if (w <= 0.02 || rand() > w) continue;
+
+    const i = accepted++;
+    dirs[i * 3] = probe.x;
+    dirs[i * 3 + 1] = probe.y;
+    dirs[i * 3 + 2] = probe.z;
+    snowiness[i] = w;
+    // Somewhere permanently white — a deep polar cap, a high summit — snows
+    // whatever the season. Somewhere only marginally snowy is snowy
+    // *because* it is winter there, and should stop when it thaws. One
+    // number carries both: the less reliably snowy the site, the more it
+    // has to wait for its own winter.
+    seasonality[i] = 1 - Math.min(1, w);
     phases[i] = rand();
     speeds[i] = 0.05 + rand() * 0.05;
     sizes[i] = 1.0 + rand() * 1.5;
+  }
+  // Any shortfall keeps its zeroed weight and never draws.
+  for (let i = accepted; i < COUNT; i++) {
+    dirs[i * 3 + 1] = 1;
+    phases[i] = rand();
+    speeds[i] = 0.05;
+    sizes[i] = 1;
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -76,6 +148,8 @@ export function buildSnowfall(
   geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
   geometry.setAttribute('aSpeed', new THREE.BufferAttribute(speeds, 1));
   geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+  geometry.setAttribute('aSnow', new THREE.BufferAttribute(snowiness, 1));
+  geometry.setAttribute('aSeasonal', new THREE.BufferAttribute(seasonality, 1));
 
   const uniforms = {
     uTime: { value: 0 },
@@ -93,6 +167,8 @@ export function buildSnowfall(
       attribute float aPhase;
       attribute float aSpeed;
       attribute float aSize;
+      attribute float aSnow;
+      attribute float aSeasonal;
       uniform float uTime;
       uniform float uSeasonTilt;
       uniform float uRadius;
@@ -118,18 +194,18 @@ export function buildSnowfall(
         gl_Position = projectionMatrix * mvPosition;
         gl_PointSize = aSize * uPixelRatio * (60.0 / -mvPosition.z);
 
-        // The same test the globe's painted snow line makes: local winter
-        // is where the season tilt and this latitude disagree in sign, and
-        // the line itself moves toward the equator the deeper into winter
-        // it gets.
-        float lat = dir.y;
-        float winter = clamp(-uSeasonTilt * lat, 0.0, 1.0);
-        float snowLine = mix(0.82, 0.5, winter);
-        float inZone = smoothstep(snowLine, snowLine + 0.14, abs(lat));
+        // Where it snows is baked (aSnow, from the terrain's own field).
+        // All that is left for the shader is *when*: local winter is where
+        // the season tilt and this latitude disagree in sign. A site that
+        // is reliably white all year ignores that almost entirely; a
+        // marginal one waits for its winter and thaws out of the picture
+        // afterwards.
+        float winter = clamp(-uSeasonTilt * dir.y, 0.0, 1.0);
+        float season = mix(1.0, winter, aSeasonal);
         // fade in as it leaves the cloud and out as it reaches the ground,
         // so flakes neither pop into existence nor pile up as a bright ring
         float ends = smoothstep(0.0, 0.12, fall) * (1.0 - smoothstep(0.82, 1.0, fall));
-        vAlpha = inZone * winter * ends * 0.42;
+        vAlpha = aSnow * season * ends * 0.42;
       }
     `,
     fragmentShader: `
