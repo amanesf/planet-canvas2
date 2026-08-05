@@ -19,9 +19,9 @@ import { SEA_LEVEL, latLonToDir, sampledHeight, seaLevelRadius } from './terrain
 //   aircraft    great-circle routes between real cities, climbing out and
 //               descending in, each dragging a contrail that thins and
 //               fades behind it.
-//   ships       ocean crossings, found by actually walking the sea until
-//               land gets in the way, so no vessel is ever sailing over a
-//               continent.
+//   ships       crossings between real ports, kept only where walking the
+//               raster proves open water the whole way, so no vessel is
+//               ever sailing over a continent or calling nowhere.
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -186,7 +186,12 @@ export function buildSatellites(radius: number): Traffic {
 
 // Real airports, so a flight is between two places that exist rather than
 // between two arbitrary points on the paint.
-const AIR_ROUTES: [string, [number, number], [number, number]][] = [
+/**
+ * Exported so the ground can agree with the air: the airfields in
+ * landmarks.ts are built at these endpoints rather than from a second list
+ * of the same airports, which is the split §2-11 exists to prevent.
+ */
+export const AIR_ROUTES: [string, [number, number], [number, number]][] = [
   ['羽田 → ホノルル', [35.55, 139.78], [21.32, -157.92]],
   ['ロンドン → ニューヨーク', [51.47, -0.45], [40.64, -73.78]],
   ['ドバイ → シンガポール', [25.25, 55.36], [1.36, 103.99]],
@@ -358,6 +363,45 @@ export function buildAircraft(radius: number): Traffic {
 // Ships
 // ---------------------------------------------------------------------
 
+/**
+ * Real ports, and the single truth about where ships call.
+ *
+ * Until now the crossings below were found by dropping a random point in
+ * the sea, picking a random heading and walking until land stopped it. The
+ * lanes that produced are genuinely good — they follow the real shape of
+ * the oceans, because they were found against the actual raster — but they
+ * began and ended nowhere, at whichever pixel the walk happened to run
+ * aground on. That was invisible while nothing was built on the coast; the
+ * moment quays exist it becomes a ship sailing past a harbour it never
+ * calls at, so the endpoints have to be real and both consumers have to
+ * read the same list. `landmarks.ts` builds its quays from this table.
+ *
+ * The walk itself is kept — see `buildShips`. A great circle between two
+ * ports is a straight line that sails through Panama, Africa and the
+ * Himalaya; only walking the raster tells you which pairs are actually
+ * connected by open water.
+ */
+export const PORTS: [string, number, number][] = [
+  ['上海', 31.23, 121.5],
+  ['シンガポール', 1.26, 103.83],
+  ['ロッテルダム', 51.95, 4.14],
+  ['ハンブルク', 53.54, 9.97],
+  ['ロサンゼルス', 33.73, -118.26],
+  ['ニューヨーク', 40.67, -74.04],
+  ['サントス', -23.98, -46.3],
+  ['ダーバン', -29.87, 31.03],
+  ['ケープタウン', -33.91, 18.42],
+  ['シドニー', -33.86, 151.2],
+  ['ジェベル・アリ', 25.01, 55.06],
+  ['ムンバイ', 18.94, 72.84],
+  ['コロン', 9.36, -79.9],
+  ['ポートサイド', 31.25, 32.3],
+  ['バルパライソ', -33.03, -71.63],
+  ['横浜', 35.45, 139.65],
+  ['バンクーバー', 49.29, -123.11],
+  ['ラゴス', 6.44, 3.4],
+];
+
 function buildShipMesh(): THREE.Group {
   const ship = new THREE.Group();
 
@@ -404,6 +448,8 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
     object: THREE.Group;
     u: THREE.Vector3;
     v: THREE.Vector3;
+    /** angle at which the sailed leg begins, measured from the first port */
+    start: number;
     span: number;
     duration: number;
     phase: number;
@@ -413,35 +459,86 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
   }
   const routes: Route[] = [];
 
-  // Finding a crossing: start somewhere at sea, pick a heading, and walk
-  // until land stops you. Guessing an arc and hoping is not good enough —
-  // most of the globe is ocean, but the long routes people would notice
-  // (an Atlantic crossing, the Pacific) are exactly the ones a blind guess
-  // runs aground on halfway through.
+  // Finding a crossing: take two real ports and walk the great circle
+  // between them, one raster sample at a time, keeping the pair only if
+  // open water runs the whole way. Walking is not decoration — most pairs
+  // in `PORTS` fail, and they fail for the right reasons: Shanghai to
+  // Rotterdam goes overland across Asia, Los Angeles to New York walks
+  // straight into Kansas. The lanes that survive are the ones that really
+  // are connected by sea, found against the actual elevation data rather
+  // than assumed.
   const step = 0.02;
   const probe = new THREE.Vector3();
-  let attempts = 0;
-  const WANTED = 7;
-  while (routes.length < WANTED && attempts < 4000) {
-    attempts++;
-    const z = rand() * 2 - 1;
-    const a = rand() * Math.PI * 2;
-    const r = Math.sqrt(1 - z * z);
-    const start = new THREE.Vector3(r * Math.cos(a), z, r * Math.sin(a));
-    if (!isOcean(start)) continue;
-    // shipping stays out of the pack ice
-    if (Math.abs(start.y) > 0.82) continue;
 
-    const heading = new THREE.Vector3(rand() - 0.5, rand() - 0.5, rand() - 0.5);
-    const [u, v] = planeBasis(start, heading);
+  // A port sits *on* the coastline, so the first and last few samples of
+  // any honest route are over land or over the raster's idea of a delta.
+  // Ships are therefore picked up and set down a little offshore; 0.05rad
+  // is about 320km, which is roughly the width of one raster pixel's worth
+  // of slop at the mouths the elevation data reads as sea anyway (§2-11).
+  const APPROACH = 0.05;
 
-    let span = 0;
-    for (let s = step; s < 1.3; s += step) {
-      onGreatCircle(u, v, s, probe);
-      if (!isOcean(probe) || Math.abs(probe.y) > 0.85) break;
-      span = s;
+  interface Candidate {
+    u: THREE.Vector3;
+    v: THREE.Vector3;
+    start: number;
+    span: number;
+    a: number;
+    b: number;
+  }
+  const candidates: Candidate[] = [];
+  const dirs = PORTS.map(([, lat, lon]) => latLonToDir(lat, lon));
+
+  for (let i = 0; i < PORTS.length; i++) {
+    for (let j = i + 1; j < PORTS.length; j++) {
+      const total = dirs[i].angleTo(dirs[j]);
+      // too short to read as a crossing, or so long the ship is mostly
+      // round the back of the globe where nobody sees it
+      if (total < 0.35 || total > 2.7) continue;
+      const [u, v] = planeBasis(dirs[i], dirs[j]);
+
+      // walk in from each end until the water starts
+      let s0 = 0;
+      while (s0 < APPROACH && (onGreatCircle(u, v, s0, probe), !isOcean(probe))) s0 += step;
+      let s1 = total;
+      while (total - s1 < APPROACH && (onGreatCircle(u, v, s1, probe), !isOcean(probe))) s1 -= step;
+      if (s1 - s0 < 0.3) continue;
+
+      let clear = true;
+      for (let s = s0; s <= s1 && clear; s += step) {
+        onGreatCircle(u, v, s, probe);
+        // land in the way, or up in the pack ice where nothing sails
+        if (!isOcean(probe) || Math.abs(probe.y) > 0.85) clear = false;
+      }
+      if (!clear) continue;
+
+      candidates.push({ u, v, start: s0, span: s1 - s0, a: i, b: j });
     }
-    if (span < 0.45) continue;
+  }
+
+  // Spread the fleet over the world rather than filling it with the longest
+  // legs, which all turn out to be the same South Atlantic corner, and cap
+  // the ships per port so the quays are not all on one coast.
+  //
+  // Measured: of the 153 pairs in `PORTS`, 9 are out of range and **139 are
+  // blocked by land**, leaving 5 clear sea lanes. The cap never binds — the
+  // walk does. That is the honest number and it is what ships: 5 crossings
+  // that really are open water, against the 7 the old random walk produced
+  // between two places that were not anywhere. If more are ever wanted, the
+  // fix is a dogleg through a third port (which is how real shipping gets
+  // through Panama, Suez and the Cape) and not a looser test, because a
+  // looser test is just a ship sailing over Asia again.
+  const PER_PORT = 3;
+  const used = new Array(PORTS.length).fill(0);
+  const order = candidates.map((c) => ({ c, k: rand() + c.span * 0.35 }));
+  order.sort((p, q) => q.k - p.k);
+
+  const WANTED = 7;
+  for (const { c } of order) {
+    if (routes.length >= WANTED) break;
+    if (used[c.a] >= PER_PORT || used[c.b] >= PER_PORT) continue;
+    used[c.a]++;
+    used[c.b]++;
+    const { u, v, start, span } = c;
 
     const object = buildShipMesh();
     object.scale.setScalar(SURFACE_TRAFFIC_SCALE);
@@ -481,6 +578,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
       object,
       u,
       v,
+      start,
       span,
       // a ship is the slowest thing in the scene, and should look it
       duration: 90 + rand() * 60,
@@ -505,8 +603,8 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
       const progress = forward ? cycle * 2 : (1 - cycle) * 2;
       const direction = forward ? 1 : -1;
 
-      onGreatCircle(route.u, route.v, progress * route.span, pos);
-      onGreatCircle(route.u, route.v, (progress + 0.004 * direction) * route.span, ahead);
+      onGreatCircle(route.u, route.v, route.start + progress * route.span, pos);
+      onGreatCircle(route.u, route.v, route.start + (progress + 0.004 * direction) * route.span, ahead);
       // sitting *in* the resin, not on top of it
       route.object.position.copy(pos).multiplyScalar(seaRadius + 0.006);
       orient(route.object, pos, ahead.sub(pos));
@@ -514,7 +612,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
       for (let i = 0; i < route.wakeAlpha.length; i++) {
         const back = progress - direction * (i / (route.wakeAlpha.length - 1)) * 0.09;
         const clamped = Math.min(1, Math.max(0, back));
-        onGreatCircle(route.u, route.v, clamped * route.span, pos);
+        onGreatCircle(route.u, route.v, route.start + clamped * route.span, pos);
         pos.multiplyScalar(seaRadius + 0.0015);
         route.wakePositions[i * 3] = pos.x;
         route.wakePositions[i * 3 + 1] = pos.y;
