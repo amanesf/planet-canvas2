@@ -14,6 +14,7 @@ import {
   temperatureAt,
   terracedElevation,
   habitabilityAt,
+  latLonToDir,
   urbanAt,
   type ClimateGroup,
 } from './terrain';
@@ -68,7 +69,15 @@ export type Species =
   | 'iceFloe'
   | 'glacier'
   | 'snowDrift'
-  | 'geyser';
+  | 'geyser'
+  // Regional icons: the six below are not climate types, they are places.
+  // See REGIONAL_ICONS.
+  | 'baobab'
+  | 'eucalyptus'
+  | 'sakura'
+  | 'bambooGrove'
+  | 'saguaro'
+  | 'redwood';
 
 /** Whether a species is planted (tinted green-ish) or mineral. */
 const MINERAL: ReadonlySet<Species> = new Set<Species>([
@@ -283,6 +292,218 @@ function classify(s: Sample, rand: () => number): Species | null {
     default:
       return rand() < 0.35 * clumpDensity(dir, 173) ? 'shrub' : null;
   }
+}
+
+// ---------------------------------------------------------------------
+// Regional icons
+// ---------------------------------------------------------------------
+// Everything above this point is climate: the Köppen group decides what
+// stands here, and the same group produces the same forest everywhere it
+// occurs. That is right for a biome map and wrong for a souvenir globe,
+// because it makes Madagascar, the Kimberley and the Chaco the same
+// yellow-green savanna, and Japan the same Cfa broadleaf wood as Georgia.
+// A globe is read by looking for the places you already know, and the
+// places you know have a plant attached to them: Madagascar has baobabs,
+// Australia has gum trees, Japan has cherry blossom.
+//
+// So a short list of icons is pinned to real coordinates and allowed to
+// stand in for the generic species where the two overlap. Substitution
+// rather than a separate layer, deliberately: the density, the spacing,
+// the city clearing and the farmland thinning are all decided above and
+// none of it has to be restated here, and an icon can never appear
+// somewhere its climate cannot support one — a eucalypt is only ever put
+// where the classification already grew *something*, so the Australian
+// interior stays sand rather than sprouting a forest with the right
+// accent. `seed` is the one exception and it is small: in dry country the
+// generic table leaves most ground bare, and a region that produced six
+// plants in total (the Sonoran, measured) cannot show an icon at all.
+//
+// Regions are circles because their edges have to be soft. A hard
+// boundary at a coordinate reads as a rectangle of one tree species
+// abutting another, which is a land-use map, not a landscape; the
+// acceptance chance falls off across the outer quarter of every circle so
+// the icons thin out into the generic wood around them.
+//
+// Measured over the whole planet after the change, this layer only:
+// 50 baobabs (26 in the Sahel box, 14 in Madagascar),
+// 65 eucalypts (64 of them in Australia), 14 bamboo groves (13 in south
+// China), 12 saguaros (7 in the Sonoran box), 9 cherries (7 in Japan,
+// 2 in Korea), 7 redwoods. The layer's own total went 5,910 → 5,904 and
+// the canopy, grass and scatter layers moved by under 1%, which is what
+// substitution is for: this adds six silhouettes to the globe, not six
+// thousand instances.
+//
+// One icon was built and thrown away: the Joshua tree. Its range is the
+// Mojave, and the Mojave measured *five* plants of any kind in the whole
+// box (four dunes and one shrub) — a region that small cannot carry a
+// species, it can only carry a landmark, and landmarks.ts is where those
+// live. Its distinguishing feature fails the same test twice over: the
+// splayed branch tips that make the silhouette are about 0.010 units
+// across, which is 0.9 px. An olive grove for the Mediterranean was
+// dropped for the opposite reason — plenty of room, but at this size it
+// is a low round green blob, which is exactly what the generic shrub
+// already is, and the cypress beside it already says "Mediterranean"
+// with the only outline in that region that is not a blob.
+interface IconRegion {
+  species: Species;
+  /** [latitude, longitude, angular radius in radians] — 1 rad ≈ 6,371 km */
+  areas: readonly (readonly [number, number, number])[];
+  /** the generic species this icon stands in for inside its region */
+  replaces: readonly Species[];
+  /** chance of taking one of those over */
+  takeover: number;
+  /** chance of claiming ground the generic table left bare (see above) */
+  seed: number;
+}
+
+const REGIONAL_ICONS: readonly IconRegion[] = [
+  {
+    // Madagascar's Avenue and the Sahel's lone giants. The baobab replaces
+    // the acacia rather than joining it: both are "the one tree standing
+    // in dry grass", and having both in the same place would just read as
+    // two kinds of scrub.
+    species: 'baobab',
+    areas: [
+      [-19, 45, 0.13], // Madagascar, west coast
+      [14, -11, 0.1], // Senegal / Mali
+      [13, 3, 0.1], // Niger
+      [12, 20, 0.1], // Chad / Sudan
+    ],
+    replaces: ['acacia', 'deadTree', 'desertScrub', 'broadleaf'],
+    takeover: 0.6,
+    seed: 0.05,
+  },
+  {
+    // One circle covers the continent: at 0.33 rad it reaches from the
+    // Kimberley to Tasmania, which is right, because the gum tree does
+    // too — it is the one genus that spans every Australian climate from
+    // the wet tropics to the alps, and it is what makes the place look
+    // like nowhere else.
+    species: 'eucalyptus',
+    areas: [
+      [-25, 134, 0.33],
+      [-42, 147, 0.05], // Tasmania, just outside the big circle's falloff
+    ],
+    replaces: ['broadleaf', 'shrub', 'acacia', 'conifer', 'cypress'],
+    takeover: 0.7,
+    seed: 0.03,
+  },
+  {
+    // Cherry, and only where the blossom is the season: Honshu, Kyushu,
+    // Hokkaido, Korea. Kept well under half the local wood — an island
+    // entirely of blossom is a pattern, one in three trees is a spring.
+    species: 'sakura',
+    areas: [
+      [36, 138, 0.1], // Honshu
+      [33, 131, 0.05], // Kyushu
+      [43, 142, 0.06], // Hokkaido
+      [36.5, 127.8, 0.05], // Korea
+    ],
+    replaces: ['broadleaf', 'shrub'],
+    takeover: 0.7,
+    seed: 0.12,
+  },
+  {
+    // The generic `bamboo` species is single scattered culms mixed
+    // through a tropical wood, which is what bamboo is in the Amazon
+    // understorey. A managed grove — a solid block of stems with a mass
+    // of leaf on top — is a different thing and belongs to south China
+    // and Japan specifically, so it takes over the generic one there.
+    species: 'bambooGrove',
+    areas: [
+      [25, 110, 0.13], // Guangxi / Hunan
+      [30, 104, 0.08], // Sichuan
+      [34.5, 134, 0.07], // western Honshu
+    ],
+    replaces: ['bamboo', 'broadleaf'],
+    takeover: 0.55,
+    seed: 0.03,
+  },
+  {
+    // The Sonoran, and nothing else. There is already a `cactus` and it
+    // is already saguaro-shaped, which is exactly the problem: the one
+    // silhouette that means "Arizona" was being planted in the Sahel, the
+    // Kalahari and the Australian interior, none of which has ever had a
+    // columnar cactus in it. The generic one keeps its shape (it is the
+    // only succulent outline that reads at this size) and the real
+    // Sonoran gets a taller, heavier, properly candelabra'd version so
+    // that the place it actually comes from still wins the comparison.
+    species: 'saguaro',
+    areas: [
+      [32, -112, 0.075], // Arizona / Sonora
+      [29, -113.5, 0.05], // Baja California
+    ],
+    replaces: ['cactus', 'desertScrub', 'shrub'],
+    takeover: 0.85,
+    // The Sonoran box measured six plants of any kind in total, so
+    // substitution alone would have put two saguaros in Arizona.
+    seed: 0.2,
+  },
+  {
+    // Coast redwood: the tallest tree there is, and height is the only
+    // property of a tree that survives being 7 pixels tall. A narrow
+    // strip, because the real range is one.
+    species: 'redwood',
+    areas: [
+      [40.5, -123.4, 0.07], // northern California
+      [46, -122.8, 0.07], // Oregon / Washington coast
+    ],
+    replaces: ['conifer', 'deadTree', 'broadleaf', 'shrub', 'cypress'],
+    takeover: 0.75,
+    seed: 0.12,
+  },
+];
+
+// Precomputed once: the direction of each circle's centre and the cosines
+// of its edge and of the inner circle where the falloff begins. A dot
+// product against a unit direction is the whole test, which matters
+// because it runs on every one of the 900,000 candidates.
+const ICON_AREAS = REGIONAL_ICONS.map((region) => ({
+  region,
+  circles: region.areas.map(([lat, lon, radius]) => ({
+    at: latLonToDir(lat, lon),
+    cosOuter: Math.cos(radius),
+    cosInner: Math.cos(radius * 0.72),
+  })),
+}));
+
+/**
+ * The icon that belongs at this point, or `base` unchanged.
+ *
+ * Ground the generic table left bare (`base === null`) can still be
+ * claimed, but only where something could have grown: the landform cases
+ * in `classify` — ice, badlands, above the tree line, underwater — have
+ * already had their say by the time this is called, and an icon must not
+ * overrule them. A baobab standing on a glacier is a worse failure than
+ * no baobab.
+ */
+function regionalIcon(s: Sample, base: Species | null, rand: () => number): Species | null {
+  if (base !== null && MINERAL.has(base)) return base;
+  for (const { region, circles } of ICON_AREAS) {
+    let strength = 0;
+    for (const c of circles) {
+      const d = s.dir.dot(c.at);
+      if (d <= c.cosOuter) continue;
+      strength = Math.max(strength, smoothstep(d, c.cosOuter, c.cosInner));
+    }
+    if (strength === 0) continue;
+    if (base !== null) {
+      if (!region.replaces.includes(base)) continue;
+      return rand() < region.takeover * strength ? region.species : base;
+    }
+    const plantable =
+      !s.underwater &&
+      s.snow <= 0.5 &&
+      s.elevation <= 0.15 &&
+      s.badlands <= BADLANDS_THRESHOLD &&
+      s.temperature >= COLD_TEMPERATURE_LIMIT;
+    // No `return` on a failed roll: the regions overlap (western Honshu is
+    // both cherry country and bamboo country), and returning here would
+    // silently give every square of overlap to whichever icon happens to
+    // be listed first.
+    if (plantable && rand() < region.seed * strength) return region.species;
+  }
+  return base;
 }
 
 // ---------------------------------------------------------------------
@@ -576,6 +797,140 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
       parts.push(g);
       break;
     }
+    // --- the regional icons ---
+    //
+    // Sized against the pixel budget rather than against botany. At the
+    // shipped camera one world unit is about 108 px, and the placement
+    // loop multiplies every instance by `0.6 + rand*rand*0.85`, whose
+    // mean is 0.81 — so the honest conversion for anything here is about
+    // 87 px per unit, and a feature narrower than 0.023 units is under
+    // two pixels and cannot be seen at all. Every dimension below that
+    // carries meaning is checked against that number in its comment; the
+    // ones that fail it are stated as failing rather than quietly shipped.
+    case 'baobab': {
+      // The bottle trunk is the whole animal. 0.034 across at the base
+      // (3.0 px) against the 0.014 of a broadleaf trunk (1.2 px) — the
+      // one tree on the planet whose *stem* is visible from orbit, which
+      // is exactly the joke a baobab makes in life.
+      const trunk = column(0.017, 0.009, 0.044, 0, 7);
+      parts.push(trunk);
+      // Flat, wide and thin — "roots in the air". 0.062 across (5.4 px)
+      // and 0.026 deep (2.3 px), which is the shallowest a crown can be
+      // and still register as a crown rather than as a line.
+      const crown = new THREE.SphereGeometry(0.031, 8, 5);
+      displaceWithNoise(crown, 0.26, 3.5, rand() * 500);
+      crown.scale(1, 0.42, 1);
+      crown.translate(0, 0.052, 0);
+      parts.push(crown);
+      for (let i = 0; i < 3; i++) {
+        const limb = new THREE.CylinderGeometry(0.0035, 0.005, 0.022, 4);
+        limb.translate(0, 0.011, 0);
+        limb.rotateZ(0.9);
+        limb.rotateY((i / 3) * Math.PI * 2 + rand());
+        limb.translate(0, 0.042, 0);
+        parts.push(limb);
+      }
+      break;
+    }
+    case 'eucalyptus': {
+      // Tall, bare for most of its height, with a thin open crown right
+      // at the top: 0.095 overall (8.3 px) against the broadleaf's 0.072
+      // (6.3 px), and a crown 0.046 wide (4.0 px) against the
+      // broadleaf's 0.069 (6.0 px). Two pixels taller and two pixels
+      // narrower is a small margin, and it is only half the cue — the
+      // other half is the blue-grey foliage, which no other species here
+      // has and which does not need any pixels at all.
+      const trunk = column(0.0075, 0.005, 0.07, 0, 6);
+      trunk.rotateZ(0.05);
+      parts.push(trunk);
+      for (let i = 0; i < 3; i++) {
+        const lobe = new THREE.SphereGeometry(0.016 + rand() * 0.005, 6, 4);
+        displaceWithNoise(lobe, 0.3, 4, rand() * 500);
+        lobe.translate(
+          (rand() - 0.5) * 0.03,
+          0.078 + rand() * 0.014,
+          (rand() - 0.5) * 0.03,
+        );
+        parts.push(lobe);
+      }
+      break;
+    }
+    case 'sakura': {
+      // Deliberately the least distinctive shape of the six. A cherry in
+      // blossom is not recognised by its outline — it is a low vase of a
+      // tree much like any other — it is recognised by being pink, and
+      // colour is the one property that survives at one pixel. So the
+      // geometry only has to say "small round tree" (crown 0.072 across,
+      // 6.3 px, sitting lower than a broadleaf's) and `speciesColor`
+      // does the work.
+      parts.push(column(0.006, 0.004, 0.016, 0, 5));
+      const crown = new THREE.SphereGeometry(0.036, 8, 5);
+      displaceWithNoise(crown, 0.24, 3.2, rand() * 500);
+      crown.scale(1, 0.55, 1);
+      crown.translate(0, 0.03, 0);
+      parts.push(crown);
+      break;
+    }
+    case 'bambooGrove': {
+      // A single culm is 0.008 across — 0.7 px, invisible on its own,
+      // and that is fine because a grove is never seen as culms. What is
+      // seen is a tall narrow block of one bright colour: 0.028 wide
+      // (2.4 px) and 0.105 tall (9.1 px) including the leaf mass, the
+      // most extreme height-to-width ratio of anything that grows here,
+      // which is precisely what a managed grove looks like from outside.
+      for (let i = 0; i < 9; i++) {
+        const culm = column(0.004, 0.003, 0.072 + rand() * 0.026, 0, 4);
+        culm.rotateZ((rand() - 0.5) * 0.16);
+        culm.translate((rand() - 0.5) * 0.02, 0, (rand() - 0.5) * 0.02);
+        parts.push(culm);
+      }
+      // The canopy of leaf the culms carry at the top. Without it the
+      // grove ends in a flat cut line, which reads as a fence.
+      for (let i = 0; i < 3; i++) {
+        const leaf = new THREE.SphereGeometry(0.014, 6, 4);
+        leaf.scale(1, 0.7, 1);
+        leaf.translate((rand() - 0.5) * 0.018, 0.086 + rand() * 0.014, (rand() - 0.5) * 0.018);
+        parts.push(leaf);
+      }
+      break;
+    }
+    case 'saguaro': {
+      // Taller and thicker than the generic cactus (0.085 against 0.06,
+      // trunk 0.024 across against 0.016) and with the arms turned into
+      // a proper candelabra: the span across the arm tips is 0.056,
+      // 4.9 px, against the 2.1 px of the bare column.
+      //
+      // The arms themselves are 0.020 thick, which is 1.7 px — under the
+      // two-pixel line, and stated here rather than hidden: they are not
+      // readable as limbs and are not meant to be. What is readable is
+      // that the top half of the silhouette is twice as wide as the
+      // bottom half, and that is the shape everyone recognises.
+      parts.push(column(0.012, 0.011, 0.085, 0, 8));
+      for (let i = 0; i < 2; i++) {
+        const side = i === 0 ? 1 : -1;
+        const arm = new THREE.CylinderGeometry(0.01, 0.01, 0.03, 6);
+        arm.rotateZ(Math.PI / 2);
+        arm.translate(side * 0.017, 0.04 + i * 0.012, 0);
+        parts.push(arm);
+        const tip = new THREE.CylinderGeometry(0.01, 0.01, 0.03, 6);
+        tip.translate(side * 0.028, 0.055 + i * 0.012, 0);
+        parts.push(tip);
+      }
+      break;
+    }
+    case 'redwood': {
+      // Height is the entire species. 0.135 tall is 11.7 px against the
+      // conifer's 0.08 (6.9 px) standing next to it — nearly double, and
+      // the only difference on this list that cannot be mistaken for
+      // instance scale jitter. Narrow with it: a redwood is a mast, and
+      // the crown starts high up the trunk.
+      parts.push(column(0.009, 0.005, 0.135, 0, 6));
+      for (let i = 0; i < 3; i++) {
+        const t = i / 3;
+        parts.push(cone(0.022 * (1 - t * 0.5), 0.05, 0.06 + t * 0.03, 6));
+      }
+      break;
+    }
     case 'geyser': {
       // the plume, not the vent: steam is what you can see from here
       for (let i = 0; i < 4; i++) {
@@ -651,6 +1006,35 @@ function speciesColor(species: Species, temperature: number, out: THREE.Color): 
       return out.setHSL(0.58, 0.05, 0.88, THREE.SRGBColorSpace);
     case 'geyser':
       return out.setHSL(0.55, 0.04, 0.9, THREE.SRGBColorSpace);
+    case 'baobab':
+      // Most of a baobab's visible area is trunk, and the trunk is pale
+      // grey-mauve bark, not foliage. The colour is doing the same job
+      // the shape is: nothing else standing in dry grass is this light.
+      return out.setHSL(0.09, 0.16, 0.5, THREE.SRGBColorSpace);
+    case 'eucalyptus':
+      // Blue-grey-green, and the bluest foliage on the planet by some
+      // distance (the taiga conifer, the next bluest, is at 0.31 with
+      // more saturation). Half the reason a gum tree is recognisable at
+      // this size, since the silhouette only clears the broadleaf by two
+      // pixels — see the model.
+      return out.setHSL(0.38, 0.16, 0.44, THREE.SRGBColorSpace);
+    case 'sakura':
+      // The entire species. Pale pink is a colour nothing else on the
+      // globe has, so it reads at any size down to a single pixel — but
+      // it is also the only cue, which is why the takeover chance is
+      // kept well under half.
+      return out.setHSL(0.95, 0.42, 0.74, THREE.SRGBColorSpace);
+    case 'bambooGrove':
+      // Brighter and yellower than the scattered `bamboo` it replaces:
+      // a managed grove is uniform young growth, and the block of colour
+      // is what makes it read as one object rather than as a thicket.
+      return out.setHSL(0.2, 0.62, 0.42, THREE.SRGBColorSpace);
+    case 'saguaro':
+      return out.setHSL(0.3, 0.34, 0.27, THREE.SRGBColorSpace);
+    case 'redwood':
+      // Dark, and slightly red-shifted from the boreal conifer beside it
+      // for the bark, which is a third of the silhouette at this height.
+      return out.setHSL(0.34, 0.4, 0.19, THREE.SRGBColorSpace);
   }
 }
 
@@ -940,8 +1324,11 @@ export function buildSpecies(
     const farmed = THREE.MathUtils.smoothstep(habitabilityAt(dir, s.height), 0.35, 0.85) * 0.62;
     const clearedByCity = (strength: number) => strength > 0 && rand() < strength;
 
-    // ---- fourteen-species classification ----
-    const species = classify(s, rand);
+    // ---- species classification, then the regional icons on top ----
+    // The order matters: the icons stand in for what the climate already
+    // decided, so everything below — clearing, thinning, spacing —
+    // applies to a baobab exactly as it did to the acacia it replaced.
+    const species = regionalIcon(s, classify(s, rand), rand);
 
     // Trees only: a field is cleared of forest, not of the butte standing
     // in it, and the scrub layer is what a hedgerow reads as.
