@@ -902,6 +902,28 @@ const CLOUD_SHADOW_GLSL = `
     float cover = texture2D(uCloudShadow, vec2(fract(u), v)).r;
     return 1.0 - cover * strength;
   }
+
+  // How wet the ground here is, 0..1.
+  //
+  // The blue channel of the same map marks the cells that have rain
+  // falling out of them, so this is one more fetch of a texture already
+  // being sampled and no new state anywhere. Read a little *ahead* of
+  // where the cell is now — the lookup is offset against the drift — so
+  // the dark patch trails out from under the storm rather than sitting
+  // exactly beneath it: ground that has just been rained on, which is
+  // what is actually visible from outside. Under the cell itself the
+  // shade is doing the work anyway.
+  float rainWet(vec3 objNormal) {
+    float lat = asin(clamp(objNormal.y, -1.0, 1.0));
+    float v = lat / 3.14159265 + 0.5;
+    float omega = (texture2D(uCloudShadow, vec2(0.5, v)).g - 0.5) * uOmegaScale;
+    float lon = atan(objNormal.z, -objNormal.x);
+    float u = (lon - omega * uCloudTime) / 6.28318530718 + 0.5;
+    // one and a half cell-widths downwind, in the direction the deck came
+    // from — sign carried by omega so it works in both wind belts
+    float trail = sign(omega) * 0.022;
+    return texture2D(uCloudShadow, vec2(fract(u + trail), v)).b;
+  }
 `;
 
 await yieldToBrowser('街の灯り');
@@ -1018,7 +1040,22 @@ globeMaterial.onBeforeCompile = (shader) => {
       // Cloud shade. Applied to the albedo rather than to the light so it
       // costs nothing extra and darkens the ground the way an overcast
       // does — the land keeps its own colour, it just receives less.
-      diffuseColor.rgb *= cloudShade(vObjNormal, 0.38);`,
+      diffuseColor.rgb *= cloudShade(vObjNormal, 0.38);
+      // Wet ground. Rock and soil that has just been rained on is darker,
+      // and that is the whole of it here: the paint keeps its hue and
+      // loses a fifth of its value. Multiplied, never subtracted — a
+      // constant taken off a linear colour clamps the dark parts to black
+      // and draws a hard key line round everything (§2-15) — and left out
+      // of the gloss entirely, because "only the sea is shiny" is a
+      // standing decision about this object, not an oversight (§2-18).
+      {
+        // Land only. The sea does not get wet, and the painted ocean under
+        // the glass shell is part of this same map — darkening it here
+        // would have put a "rained on" patch on the one surface in the
+        // scene that cannot be.
+        float wetLand = smoothstep(uSeaRadius - 0.01, uSeaRadius + 0.01, vSeasonRadius);
+        diffuseColor.rgb *= 1.0 - rainWet(vObjNormal) * wetLand * 0.2;
+      }`,
     );
 };
 
@@ -1309,6 +1346,31 @@ oceanMaterial.onBeforeCompile = (shader) => {
       // under a sky rather than a painted blue field — which is where the
       // absence of shadows was doing the most damage.
       diffuseColor.rgb *= cloudShade(vObjNormal, 0.62);`,
+    )
+    .replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+      // Rain stipples the water.
+      //
+      // The one place this project can show rain landing. On the ground it
+      // would be a change of paint value under a canopy that hides the
+      // ground (§2-16); on the sea it is a change of *finish*, and the sea
+      // here is a sheet of poured resin whose whole character is its
+      // gloss. Water under a shower is not glassy — the drops break the
+      // surface into a matte, scattering skin — so the same wet channel
+      // that darkens soil roughens this instead. Nothing else about the
+      // sea changes: it is still the only shiny thing in the scene, just
+      // not shiny under a storm.
+      roughnessFactor = mix(roughnessFactor, 0.78, rainWet(vObjNormal) * 0.85);`,
+    )
+    .replace(
+      '#include <lights_physical_fragment>',
+      `#include <lights_physical_fragment>
+      // and the clearcoat with it — the resin's gloss lives almost
+      // entirely in this term (clearcoat 0.85 at roughness 0.16), so
+      // roughening the base alone would have changed a number without
+      // changing the picture.
+      material.clearcoatRoughness = mix(material.clearcoatRoughness, 0.55, rainWet(vObjNormal) * 0.85);`,
     )
     .replace(
       '#include <emissivemap_fragment>',

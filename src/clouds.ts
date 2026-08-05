@@ -970,6 +970,7 @@ export interface CloudSystem {
  */
 function buildCloudShadowTexture(
   nodules: Nodule[],
+  isRaining: (n: Nodule) => boolean,
   radius: number,
   width: number,
   height: number,
@@ -1007,6 +1008,7 @@ function buildCloudShadowTexture(
     // from; stamping `size` unchanged, now that the average nodule covers
     // more ground than the sphere it replaced, would leave the deck's shade
     // visibly lighter than the deck.
+    const raining = isRaining(n);
     const angular = (n.size * Math.sqrt(n.sx * n.sz)) / radius;
     const v = (n.lat / Math.PI + 0.5) * height;
     const u = (n.lon / (Math.PI * 2) + 0.5) * width;
@@ -1031,6 +1033,12 @@ function buildCloudShadowTexture(
         const wrapped = ((px % width) + width) % width;
         const i = (py * width + wrapped) * 4;
         data[i] = Math.min(255, data[i] + fall * 190);
+        // Blue: the same stamp again, but only for the cells that have
+        // rain falling out of them. The globe reads it as wet ground (see
+        // the map_fragment patch in main.ts) — the shade says "there is a
+        // cloud over this", the third channel says "and it is raining on
+        // it", off one texture fetch the sky was already paying for.
+        if (raining) data[i + 2] = Math.min(255, data[i + 2] + fall * 210);
       }
     }
   });
@@ -1674,7 +1682,21 @@ export function buildClouds(
   // 512x256 is plenty: this is soft shade cast by objects that are
   // themselves soft, and it is sampled on a sphere that never fills more
   // than half the frame. One megabyte of RGBA, built once.
-  const { texture: shadowTexture, omegaScale } = buildCloudShadowTexture(nodules, radius, 512, 256);
+  // Which cells the wet-ground channel is stamped from: the storm types,
+  // and only where the rainfall map says rain belongs at the position the
+  // deck was baked at. Same test the veils apply every frame, taken once.
+  const rainingAtBake = (n: Nodule): boolean => {
+    const type = bandType[n.band];
+    if (type !== 'storm' && type !== 'typhoon') return false;
+    return precipitationAtSeason(n.live, 0) > 0.4;
+  };
+  const { texture: shadowTexture, omegaScale } = buildCloudShadowTexture(
+    nodules,
+    rainingAtBake,
+    radius,
+    512,
+    256,
+  );
 
   return { group, tick, shadowTexture, omegaScale };
 }
