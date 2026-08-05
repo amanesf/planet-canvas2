@@ -62,6 +62,39 @@ interface CloudTypeParams {
   haloScale: number;
   /** underside shading: lower = darker, storm cells read as heavy with rain */
   undersideFloor: number;
+  /**
+   * How much of the band's grain survives all the way to its tips, 0..1.
+   * 1 is what this used to do — the last nodule of a band was the same
+   * *kind* of lump as the ones in the middle, only fed a smaller `bulk`, so
+   * a band ended in a recognisable ball. Pulled cotton does not end in a
+   * smaller ball, it ends in nothing, so the tips get an extra multiplier
+   * on top of the bulk taper and bottom out here. The same number also sets
+   * how readily the tips drop masses outright: a low floor means the last
+   * of the band is detached specks with sky between them.
+   */
+  tipFloor: number;
+  /**
+   * How strongly this type's nodules line up with the band they were laid
+   * along, 0..1. 0 is the uniform random spin every nodule used to get,
+   * which is fine while every nodule is a round blob and worthless the
+   * moment they are drawn out into lozenges — combed fibre only reads as
+   * fibre if the fibres agree on a direction. 1 is exactly along the band.
+   */
+  comb: number;
+  /**
+   * Ceiling on how far a nodule of this type is drawn out along its own
+   * long axis. 1 would be the sphere this used to place. The width shrinks
+   * as the length grows (see the `drawnOut` helper), because a wad of
+   * batting pulled longer gets *thinner*, it does not gain material.
+   */
+  drawOut: number;
+  /**
+   * Expected number of specks laid per step, on top of the masses. These
+   * are the fibres that came away when the wad was torn: much smaller than
+   * the masses, not scaled by the local bulk at all, and laid wide of the
+   * spine so they fringe the band instead of filling it.
+   */
+  tuft: number;
 }
 
 const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
@@ -77,6 +110,10 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     haloOpacity: 0.13,
     haloScale: 1.32,
     undersideFloor: 0.52,
+    tipFloor: 0.42,
+    comb: 0.34,
+    drawOut: 1.85,
+    tuft: 0.85,
   },
   // A flat, low, wide overcast sheet — few tall lumps, lots of shallow
   // wide ones packed close together so the gaps between nodules close up
@@ -93,6 +130,13 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     haloOpacity: 0.16,
     haloScale: 1.5,
     undersideFloor: 0.62,
+    // A sheet is the one type that must not open up at its ends — the whole
+    // point of it is that the nodules close into one hazy layer — so its
+    // tips are only mildly drawn out and it keeps nearly all of its masses.
+    tipFloor: 0.68,
+    comb: 0.55,
+    drawOut: 2.1,
+    tuft: 0.6,
   },
   // Thin, sparse, high wisps — the opposite instinct from every other
   // type: fewer nodules, not more, each one small and stretched long
@@ -109,6 +153,12 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     haloOpacity: 0.06,
     haloScale: 1.6,
     undersideFloor: 0.78,
+    // The type that is *made* of grain: nearly all combed, drawn out further
+    // than anything else on the planet, and ending in nothing at all.
+    tipFloor: 0.3,
+    comb: 0.9,
+    drawOut: 3.0,
+    tuft: 0.75,
   },
   // A tropical cyclone. Not laid along a band like every other type — its
   // nodules are placed in spiral coordinates around a moving centre (see
@@ -126,6 +176,15 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     haloOpacity: 0.12,
     haloScale: 1.3,
     undersideFloor: 0.3,
+    // A cyclone is not laid along a band, so it has neither tips to draw out
+    // nor tuft fringes to hang off a spine, and its grain direction is
+    // resolved every frame from the arm it sits on rather than baked (see
+    // pushSpiralNodule and the spiral branch of advect). Only drawOut is
+    // read here.
+    tipFloor: 1,
+    comb: 1,
+    drawOut: 2.0,
+    tuft: 0,
   },
   // Tall and dense with a dark, heavy underside — a cumulonimbus cell,
   // the only type that gets its own material (see buildClouds) so it can
@@ -142,6 +201,13 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     haloOpacity: 0.1,
     haloScale: 1.24,
     undersideFloor: 0.22,
+    // A thunderhead is piled, not combed — it is the one type whose lumps
+    // are allowed to stay nearly round, because vertical development is what
+    // reads as a storm and a drawn-out cell reads as a smear.
+    tipFloor: 0.5,
+    comb: 0.2,
+    drawOut: 1.5,
+    tuft: 0.9,
   },
 };
 
@@ -153,8 +219,38 @@ interface Nodule {
   hover: number;
   /** world-space radius of the nodule */
   size: number;
-  /** rotation about the local normal */
-  spin: number;
+  /**
+   * Which way this nodule's long axis points, as a compass bearing in
+   * radians: 0 is local north, +π/2 is local east.
+   *
+   * This replaced a plain `spin` about the surface normal, and the reason is
+   * worth writing down because "just store the angle" looks obviously
+   * sufficient and is not. The old rotation was `spinQ * align`, where
+   * `align` was the *minimal* rotation carrying +Y onto the surface normal.
+   * That frame has a twist in it that varies with position, so a nodule set
+   * up to point along its band at t = 0 slowly rotates out of alignment as
+   * the wind carries it east: at 0.027 rad/s the westerlies move a band more
+   * than a radian of longitude a minute, and any combing baked at build time
+   * has visibly decayed into the old uniform random spin before you have
+   * finished watching one cloud cross the face. A bearing is invariant under
+   * the rotation about the polar axis that the drift *is*, so it stays true.
+   */
+  bearing: number;
+  /** cos/sin of `bearing`, so the per-frame pass does no trigonometry */
+  bearingCos: number;
+  bearingSin: number;
+  /**
+   * Per-instance non-uniform scale, multiplied into `size` when the matrix
+   * is composed. The nodule geometry is shared — three variants for the
+   * whole planet, because a fourth would be a fourth draw call — so this is
+   * the only place a nodule can stop being the same shape as its
+   * neighbours. `sx` runs along `bearing`, i.e. along the band when the type
+   * combs (see CloudTypeParams.comb), so >1 draws the lump out into a fibre
+   * rather than just making it a bigger ball.
+   */
+  sx: number;
+  sy: number;
+  sz: number;
   /** which weather band this nodule belongs to, for independent drift */
   band: number;
   /**
@@ -166,17 +262,117 @@ interface Nodule {
   spiral?: { radius: number; theta: number };
   /** where this nodule is *this frame*, filled in by tick */
   live: THREE.Vector3;
+  /**
+   * The unit world-space direction its long axis points *this frame*,
+   * perpendicular to `live`. Resolved once per nodule per frame in advect
+   * from `bearing` (or, for cyclone nodules, from whichever arm they sit on
+   * at the moment) so that the core layer and the halo layer over it agree
+   * without either recomputing it.
+   */
+  grain: THREE.Vector3;
   /** and how big it is this frame (breathing, storm intensity) */
   liveScale: number;
 }
 
-function makeNodule(dir: THREE.Vector3, rest: Omit<Nodule, 'lat' | 'lon' | 'live' | 'liveScale'>): Nodule {
-  return { ...rest, lat: latOf(dir), lon: lonOf(dir), live: dir.clone(), liveScale: 1 };
+type NoduleSpec = Omit<Nodule, 'lat' | 'lon' | 'live' | 'liveScale' | 'grain' | 'bearingCos' | 'bearingSin'>;
+
+function makeNodule(dir: THREE.Vector3, rest: NoduleSpec): Nodule {
+  return {
+    ...rest,
+    lat: latOf(dir),
+    lon: lonOf(dir),
+    live: dir.clone(),
+    grain: new THREE.Vector3(1, 0, 0),
+    bearingCos: Math.cos(rest.bearing),
+    bearingSin: Math.sin(rest.bearing),
+    liveScale: 1,
+  };
+}
+
+/**
+ * How wide a nodule is once it has been drawn out to `long` times its own
+ * length. Pulling a wad of batting longer does not create material: it takes
+ * it from the width. Not area-preserving on purpose — at `long^-0.42` the
+ * footprint still grows with the pull, and that surplus is what closes the
+ * gaps *along* a band, which is the difference between a row of separate
+ * lumps and one torn strip.
+ *
+ * The height is deliberately *not* reduced along with the width, and the
+ * first version of this got that wrong in a way that was obvious the moment
+ * it was on screen. Taking `long^-0.34` off the height as well, on top of
+ * the 0.72 already baked into the nodule geometry and the 0.8 applied in
+ * tick, left every lump a pancake — and a stretched low-poly pancake lit
+ * from one side is not cotton, it is a flake of torn paper or a chip of ice.
+ * The whole deck read as white shards scattered on the sea. Cotton pulled
+ * apart stays *domed*; it is fluff, it does not compact when you stretch it.
+ */
+function drawnOut(long: number): number {
+  return Math.pow(long, -0.42);
+}
+
+// Local east/north at a point on the sphere. East is the direction of
+// increasing longitude under lonOf's convention (`atan2(z, -x)`), which is
+// the same convention the terrain is painted in — getting this backwards
+// would comb every cloud on the planet across the flow instead of along it.
+// Returns false at the poles, where a compass bearing has no meaning.
+function tangentFrame(dir: THREE.Vector3, east: THREE.Vector3, north: THREE.Vector3): boolean {
+  const c = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
+  if (c < 1e-4) return false;
+  east.set(dir.z / c, 0, -dir.x / c);
+  north.crossVectors(dir, east);
+  return true;
+}
+
+// Build-time scratch for bearingOf.
+const bearEast = new THREE.Vector3();
+const bearNorth = new THREE.Vector3();
+
+/** The compass bearing of a tangent direction at a point. */
+function bearingOf(dir: THREE.Vector3, tangent: THREE.Vector3): number {
+  if (!tangentFrame(dir, bearEast, bearNorth)) return 0;
+  return Math.atan2(tangent.dot(bearEast), tangent.dot(bearNorth));
 }
 
 /**
  * One cloud: a chain of nodules walked along a great-circle arc, thick in
  * the middle and tapering to wisps at both ends.
+ *
+ * ---------------------------------------------------------------------
+ * Grain
+ * ---------------------------------------------------------------------
+ * The band *shape* was right and the reading was still "a bag of identical
+ * lumps", for a reason that is about statistics rather than about shape.
+ * Every nodule was drawn from `(sizeBase + bulk*sizeBulk) * (0.55 + U*0.8)`,
+ * a uniform ±42% around a mean that itself only moves by a factor of 2.6
+ * from the middle of a band to its end. Measured over the whole sky
+ * (temporary hook, `?debugclouds`) that put 63% of the planet's nodules
+ * inside ±30% of the median and the 90th/10th percentile ratio at 2.6. One
+ * grain size means one material, and a material made of same-sized balls is
+ * polystyrene, not batting.
+ *
+ * Torn cotton has the opposite statistics: a few big masses, a few medium
+ * shoulders leaning on them, and a lot of specks pulled off the edges and
+ * the ends. Four things here produce that, all of them build-time only, so
+ * none of it costs a draw call or a frame:
+ *
+ * 1. Masses are *ranked* within their step. The first lump laid at a step is
+ *    the mass and sits on the spine; each one after it is a shoulder at
+ *    0.72x of the one before, pushed progressively further off the spine.
+ *    Rank alone spans a factor of 2.7 within a single step, where before the
+ *    members of a cluster were interchangeable draws from one distribution.
+ * 2. Every nodule is *drawn out* along its own long axis by a per-instance
+ *    non-uniform scale, and combed so that a band's fibres agree about which
+ *    way they run. This is the half of the fix that stops them being round;
+ *    the size hierarchy is the half that stops them being the same.
+ * 3. Tufts: a second, much smaller population that is not scaled by the
+ *    local bulk at all — specks of a roughly fixed small size, so that where
+ *    the band is fat they are a fifth of the mass beside them and where it
+ *    is thin they are all that is left. They are laid wide of the spine, and
+ *    at the ends they are thrown *past* the last step, so a band frays out
+ *    into open sky rather than stopping.
+ * 4. The tips both shrink harder (`tipFloor`) and start dropping masses
+ *    outright, so the last of a band is detached specks with sky between
+ *    them instead of one final smaller ball.
  */
 function buildCloudBand(
   start: THREE.Vector3,
@@ -186,10 +382,8 @@ function buildCloudBand(
   out: Nodule[],
 ): void {
   // a tangent direction to walk along, and a second tangent to spread across
-  const along = new THREE.Vector3(rand() - 0.5, rand() - 0.5, rand() - 0.5)
-    .addScaledVector(start, -start.dot(new THREE.Vector3()))
-    .normalize();
-  // re-orthogonalize properly against the surface normal
+  const along = new THREE.Vector3(rand() - 0.5, rand() - 0.5, rand() - 0.5);
+  // orthogonalize against the surface normal
   along.addScaledVector(start, -along.dot(start)).normalize();
   const across = new THREE.Vector3().crossVectors(start, along).normalize();
 
@@ -203,6 +397,7 @@ function buildCloudBand(
   const wander = (rand() - 0.5) * 0.5;
 
   const point = new THREE.Vector3();
+  const tangent = new THREE.Vector3();
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
     // 0 at both ends, 1 in the middle: drives thickness, count and height
@@ -218,25 +413,130 @@ function buildCloudBand(
       .addScaledVector(across, drift * 0.35)
       .normalize();
 
+    // Which way the band is running here — the derivative of the walk above
+    // with respect to `angle` — reprojected onto the tangent plane at the
+    // point actually reached. Everything laid at this step is combed toward
+    // it, by as much as the type's `comb` asks for.
+    tangent
+      .copy(start)
+      .multiplyScalar(-Math.sin(angle))
+      .addScaledVector(along, Math.cos(angle));
+    tangent.addScaledVector(point, -tangent.dot(point)).normalize();
+    const spine = bearingOf(point, tangent);
+    const jitter = (1 - params.comb) * Math.PI;
+
+    // The tips. `bulk` alone still leaves a recognisable lump at t = 0 and
+    // t = 1, because `sizeBase` is a flat floor under it; this multiplies
+    // that floor away as well, and `open` is the matching chance of laying
+    // nothing at all there.
+    const taper = params.tipFloor + (1 - params.tipFloor) * Math.pow(bulk, 0.55);
+    const open = (1 - bulk) * (1 - bulk) * (1 - params.tipFloor) * 1.6;
+
     // more nodules where the band is thickest; the tapering ends thin out
     // to one or two, which is what reads as a wisp
     const clusterSize = params.clusterBase + Math.floor(bulk * params.clusterBulk + rand() * 1.0);
+    // The spine is narrow and only the fringe is wide. It used to be one
+    // uniform ±(0.06 + bulk*0.13) rad for everything, which at a nodule's
+    // angular radius of ~0.024 rad scattered the members of a cluster four
+    // radii apart — so a "band" was a loose sprinkle of separate balls with
+    // sky between them, and that, more than the shape of any one nodule, is
+    // why it never read as one torn strip. Torn batting is a *connected*
+    // mass with a frayed edge; separate lumps at even spacing are a
+    // sprinkle, whatever shape you make the lumps.
+    const halfWidth = 0.014 + bulk * 0.03;
+
     for (let c = 0; c < clusterSize; c++) {
-      const lateral = (rand() - 0.5) * (0.06 + bulk * 0.13);
-      const forward = (rand() - 0.5) * 0.05;
+      if (rand() < open) continue; // the band has already ended here
+      // rank 0 is the mass, on the spine; every one after it is a smaller
+      // shoulder leaning on it and set a little further out
+      const rankSize = Math.pow(0.72, c);
+      const lateral =
+        (rand() - 0.5) * halfWidth * 1.3 +
+        (c === 0 ? 0 : (rand() < 0.5 ? -1 : 1) * halfWidth * c * 0.85);
+      // Was ±0.05 rad, against a step spacing of about 0.025 — so the
+      // members of a cluster were scattered further along the band than the
+      // distance to the next cluster, and the ordering that makes a spine a
+      // spine was lost in the noise.
+      const forward = (rand() - 0.5) * 0.022;
       const dir = point
         .clone()
         .addScaledVector(across, lateral)
         .addScaledVector(along, forward)
         .normalize();
 
+      // Squared rather than uniform: the point is a long tail, not a wider
+      // band of the same middling size. Most masses sit near 0.95 and about
+      // one in ten runs past 1.6.
+      const grain = 0.85 + rand() * rand() * 1.5;
+      // Skewed toward 1 with a long tail, for the same reason the size is:
+      // a uniform draw between two elongations gives every lump the same
+      // rounded-rectangle outline and simply trades "identical balls" for
+      // "identical lozenges". Skewed, most masses stay nearly round and the
+      // few that run out to two and a half times their width are the ones
+      // that read as having been pulled.
+      const long = 1 + Math.pow(rand(), 1.5) * (params.drawOut * 1.35 - 1);
+
       out.push(makeNodule(dir, {
         // Standing clear of the surface rather than lying on it: pinned
         // this tightly they read as frost on the shell, and the gap is what
         // lets their shadows land on the terrain where you can see them.
-        hover: params.hoverBase + bulk * params.hoverBulk + rand() * 0.05,
-        size: (params.sizeBase + bulk * params.sizeBulk) * (0.55 + rand() * 0.8),
-        spin: rand() * Math.PI * 2,
+        // Shoulders sit slightly lower than the mass they lean on, which is
+        // what stops a cluster reading as one level shelf of lumps. The
+        // random part used to be 0.05, which is a whole nodule radius of
+        // vertical scatter — every lump floating at its own altitude, none
+        // of them merging into the one beside it, all of them separately
+        // silhouetted against the sea. A wad of batting is laid on a
+        // surface; it does not hover in layers.
+        hover: params.hoverBase + bulk * params.hoverBulk + rand() * 0.022 - c * 0.013,
+        size: (params.sizeBase + bulk * params.sizeBulk) * taper * rankSize * grain,
+        // The half-turn is free shape variety and it matters most exactly
+        // where the combing is strongest. A nodule is a lump with its bulge
+        // off to one side, so turning it end for end gives a different
+        // silhouette without a second geometry; for cirrus, which is combed
+        // 90% and would otherwise lay every fibre with its fat end the same
+        // way round, it is the only asymmetry left.
+        bearing: spine + (rand() - 0.5) * 2 * jitter + (rand() < 0.5 ? Math.PI : 0),
+        sx: long,
+        sy: 0.92 + rand() * 0.34,
+        sz: drawnOut(long) * (0.9 + rand() * 0.26),
+        band,
+      }));
+    }
+
+    // Tufts. Deliberately *not* multiplied by `bulk`: a speck torn off the
+    // edge of a wad is the same size wherever it came from, and it is that
+    // fixed small size next to a mass five times its width that gives the
+    // deck a hierarchy the eye can read at a glance.
+    const tufts = Math.floor(params.tuft + rand());
+    for (let c = 0; c < tufts; c++) {
+      // Just off the shoulders, not out in open sky: a fibre that has come
+      // away from the wad is still touching it.
+      const lateral = (rand() < 0.5 ? -1 : 1) * halfWidth * (1.3 + rand() * 1.5);
+      // At the ends, throw them *past* the last step along the band's own
+      // direction. A band that stops at its final step stops at a line; one
+      // that keeps shedding specks beyond it frays.
+      const overrun = (1 - bulk) * (1 - bulk) * (t < 0.5 ? -1 : 1) * rand() * 0.11;
+      const forward = (rand() - 0.5) * 0.04 + overrun;
+      const dir = point
+        .clone()
+        .addScaledVector(across, lateral)
+        .addScaledVector(along, forward)
+        .normalize();
+
+      const long = 1.35 + rand() * (params.drawOut * 1.2 - 1.35);
+      out.push(makeNodule(dir, {
+        hover: params.hoverBase + bulk * params.hoverBulk * 0.6 + rand() * 0.03,
+        // Based on the type's floor plus a slice of its bulk rather than on
+        // the floor alone: cirrus, whose floor is 0.018, was otherwise
+        // shedding specks two pixels across that no viewer could resolve.
+        size: (params.sizeBase + params.sizeBulk * 0.3) * (0.3 + rand() * rand() * 0.55),
+        // Specks are the most strongly combed thing in the sky — they are
+        // literally the fibres the pull left behind — so they ignore all but
+        // a little of the type's jitter.
+        bearing: spine + (rand() - 0.5) * jitter * 0.5 + (rand() < 0.5 ? Math.PI : 0),
+        sx: long,
+        sy: 0.85 + rand() * 0.25,
+        sz: drawnOut(long) * (0.82 + rand() * 0.26),
         band,
       }));
     }
@@ -245,8 +545,33 @@ function buildCloudBand(
 
 /** A single lumpy nodule — the unit the whole sky is built from. */
 function buildNoduleGeometry(rand: () => number, flatten: number, undersideFloor: number): THREE.BufferGeometry {
-  const g = new THREE.SphereGeometry(1, 8, 6);
-  displaceWithNoise(g, 0.34, 3.2, rand() * 500);
+  // 12 segments round, 5 rings. Costs 96 triangles against the 80 of the
+  // 8x6 this replaced — a fifth more, and it buys the thing that actually
+  // shows. What you see of a nodule is almost entirely its *horizontal*
+  // outline: it is squashed to 0.72 by the line below and to 0.8 again in
+  // tick, and it is looked at from above the horizon. Eight segments round
+  // meant that outline was an octagon with 45-degree corners, and once the
+  // nodules were drawn out along one axis (see Nodule.sx) those corners
+  // stopped being hidden by the roundness and the deck read as white shards.
+  // Twelve round and five up is the same triangle budget spent where the
+  // silhouette is instead of on rings nothing looks at edge-on.
+  const g = new THREE.SphereGeometry(1, 12, 5);
+  // 3.2 was past the point where this geometry can carry the noise: at 45
+  // degrees between vertices the sample spacing was 2.5 noise units, so
+  // neighbouring vertices got uncorrelated values and the "lumpiness" was
+  // really aliasing — which is invisible while the shape is a ball, because
+  // a ball's outline is a circle whatever you do to its middle, and turns
+  // into faceted gemstones the moment the ball is stretched.
+  //
+  // Both ends of the range were tried and both are wrong in their own way.
+  // At 1.5 the displacement is one coherent bulge per nodule and the deck
+  // reads as a scatter of smooth white pebbles — soap, not fibre. 2.6 is
+  // about two vertices per noise feature at the 30-degree spacing this
+  // geometry now has: enough for a ragged outline, not so much that
+  // neighbouring vertices disagree. Deeper than the original as well, since
+  // depth is what is left doing the work once the frequency is bounded.
+  // Build-time only.
+  displaceWithNoise(g, 0.46, 2.6, rand() * 500);
   g.scale(1, 0.72 * flatten, 1); // batting settles wider than it is tall
   g.computeVertexNormals();
 
@@ -424,6 +749,14 @@ function typhoonCentre(sys: TyphoonSystem, age: number, out: THREE.Vector3): THR
   return dirFromLatLon(lat, lon, out);
 }
 
+/**
+ * How tightly the rainbands are wound: `theta = base - hemi * WIND * ln(r/eye)`.
+ * Hoisted out of buildTyphoon because advect needs the same number to work
+ * out which way an arm is running at a nodule, and two copies of a shape
+ * constant is how the cotton ends up combed across its own arms.
+ */
+const CYCLONE_WIND = 3.1;
+
 function buildTyphoon(sys: TyphoonSystem, rand: () => number, out: Nodule[]): void {
   const arms = 5;
   const params = CLOUD_TYPE_PARAMS.typhoon;
@@ -436,7 +769,7 @@ function buildTyphoon(sys: TyphoonSystem, rand: () => number, out: Nodule[]): vo
   for (let i = 0; i < wallCount; i++) {
     const theta = (i / wallCount) * Math.PI * 2;
     const r = sys.eye * (1.0 + rand() * 0.16);
-    out.push(pushSpiralNodule(sys, r, theta, 1, rand, params));
+    out.push(pushSpiralNodule(sys, r, theta, 1, 0, rand, params));
   }
 
   // and the rainbands: logarithmic spirals unwinding out of the eyewall.
@@ -453,16 +786,24 @@ function buildTyphoon(sys: TyphoonSystem, rand: () => number, out: Nodule[]): vo
       const r = sys.eye * 1.1 + (sys.reach - sys.eye * 1.1) * Math.pow(f, 0.9);
       // the further out, the more the arm has been wound back — this is
       // what makes the arms trail rather than stick out like spokes
-      const theta = base - sys.hemi * 3.1 * Math.log(r / sys.eye);
+      const theta = base - sys.hemi * CYCLONE_WIND * Math.log(r / sys.eye);
       if (f > 0.8 && rand() < (f - 0.8) * 2.6) continue;
       const across = 3 - Math.floor(f * 2);
       for (let c = 0; c < across; c++) {
+        // An arm is a ridge with a crest, not a rope of equal beads: the
+        // nodule on the centreline of the arm is the mass and the ones
+        // flanking it are shoulders, exactly as in a band (buildCloudBand).
+        // Ranking them costs nothing and is most of what stops 500 eyewall
+        // and rainband nodules — two thirds of every nodule on the planet —
+        // reading as one grain size.
+        const rank = Math.abs(c - (across - 1) / 2);
         out.push(
           pushSpiralNodule(
             sys,
             r * (1 + ((c - (across - 1) / 2) * 0.05 + (rand() - 0.5) * 0.03)),
             theta + (rand() - 0.5) * 0.12,
             1 - f * 0.6,
+            rank,
             rand,
             params,
           ),
@@ -477,13 +818,27 @@ function pushSpiralNodule(
   r: number,
   theta: number,
   bulk: number,
+  rank: number,
   rand: () => number,
   params: CloudTypeParams,
 ): Nodule {
+  const long = 1.2 + rand() * (params.drawOut - 1.2);
   const n = makeNodule(new THREE.Vector3(0, 1, 0), {
-    hover: params.hoverBase + bulk * params.hoverBulk + rand() * 0.03,
-    size: (params.sizeBase + bulk * params.sizeBulk) * (0.6 + rand() * 0.7),
-    spin: rand() * Math.PI * 2,
+    hover: params.hoverBase + bulk * params.hoverBulk + rand() * 0.03 - rank * 0.012,
+    size:
+      (params.sizeBase + bulk * params.sizeBulk) *
+      Math.pow(0.72, rank) *
+      (0.78 + rand() * rand() * 1.0),
+    // A cyclone nodule's grain direction is resolved every frame from the
+    // arm it is sitting on (the whole system rotates and travels, so no
+    // baked bearing survives), and all this field carries for it is which
+    // way round to lay the lump: `bearingCos` comes out as exactly +1 or -1
+    // and advect multiplies the arm tangent by it. Without that every fibre
+    // in the storm points its fat end the same way round the eye.
+    bearing: rand() < 0.5 ? 0 : Math.PI,
+    sx: long,
+    sy: 0.9 + rand() * 0.3,
+    sz: drawnOut(long) * (0.88 + rand() * 0.26),
     band: sys.band,
   });
   n.spiral = { radius: r, theta };
@@ -559,7 +914,14 @@ function buildCloudShadowTexture(
     // with no cloud over it.
     if (n.spiral) return;
 
-    const angular = n.size / radius;
+    // The blob is stamped round, so a drawn-out nodule is credited with the
+    // radius of a circle of the same footprint area rather than with its
+    // length. Stamping the length would put a shadow on the sea wider than
+    // anything above it in three quarters of the directions you could look
+    // from; stamping `size` unchanged, now that the average nodule covers
+    // more ground than the sphere it replaced, would leave the deck's shade
+    // visibly lighter than the deck.
+    const angular = (n.size * Math.sqrt(n.sx * n.sz)) / radius;
     const v = (n.lat / Math.PI + 0.5) * height;
     const u = (n.lon / (Math.PI * 2) + 0.5) * width;
     const rY = (angular / Math.PI) * height;
@@ -667,7 +1029,25 @@ export function buildClouds(radius: number): CloudSystem {
   // snaking in lockstep
   const bandMeanderPhase = bandType.map(() => rand() * Math.PI * 2);
 
-  const regularVariantCount = 3;
+  // Two, not three, and the change is a draw-call ledger rather than a taste
+  // one. Variants used to be handed out by band (`n.band % count`), which
+  // meant a cloud was sixty copies of one mesh and — because the three
+  // buckets were indexed by band number and there were never bands to fill
+  // all three — only two of the three geometries were ever used anyway. The
+  // planet was measurably paying for three shapes and rendering two, in
+  // twelve draw calls. Interleaving the buckets per nodule (see below) puts
+  // a different silhouette next to every lump, but it also *fills* the third
+  // bucket, and a filled bucket is a fourteenth draw call. Two shapes with
+  // both of them inside every cloud beats three shapes with one per cloud,
+  // and it costs exactly what the old arrangement cost.
+  //
+  // If a third is ever wanted back, the way to pay for it is to give all the
+  // regular nodules one shared *halo* geometry — the halo is a 1.32x blob at
+  // 0.13 opacity and cannot be told apart between variants — which frees two
+  // calls. It is not done here because the halo scheme is tuned and the
+  // failure it fixed (a grey ring round every lump) is the worst artifact
+  // this sky has had; it is not something to disturb for a third potato.
+  const regularVariantCount = 2;
   const regularVariants = Array.from({ length: regularVariantCount }, () =>
     buildNoduleGeometry(rand, 1, CLOUD_TYPE_PARAMS.cumulus.undersideFloor),
   );
@@ -733,9 +1113,8 @@ export function buildClouds(radius: number): CloudSystem {
   const cirrusHaloMaterial = haloMaterial.clone();
   cirrusHaloMaterial.opacity = CLOUD_TYPE_PARAMS.cirrus.haloOpacity;
 
-  const dummy = new THREE.Object3D();
-  const up = new THREE.Vector3(0, 1, 0);
-  const rotated = new THREE.Vector3();
+  const instanceMatrix = new THREE.Matrix4();
+  const binormal = new THREE.Vector3();
 
   // Every InstancedMesh built below is re-driven live in tick(): each
   // nodule keeps its original (pre-drift) dir and remembers which band it
@@ -774,9 +1153,22 @@ export function buildClouds(radius: number): CloudSystem {
   const cirrusNodules: Nodule[] = [];
   const stormNodulesByBand = new Map<number, Nodule[]>();
 
+  // The variant a nodule gets is chosen per *nodule*, not per band.
+  //
+  // It used to be `n.band % regularVariantCount`, which meant every lump in
+  // a given cloud was literally the same mesh, repeated sixty times with
+  // nothing but a rotation and a scale between the copies. That is a large
+  // part of why the deck read as manufactured however the sizes were
+  // distributed: the repetition is visible at a glance even when you cannot
+  // say what it is you are seeing.
+  let variantCursor = 0;
   nodules.forEach((n) => {
     const type = bandType[n.band];
     if (type === 'storm' || type === 'typhoon') {
+      // Storm cells stay grouped by band, and have to: each band owns a
+      // material so its lightning can flicker alone (see stormBands below),
+      // so splitting one across three geometries would cost three draw calls
+      // per storm instead of one.
       const list = stormNodulesByBand.get(n.band) ?? [];
       list.push(n);
       stormNodulesByBand.set(n.band, list);
@@ -785,7 +1177,7 @@ export function buildClouds(radius: number): CloudSystem {
     } else if (type === 'cirrus') {
       cirrusNodules.push(n);
     } else {
-      regularByVariant[n.band % regularVariantCount].push(n);
+      regularByVariant[variantCursor++ % regularVariantCount].push(n);
     }
   });
 
@@ -835,8 +1227,8 @@ export function buildClouds(radius: number): CloudSystem {
   const centre = new THREE.Vector3();
   const east = new THREE.Vector3();
   const north = new THREE.Vector3();
-  const align = new THREE.Quaternion();
-  const spinQ = new THREE.Quaternion();
+  const frameEast = new THREE.Vector3();
+  const frameNorth = new THREE.Vector3();
 
   // Where every nodule is *right now*. Done once per frame over the nodule
   // list rather than inside the mesh loop, because the core and halo layers
@@ -863,12 +1255,36 @@ export function buildClouds(radius: number): CloudSystem {
         const theta = n.spiral!.theta + omega * t;
         const tangentX = Math.cos(theta);
         const tangentZ = Math.sin(theta);
+        const sr = Math.sin(r);
+        const cr = Math.cos(r);
         n.live
           .copy(centre)
-          .multiplyScalar(Math.cos(r))
-          .addScaledVector(north, Math.sin(r) * tangentX)
-          .addScaledVector(east, Math.sin(r) * tangentZ)
+          .multiplyScalar(cr)
+          .addScaledVector(north, sr * tangentX)
+          .addScaledVector(east, sr * tangentZ)
           .normalize();
+        // Which way the arm is running here.
+        //
+        // A cyclone's cotton has to be combed *along its own arms*, and no
+        // bearing baked at build time can say that: the system rotates
+        // differentially and its centre travels, so an arm sweeps through
+        // every compass direction over a storm's life. It is closed form
+        // though. Differentiating the logarithmic spiral
+        // `theta = base - hemi*CYCLONE_WIND*ln(r/eye)` gives
+        // `r * dtheta/dr = -hemi*CYCLONE_WIND`, so the tangent is one part
+        // radial to CYCLONE_WIND parts azimuthal — about 18 degrees off
+        // circular, which is exactly the shallow lean a real rainband has.
+        // The eyewall ring comes out of the same expression as very nearly
+        // azimuthal, which is what turns 56 separate lumps into a wall.
+        const w = -sys.hemi * CYCLONE_WIND;
+        n.grain
+          .copy(centre)
+          .multiplyScalar(-sr)
+          .addScaledVector(north, cr * tangentX - w * tangentZ)
+          .addScaledVector(east, cr * tangentZ + w * tangentX)
+          .normalize()
+          // +1 or -1: which end of the lump leads (see pushSpiralNodule)
+          .multiplyScalar(n.bearingCos);
         // Forming and dissipating are changes in *organisation*, not in
         // the size of the cloud a storm is made of.
         //
@@ -897,6 +1313,21 @@ export function buildClouds(radius: number): CloudSystem {
         n.lat +
         meanderAmplitude(n.lat) * Math.sin(lon * 3 + t * 0.05 + bandMeanderPhase[n.band]);
       dirFromLatLon(THREE.MathUtils.clamp(lat, -HALF_PI, HALF_PI), lon, n.live);
+      // Resolve the stored compass bearing into a world direction here, at
+      // wherever the nodule has drifted to. Two cos/sin were already spent
+      // on this bearing at build time (Nodule.bearingCos), so this is four
+      // multiplies and no trigonometry — cheaper than the setFromAxisAngle
+      // the old per-instance spin cost, and done once per nodule instead of
+      // once per nodule per layer.
+      if (tangentFrame(n.live, frameEast, frameNorth)) {
+        n.grain
+          .copy(frameNorth)
+          .multiplyScalar(n.bearingCos)
+          .addScaledVector(frameEast, n.bearingSin);
+      } else {
+        // directly over a pole, where a bearing means nothing; any tangent
+        n.grain.set(1, 0, 0).addScaledVector(n.live, -n.live.x).normalize();
+      }
       n.liveScale = 1 + Math.sin(t * bandBreathSpeed[n.band] + bandBreathPhase[n.band]) * 0.09;
     });
   };
@@ -906,15 +1337,37 @@ export function buildClouds(radius: number): CloudSystem {
 
     liveMeshes.forEach(({ mesh, list, sizeScale }) => {
       list.forEach((n, i) => {
-        rotated.copy(n.live);
-        dummy.position.copy(rotated).multiplyScalar(radius + n.hover);
-        align.setFromUnitVectors(up, rotated);
-        spinQ.setFromAxisAngle(rotated, n.spin);
-        dummy.quaternion.copy(spinQ).multiply(align);
+        // The instance basis, written straight out rather than composed from
+        // a pair of quaternions.
+        //
+        // This used to be `setFromUnitVectors(up, dir)` for the standing-up
+        // and `setFromAxisAngle(dir, spin)` for the twist, multiplied
+        // together and run through Object3D.compose. That is two quaternion
+        // constructions, a quaternion product and a full TRS compose per
+        // instance per frame — and, worse, the frame it produced had a
+        // position-dependent twist baked into it, which is what made
+        // build-time combing decay as clouds drifted (see Nodule.bearing).
+        // The three axes are known directly: local +Y is the surface normal,
+        // local +X is the grain advect already resolved, and +Z closes the
+        // right-handed set. Both are unit and perpendicular by construction,
+        // so one cross product finishes it.
+        const d = n.live;
+        const g = n.grain;
+        binormal.crossVectors(g, d);
         const s = n.size * sizeScale * n.liveScale;
-        dummy.scale.set(s, s * 0.8, s);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
+        const ex = s * n.sx;
+        // the 0.8 is the squash every nodule has always had on top of the
+        // one already baked into its geometry; sy is the per-instance part
+        const ey = s * 0.8 * n.sy;
+        const ez = s * n.sz;
+        const p = radius + n.hover;
+        instanceMatrix.set(
+          g.x * ex, d.x * ey, binormal.x * ez, d.x * p,
+          g.y * ex, d.y * ey, binormal.y * ez, d.y * p,
+          g.z * ex, d.z * ey, binormal.z * ez, d.z * p,
+          0, 0, 0, 1,
+        );
+        mesh.setMatrixAt(i, instanceMatrix);
       });
       mesh.instanceMatrix.needsUpdate = true;
     });
