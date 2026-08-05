@@ -781,7 +781,14 @@ export function buildSpecies(
   // planting both on the same lattice makes them the same place with
   // different colours. The hash's cell size is the *sparse* end, since the
   // 3x3x3 neighbourhood has to cover the largest distance ever asked for.
-  const FOREST_SPACING_DENSE = 0.0065;
+  // Tightened from 0.0065 when clearings went in. The two are one change:
+  // carving gaps costs canopy only in the gaps, but the closed-canopy areas
+  // are packing-limited rather than density-limited — they are already at
+  // the spacing's ceiling, so raising density there buys nothing and the
+  // planet simply lost 24% of its forest. Packing the stands tighter puts
+  // that back where it belongs, which is inside the stands. Same total
+  // green, more contrast between wood and clearing.
+  const FOREST_SPACING_DENSE = 0.0057;
   const FOREST_SPACING_SPARSE = 0.017;
   const forestHash = new SpatialHash(FOREST_SPACING_SPARSE);
   const forestPoints: GroundPoint[] = [];
@@ -918,7 +925,23 @@ export function buildSpecies(
       // the wet margins (south China's Cw belt in particular) that the
       // canopy figure said should be there.
       const patch = fbm3(dir.x * 9 + 77, dir.y * 9 + 77, dir.z * 9 + 77, 2);
-      const density = s.canopy * (1.5 + patch * 1.5);
+      // Clearings. The patch term above never reaches zero (its floor is
+      // 1.5x), so anywhere the climate said "closed canopy" got closed
+      // canopy, everywhere, and the result was an unbroken sheet of green
+      // with no shape to it. A real forest at this scale has burns, blowdowns,
+      // river courses and bare ridges through it, and those gaps are what
+      // let the eye read the canopy as a surface with relief instead of as
+      // a flat fill. Much lower frequency than `patch`, because the gaps
+      // have to be big enough to survive at globe scale.
+      const clearing = smoothstep(
+        fbm3(dir.x * 3.5 + 401, dir.y * 3.5 + 401, dir.z * 3.5 + 401, 2),
+        0.33,
+        0.44,
+      );
+      // The multiplier keeps the planet's total canopy roughly where the
+      // census put it — the point is to redistribute the same green into
+      // stands with gaps between them, not to have less of it.
+      const density = s.canopy * (1.5 + patch * 1.5) * (0.55 + clearing * 0.75);
       // Closed canopy packs tight, open woodland stands apart.
       const spacing = THREE.MathUtils.lerp(
         FOREST_SPACING_SPARSE,
@@ -1294,8 +1317,29 @@ export function buildSpecies(
     // size quarters the area each one covers, which is what buys the room
     // for the count to go up by an order of magnitude without the canopy
     // turning into an unbroken shell.
+    // Squaring was an improvement on a flat range but not enough of one:
+    // it still put the middle half of all clumps between 0.30 and 0.77,
+    // and a mass of objects within a factor of two of each other reads as
+    // a texture rather than as a collection of things. That is most of why
+    // the forest came out as a uniform carpet with no hierarchy in it.
+    //
+    // Cubing pushes the bulk smaller and lets a thin tail run much larger,
+    // which is the shape real applied flock has and, in a rainforest, the
+    // shape the thing being modelled has: a floor of ordinary canopy with
+    // occasional emergents standing clear above it. Only about one clump in
+    // twenty exceeds 1.5. The old curve's ceiling of 1.19 is still cleared,
+    // but nowhere near the 2.35 of the version that turned the canopy into
+    // an unbroken shell.
     const r0 = rand();
-    const scale = 0.24 + r0 * r0 * 0.95;
+    // The offset matters as much as the exponent, and the first attempt at
+    // this got it wrong. Cubing alone (0.2 + r^3 * 1.5) pulled the *typical*
+    // clump from 0.72 down to 0.39, and since coverage goes as the square of
+    // the linear size, the canopy lost most of its body — the Amazon came
+    // out as scattered broccoli rather than jungle, which trades one wrong
+    // read for a worse one. The tail is what was wanted, not the shrinkage:
+    // keep the bulk where the census had it and let only the top few percent
+    // run away.
+    const scale = 0.42 + r0 * r0 * r0 * 1.3;
     const instance = { point, scale };
     if (scale >= CANOPY_FINE_SCALE) fineBuckets[i % 2].push(instance);
     else coarseBuckets[i % canopyVariantCount].push(instance);
@@ -1331,7 +1375,11 @@ export function buildSpecies(
         canopyColor.setHSL(
           climate.hue + rand() * 0.03,
           climate.saturation + rand() * 0.12,
-          climate.lightness + rand() * 0.11,
+          // Widened from 0.11. Per-clump light and shade is the only thing
+          // standing in for the shadows the canopy cannot cast (see the
+          // shadow-map note in main.ts), and at 0.11 the whole mass sat in
+          // one value band, which is the other half of why it read flat.
+          climate.lightness - 0.05 + rand() * 0.22,
           THREE.SRGBColorSpace,
         );
         mesh.setColorAt(i, canopyColor);
