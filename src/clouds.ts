@@ -39,17 +39,52 @@ function cloudDensityAt(dir: THREE.Vector3): number {
 // whole point.
 
 /**
- * How much cloud belongs over ground with this much rain falling on it.
+ * How cloudy a sky with this much rain falling out of it, at this latitude,
+ * ought to be — 0 clear, 1 overcast.
+ *
+ * Not the rainfall itself, which was the first version of this and was
+ * wrong in a way that only showed up when the falling snow was measured
+ * against it: at the rate the Köppen table gives them, the polar caps are
+ * deserts (an ice sheet gets less water than the Sahel), so the sky over
+ * them emptied out and 2600 flakes were left falling through clear air over
+ * Antarctica — the exact "clear sky snows" fault this coupling exists to
+ * end, recreated from the other side.
+ *
+ * Cloud cover is not annual millimetres, it is millimetres against what the
+ * air could hold. Cold air holds almost nothing, so a polar sky is overcast
+ * on a rainfall total that would be a drought in the tropics, while the
+ * genuinely cloudless places on this planet are the warm dry ones — the
+ * subtropical highs, which is where every desert on the globe underneath
+ * is. Dividing by a capacity that falls off with the cold says both at
+ * once, off one number that is already to hand.
+ *
+ * The relief is confined to the high latitudes on purpose. Letting the
+ * capacity fall smoothly all the way from the equator (cos²(lat), which is
+ * what this was first) softens the threshold under the subtropics too, and
+ * measurably puts cloud back over the Sahara — the hot deserts went from
+ * 1.35x their fair share of the sky to 1.55x for it. Everything below 38° is
+ * left reading raw rainfall, exactly as it did before this function
+ * existed.
+ */
+function cloudinessFor(precipitation: number, y: number): number {
+  // 1 up to about 38°, a fifth of that by 68° — how much water this air can
+  // carry, as a fraction of what tropical air can.
+  const capacity = 1 - 0.8 * THREE.MathUtils.smoothstep(Math.abs(y), 0.62, 0.93);
+  return THREE.MathUtils.smoothstep(precipitation / capacity, 0.16, 0.46);
+}
+
+/**
+ * ...and how big a nodule that makes.
  *
  * Bounded, and deliberately not bounded at zero. The deck's shade is a
  * texture baked once from the nodule positions (`buildCloudShadowTexture`),
  * which cannot know about this modulation — so a nodule allowed to vanish
  * would leave its own shadow lying on the desert underneath it with nothing
- * overhead to cast it. Half size and full size is as far as that can be
- * pushed while every shadow still has a visible cloud over it.
+ * overhead to cast it. A third size and full size is as far as that can be
+ * pushed while every shadow still has some visible cloud over it.
  */
-function coverageFor(precipitation: number): number {
-  return 0.35 + 0.8 * THREE.MathUtils.smoothstep(precipitation, 0.06, 0.55);
+function coverageFor(precipitation: number, y: number): number {
+  return 0.35 + 0.8 * cloudinessFor(precipitation, y);
 }
 
 // ---------------------------------------------------------------------
@@ -1040,7 +1075,7 @@ export function buildClouds(
     // this is what empties the horse latitudes, which is where every
     // subtropical desert on the globe underneath is.
     const zonal = zonalPrecipitationAt(dir.y);
-    if (rand() > THREE.MathUtils.smoothstep(zonal, 0.16, 0.46)) continue;
+    if (rand() > cloudinessFor(zonal, dir.y)) continue;
     if (seeds.some((s) => s.dir.dot(dir) > 0.68)) continue; // keep the bands apart
 
     // Type follows the climate the band lives in rather than a latitude
@@ -1052,7 +1087,7 @@ export function buildClouds(
     const lat = Math.abs(dir.y);
     let type: CloudType;
     const roll = rand();
-    const wet = THREE.MathUtils.smoothstep(zonal, 0.2, 0.5);
+    const wet = cloudinessFor(zonal, dir.y);
     if (lat < 0.35) type = roll < 0.15 + 0.5 * wet ? 'storm' : 'cumulus';
     else if (lat < 0.72) type = roll < 0.2 + 0.4 * wet ? 'stratus' : 'cumulus';
     else type = roll < 0.7 - 0.4 * wet ? 'cirrus' : 'stratus';
@@ -1409,7 +1444,7 @@ export function buildClouds(
       // with the Mediterranean band at the same longitude, because
       // `precipitationAtSeason` carries the Köppen second letter.
       const breath = 1 + Math.sin(t * bandBreathSpeed[n.band] + bandBreathPhase[n.band]) * 0.09;
-      n.liveScale = breath * coverageFor(precipitationAtSeason(n.live, season.uSeasonTilt.value));
+      n.liveScale = breath * coverageFor(precipitationAtSeason(n.live, season.uSeasonTilt.value), n.live.y);
     });
   };
 
