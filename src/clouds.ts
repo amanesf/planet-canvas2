@@ -1220,6 +1220,8 @@ export function buildClouds(
 
   const instanceMatrix = new THREE.Matrix4();
   const binormal = new THREE.Vector3();
+  const rainAxis = new THREE.Vector3();
+  const rainSide = new THREE.Vector3();
 
   // Every InstancedMesh built below is re-driven live in tick(): each
   // nodule keeps its original (pre-drift) dir and remembers which band it
@@ -1324,6 +1326,100 @@ export function buildClouds(
       flashSpread: cyclone ? 1.6 : 9,
     });
   });
+
+  // ---- rain ----
+  //
+  // Until now nothing on this planet has ever fallen out of a cloud. The
+  // storm cells flickered with lightning over ground that stayed dry, and
+  // §2-6's complaint — "there is not one line of rain in this project" —
+  // outlived every other item on its list.
+  //
+  // A shaft, not drops. At this scale individual drops are invisible and
+  // drawing them as streaks would be the most CG thing in the frame; what
+  // reads from across a room is the *veil* under a cell, a hank of fine
+  // fibre hanging off the cloud base and splaying as it falls. That is one
+  // open-ended cone per cell and one draw call for the whole planet.
+  //
+  // Only storm and cyclone cells get one, and only where the rainfall map
+  // says rain belongs, read at the cell's drifted position exactly as the
+  // cotton above it is: a thunderhead crossing the Sahara arrives with its
+  // veil already shut. Which is the causal direction §3 asks for — the
+  // same field decides the cloud, its type, its size, and now what falls
+  // out of it, instead of five systems each guessing.
+  const rainAnchors: Nodule[] = [];
+  {
+    // Every fifth storm nodule, and each veil narrower than the lump it
+    // hangs from. Both numbers were set by looking: a veil per nodule at
+    // the lump's own width (the first attempt) is sixty overlapping cones
+    // whose alpha builds into one flat grey wash lying on the sea — the
+    // storm looked like it had spilled something rather than like it was
+    // raining. Rain reads as rain when you can see between the shafts.
+    let cursor = 0;
+    nodules.forEach((n) => {
+      const type = bandType[n.band];
+      if (type !== 'storm' && type !== 'typhoon') return;
+      if (cursor++ % 5 !== 0) return;
+      rainAnchors.push(n);
+    });
+  }
+
+  const rainStrength = new Float32Array(rainAnchors.length);
+  const rainGeometry = new THREE.CylinderGeometry(0.42, 1, 1, 6, 1, true);
+  rainGeometry.setAttribute(
+    'aStrength',
+    new THREE.InstancedBufferAttribute(rainStrength, 1),
+  );
+  const rainMaterial = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    transparent: true,
+    depthWrite: false,
+    // Both faces: a cone this thin is seen through, and culling its back
+    // wall makes the near side of the veil noticeably lighter than the far
+    // side of the one next to it.
+    side: THREE.DoubleSide,
+    vertexShader: `
+      attribute float aStrength;
+      uniform float uTime;
+      varying float vStrength;
+      varying vec2 vFall;
+      varying float vY;
+      void main() {
+        vStrength = aStrength;
+        // uv.y runs 0 at the bottom of the cone to 1 at the top; uv.x goes
+        // round it. The fall is a scroll in y, so the fibres read as
+        // moving water rather than as a static cone — kept separate from
+        // vY, which has to stay put because it says where on the shaft
+        // this fragment is.
+        vY = uv.y;
+        vFall = vec2(uv.x, uv.y + uTime * 0.55);
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying float vStrength;
+      varying vec2 vFall;
+      varying float vY;
+      void main() {
+        if (vStrength <= 0.002) discard;
+        // Vertical striation. Two frequencies that do not divide into each
+        // other, so the veil never resolves into a comb of even stripes —
+        // the failure the cloud grain had to be rescued from.
+        float streak =
+          0.55 +
+          0.3 * sin(vFall.x * 44.0 + vFall.y * 9.0) +
+          0.15 * sin(vFall.x * 17.0 - vFall.y * 21.0);
+        // Attached at the top, gone before the bottom. Rain that arrives
+        // at the ground in a hard line reads as a rod holding the cloud
+        // up, which is the one thing a globe on a stand cannot afford.
+        float fade = smoothstep(0.04, 0.45, vY);
+        gl_FragColor = vec4(vec3(0.62, 0.66, 0.72), vStrength * streak * 0.3 * fade);
+      }
+    `,
+  });
+  const rainMesh = new THREE.InstancedMesh(rainGeometry, rainMaterial, Math.max(1, rainAnchors.length));
+  rainMesh.count = rainAnchors.length;
+  rainMesh.frustumCulled = false;
+  if (rainAnchors.length > 0) group.add(rainMesh);
 
   // Scratch objects for the per-frame advection, hoisted out of the loop:
   // this runs over every nodule on the planet each frame, and allocating a
@@ -1450,6 +1546,73 @@ export function buildClouds(
 
   const tick = (t: number) => {
     advect(t);
+
+    // Rain, hung under whichever storm cells are currently over ground the
+    // rainfall map says gets rain.
+    //
+    // Trailing downwind of its cell rather than hanging from the middle of
+    // it, which is the difference between rain that can be seen and rain
+    // that cannot. From outside a globe the cotton is directly between the
+    // eye and its own rain in every view except at the limb, so a shaft
+    // under the centre of a cell is occluded by that cell nearly all the
+    // time — the first version of this was invisible everywhere but the
+    // edge of the disc, and only a debug pass in flat magenta showed that
+    // it had been drawing correctly the whole time. Real rain trails
+    // downwind under shear anyway, so leaning the shaft along the cell's
+    // own grain and setting its foot out past the lump's skirt is both the
+    // truer picture and the visible one.
+    if (rainAnchors.length > 0) {
+      rainMaterial.uniforms.uTime.value = t;
+      rainAnchors.forEach((n, i) => {
+        const wet = precipitationAtSeason(n.live, season.uSeasonTilt.value);
+        // Rain needs a cloud *and* a reason. `liveScale` already carries
+        // both the cell's breathing and, for a cyclone, whether the storm
+        // exists at all this minute — a dissipated system stops raining
+        // because its cotton has gone, not because of a second rule.
+        const strength = THREE.MathUtils.smoothstep(wet, 0.3, 0.72) * Math.min(1, n.liveScale);
+        rainStrength[i] = strength;
+        if (strength <= 0.002) {
+          instanceMatrix.makeScale(0, 0, 0);
+          rainMesh.setMatrixAt(i, instanceMatrix);
+          return;
+        }
+        const d = n.live;
+        // Leaning downwind, and its own orthonormal frame around that
+        // lean. The cone is radially symmetric, so any two axes across it
+        // will do as long as they are perpendicular to the lean.
+        rainAxis.copy(d).addScaledVector(n.grain, 0.4).normalize();
+        rainSide.crossVectors(rainAxis, n.grain).normalize();
+        binormal.crossVectors(rainSide, rainAxis);
+        // From the cloud base to the ground, splaying out past the lump
+        // it falls from.
+        //
+        // Wider at the foot than the cotton above it is the only way a
+        // veil is ever seen at all: looking at a globe from outside, the
+        // cloud is directly between the eye and its own rain everywhere
+        // except at the limb, and a shaft narrower than its cloud is
+        // occluded by it in every view. Splayed, it reads in profile at
+        // the edge of the disc — which is exactly where rain is visible
+        // on a real globe too.
+        const top = radius + n.hover;
+        const length = n.hover;
+        const width = n.size * n.liveScale * 1.25;
+        const p = top - length * 0.5;
+        // out from under its own cloud, downwind
+        const off = n.size * n.liveScale * 1.15;
+        const cx = d.x * p + n.grain.x * off;
+        const cy = d.y * p + n.grain.y * off;
+        const cz = d.z * p + n.grain.z * off;
+        instanceMatrix.set(
+          rainSide.x * width, rainAxis.x * length, binormal.x * width, cx,
+          rainSide.y * width, rainAxis.y * length, binormal.y * width, cy,
+          rainSide.z * width, rainAxis.z * length, binormal.z * width, cz,
+          0, 0, 0, 1,
+        );
+        rainMesh.setMatrixAt(i, instanceMatrix);
+      });
+      rainMesh.instanceMatrix.needsUpdate = true;
+      rainGeometry.getAttribute('aStrength').needsUpdate = true;
+    }
 
     liveMeshes.forEach(({ mesh, list, sizeScale }) => {
       list.forEach((n, i) => {
