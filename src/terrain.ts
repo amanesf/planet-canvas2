@@ -1841,34 +1841,242 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
 // plausibly live, and named metropolises at their real coordinates on top.
 const MAJOR_CITIES: [number, number, number][] = [
   // latitude, longitude, relative size
+  // --- 東アジア ---
   [35.68, 139.69, 1.0], // 東京
-  [37.57, 126.98, 0.8], // ソウル
-  [31.23, 121.47, 0.95], // 上海
-  [39.9, 116.4, 0.9], // 北京
+  [34.69, 135.5, 0.75], // 大阪
+  [35.18, 136.91, 0.6], // 名古屋
+  [33.59, 130.4, 0.45], // 福岡
+  [43.06, 141.35, 0.4], // 札幌
+  [38.27, 140.87, 0.35], // 仙台
+  [37.57, 126.98, 0.85], // ソウル
+  [35.18, 129.08, 0.5], // 釜山
+  [39.02, 125.75, 0.35], // 平壌
+  [39.9, 116.4, 0.95], // 北京
+  [39.13, 117.2, 0.7], // 天津
+  [31.23, 121.47, 1.0], // 上海
+  [32.06, 118.8, 0.6], // 南京
+  [30.27, 120.16, 0.6], // 杭州
+  [30.59, 114.31, 0.7], // 武漢
+  [29.56, 106.55, 0.8], // 重慶
+  [30.57, 104.07, 0.75], // 成都
+  [34.34, 108.94, 0.6], // 西安
+  [34.75, 113.63, 0.55], // 鄭州
+  [36.07, 120.38, 0.5], // 青島
+  [41.8, 123.43, 0.55], // 瀋陽
+  [45.8, 126.53, 0.5], // ハルビン
+  [23.13, 113.26, 0.9], // 広州
+  [22.54, 114.06, 0.85], // 深圳
   [22.32, 114.17, 0.7], // 香港
+  [25.03, 121.57, 0.55], // 台北
+  [25.04, 102.72, 0.4], // 昆明
+  [43.83, 87.62, 0.3], // ウルムチ
+  [29.65, 91.1, 0.25], // ラサ
+  [47.89, 106.91, 0.3], // ウランバートル
+  // --- 東南アジア ---
+  [14.6, 120.98, 0.8], // マニラ
+  [10.32, 123.89, 0.3], // セブ
+  [-6.21, 106.85, 0.9], // ジャカルタ
+  [-7.25, 112.75, 0.5], // スラバヤ
+  [-6.91, 107.61, 0.45], // バンドン
+  [3.59, 98.67, 0.35], // メダン
+  [-5.15, 119.43, 0.3], // マカッサル
+  [13.75, 100.5, 0.8], // バンコク
+  [10.82, 106.63, 0.7], // ホーチミン
+  [21.03, 105.85, 0.6], // ハノイ
   [1.35, 103.82, 0.6], // シンガポール
-  [28.61, 77.21, 0.85], // デリー
-  [19.08, 72.88, 0.8], // ムンバイ
-  [25.2, 55.27, 0.6], // ドバイ
-  [41.01, 28.98, 0.7], // イスタンブール
-  [55.76, 37.62, 0.75], // モスクワ
-  [51.51, -0.13, 0.85], // ロンドン
-  [48.86, 2.35, 0.8], // パリ
-  [52.52, 13.4, 0.65], // ベルリン
+  [3.14, 101.69, 0.55], // クアラルンプール
+  [16.87, 96.2, 0.5], // ヤンゴン
+  [11.56, 104.93, 0.35], // プノンペン
+  // --- 南アジア ---
+  [28.61, 77.21, 1.0], // デリー
+  [19.08, 72.88, 0.95], // ムンバイ
+  [22.57, 88.36, 0.85], // コルカタ
+  [13.08, 80.27, 0.7], // チェンナイ
+  [12.97, 77.59, 0.75], // ベンガルール
+  [17.38, 78.49, 0.7], // ハイデラバード
+  [23.03, 72.58, 0.6], // アーメダバード
+  [18.52, 73.86, 0.55], // プネー
+  [21.17, 72.83, 0.45], // スーラト
+  [26.91, 75.79, 0.45], // ジャイプル
+  [26.85, 80.95, 0.45], // ラクナウ
+  [25.59, 85.14, 0.4], // パトナ
+  [21.15, 79.09, 0.4], // ナグプール
+  [23.81, 90.41, 0.9], // ダッカ
+  [22.36, 91.78, 0.5], // チッタゴン
+  [24.86, 67.01, 0.9], // カラチ
+  [31.55, 74.34, 0.8], // ラホール
+  [33.68, 73.05, 0.4], // イスラマバード
+  [34.53, 69.17, 0.45], // カブール
+  [6.93, 79.86, 0.35], // コロンボ
+  [27.72, 85.32, 0.35], // カトマンズ
+  // --- 西・中央アジア ---
+  [35.69, 51.39, 0.8], // テヘラン
+  [36.3, 59.61, 0.45], // マシュハド
+  [33.31, 44.37, 0.65], // バグダッド
+  [24.71, 46.68, 0.55], // リヤド
+  [21.49, 39.19, 0.45], // ジッダ
+  [25.2, 55.27, 0.55], // ドバイ
+  [41.01, 28.98, 0.8], // イスタンブール
+  [39.93, 32.86, 0.5], // アンカラ
+  [32.08, 34.78, 0.45], // テルアビブ
+  [41.3, 69.24, 0.45], // タシケント
+  [43.24, 76.89, 0.4], // アルマトイ
+  [40.41, 49.87, 0.4], // バクー
+  // --- ヨーロッパ ---
+  [55.76, 37.62, 0.85], // モスクワ
+  [59.94, 30.31, 0.55], // サンクトペテルブルク
+  [56.84, 60.61, 0.4], // エカテリンブルク
+  [55.03, 82.92, 0.4], // ノヴォシビルスク
+  [43.12, 131.89, 0.3], // ウラジオストク
+  [50.45, 30.52, 0.5], // キーウ
+  [53.9, 27.57, 0.35], // ミンスク
+  [52.23, 21.01, 0.45], // ワルシャワ
+  [52.52, 13.4, 0.6], // ベルリン
+  [53.55, 9.99, 0.45], // ハンブルク
+  [51.4, 7.0, 0.6], // ルール
+  [50.11, 8.68, 0.45], // フランクフルト
+  [48.14, 11.58, 0.45], // ミュンヘン
+  [48.21, 16.37, 0.45], // ウィーン
+  [50.08, 14.44, 0.4], // プラハ
+  [47.5, 19.04, 0.4], // ブダペスト
+  [44.43, 26.1, 0.4], // ブカレスト
+  [52.1, 4.6, 0.5], // ランドスタット
+  [50.85, 4.35, 0.4], // ブリュッセル
+  [48.86, 2.35, 0.85], // パリ
+  [51.51, -0.13, 0.9], // ロンドン
+  [53.48, -2.24, 0.5], // マンチェスター
+  [53.35, -6.26, 0.3], // ダブリン
   [40.42, -3.7, 0.6], // マドリード
+  [41.39, 2.17, 0.5], // バルセロナ
+  [38.72, -9.14, 0.4], // リスボン
   [41.9, 12.5, 0.6], // ローマ
-  [30.04, 31.24, 0.7], // カイロ
-  [6.52, 3.38, 0.6], // ラゴス
-  [-26.2, 28.05, 0.55], // ヨハネスブルグ
+  [45.46, 9.19, 0.55], // ミラノ
+  [40.85, 14.27, 0.4], // ナポリ
+  [37.98, 23.73, 0.45], // アテネ
+  [59.33, 18.07, 0.35], // ストックホルム
+  [59.91, 10.75, 0.3], // オスロ
+  [55.68, 12.57, 0.35], // コペンハーゲン
+  [60.17, 24.94, 0.3], // ヘルシンキ
+  // --- アフリカ ---
+  [30.04, 31.24, 0.9], // カイロ
+  [31.2, 29.92, 0.5], // アレクサンドリア
+  [33.57, -7.59, 0.5], // カサブランカ
+  [36.75, 3.06, 0.45], // アルジェ
+  [36.81, 10.18, 0.35], // チュニス
+  [6.52, 3.38, 0.85], // ラゴス
+  [12.0, 8.52, 0.4], // カノ
+  [5.36, -4.01, 0.5], // アビジャン
+  [5.6, -0.19, 0.45], // アクラ
+  [14.72, -17.47, 0.4], // ダカール
+  [-4.32, 15.31, 0.8], // キンシャサ
+  [-8.84, 13.23, 0.5], // ルアンダ
+  [-1.29, 36.82, 0.55], // ナイロビ
+  [9.03, 38.74, 0.55], // アディスアベバ
+  [-6.79, 39.21, 0.5], // ダルエスサラーム
+  [15.5, 32.56, 0.5], // ハルツーム
+  [0.35, 32.58, 0.4], // カンパラ
+  [-17.83, 31.05, 0.3], // ハラレ
+  [-18.88, 47.51, 0.35], // アンタナナリボ
+  [-26.2, 28.05, 0.6], // ヨハネスブルグ
+  [-33.92, 18.42, 0.45], // ケープタウン
+  [-29.86, 31.02, 0.35], // ダーバン
+  // --- 北アメリカ ---
   [40.71, -74.01, 1.0], // ニューヨーク
-  [34.05, -118.24, 0.9], // ロサンゼルス
+  [39.95, -75.17, 0.5], // フィラデルフィア
+  [38.9, -77.04, 0.55], // ワシントン
+  [42.36, -71.06, 0.5], // ボストン
+  [43.65, -79.38, 0.6], // トロント
+  [45.5, -73.57, 0.45], // モントリオール
+  [49.28, -123.12, 0.4], // バンクーバー
+  [51.05, -114.07, 0.3], // カルガリー
   [41.88, -87.63, 0.7], // シカゴ
-  [19.43, -99.13, 0.85], // メキシコシティ
-  [-23.55, -46.63, 0.85], // サンパウロ
-  [-34.6, -58.38, 0.7], // ブエノスアイレス
-  [-12.05, -77.04, 0.55], // リマ
+  [42.33, -83.05, 0.45], // デトロイト
+  [33.75, -84.39, 0.5], // アトランタ
+  [25.77, -80.19, 0.5], // マイアミ
+  [29.76, -95.37, 0.55], // ヒューストン
+  [32.78, -96.8, 0.55], // ダラス
+  [39.74, -104.99, 0.4], // デンバー
+  [33.45, -112.07, 0.45], // フェニックス
+  [47.61, -122.33, 0.45], // シアトル
+  [37.77, -122.42, 0.55], // サンフランシスコ
+  [34.05, -118.24, 0.9], // ロサンゼルス
+  [19.43, -99.13, 0.95], // メキシコシティ
+  [20.67, -103.35, 0.5], // グアダラハラ
+  [25.67, -100.32, 0.45], // モンテレイ
+  [23.11, -82.37, 0.4], // ハバナ
+  [14.63, -90.51, 0.4], // グアテマラシティ
+  [18.49, -69.93, 0.35], // サントドミンゴ
+  [8.98, -79.52, 0.35], // パナマシティ
+  // --- 南アメリカ ---
+  [-23.55, -46.63, 0.95], // サンパウロ
+  [-22.91, -43.17, 0.8], // リオデジャネイロ
+  [-19.92, -43.94, 0.5], // ベロオリゾンテ
+  [-15.79, -47.88, 0.45], // ブラジリア
+  [-12.97, -38.5, 0.45], // サルバドール
+  [-3.73, -38.52, 0.4], // フォルタレザ
+  [-8.05, -34.88, 0.4], // レシフェ
+  [-30.03, -51.23, 0.4], // ポルトアレグレ
+  [-3.12, -60.02, 0.35], // マナウス
+  [-34.6, -58.38, 0.8], // ブエノスアイレス
+  [-31.42, -64.18, 0.35], // コルドバ
+  [-34.9, -56.16, 0.35], // モンテビデオ
+  [-25.28, -57.64, 0.3], // アスンシオン
+  [-33.45, -70.67, 0.6], // サンティアゴ
+  [-12.05, -77.04, 0.65], // リマ
+  [4.71, -74.07, 0.7], // ボゴタ
+  [6.24, -75.58, 0.4], // メデジン
+  [10.49, -66.9, 0.5], // カラカス
+  [-0.18, -78.47, 0.4], // キト
+  [-2.19, -79.88, 0.35], // グアヤキル
+  [-16.5, -68.15, 0.35], // ラパス
+  // --- オセアニア ---
   [-33.87, 151.21, 0.6], // シドニー
-  [-37.81, 144.96, 0.5], // メルボルン
+  [-37.81, 144.96, 0.55], // メルボルン
+  [-27.47, 153.03, 0.4], // ブリスベン
+  [-31.95, 115.86, 0.35], // パース
+  [-34.93, 138.6, 0.3], // アデレード
+  [-36.85, 174.76, 0.35], // オークランド
+];
+
+// Conurbation corridors.
+//
+// A night earth does not read as dots. What the eye actually recognises are
+// *areas and lines* — Europe as one glow, the Nile as a single thread, the
+// Tokaido belt, the US northeast. A list of isolated points, however long,
+// cannot produce any of those: between two cities 300km apart there is a
+// gap of black, and the shape people know is exactly the thing filling that
+// gap. So a handful of great-circle segments, each a couple of lines of
+// data, that both the paint and the lights sample along.
+//
+// Routed against the elevation raster, not against an atlas: a corridor is
+// gated to land by the same water test the paint uses, so a line drawn
+// through ground the raster reads as below sea level simply does not paint.
+// Measured at 21 points per segment, every one of these is dry end to end
+// except the Yangtze delta — the raster has that floodplain (and the whole
+// Pearl and Nile delta proper) at under SEA_LEVEL, which is why the Pearl
+// runs up the east bank through Shenzhen and Dongguan and the Nile forks
+// inland at Tanta rather than going to Alexandria. Shanghai-Nanjing is kept
+// on its true line and accepts that only its ends carry day paint.
+//
+// lat1, lon1, lat2, lon2, half-width in radians of arc, intensity
+const CONURBATIONS: [number, number, number, number, number, number][] = [
+  [35.68, 139.69, 34.69, 135.5, 0.011, 0.72], // 東海道（東京〜名古屋〜大阪）
+  [34.69, 135.5, 33.59, 130.4, 0.009, 0.5], // 山陽（大阪〜福岡）
+  [38.9, -77.04, 42.36, -71.06, 0.011, 0.75], // 米北東回廊（ワシントン〜ボストン）
+  [51.4, 7.0, 52.1, 5.4, 0.012, 0.7], // ライン・ルール〜ランドスタット
+  [50.11, 8.68, 51.4, 7.0, 0.01, 0.6], // ライン中流（フランクフルト〜ルール）
+  [51.51, -0.13, 53.48, -2.24, 0.01, 0.55], // イングランド中軸
+  [28.61, 77.21, 22.57, 88.36, 0.012, 0.65], // ガンジス平原（デリー〜コルカタ）
+  [30.04, 31.24, 24.09, 32.9, 0.007, 0.6], // ナイル本流（カイロ〜アスワン）
+  [30.04, 31.24, 30.5, 30.6, 0.008, 0.65], // ナイルデルタ西岐（カイロ〜タンタ）
+  [30.04, 31.24, 30.6, 31.4, 0.007, 0.55], // ナイルデルタ東岐
+  [31.23, 121.47, 32.06, 118.8, 0.01, 0.7], // 長江デルタ（上海〜南京）
+  [22.32, 114.17, 22.65, 114.1, 0.009, 0.7], // 香港〜深圳
+  [22.54, 114.06, 23.0, 113.6, 0.01, 0.72], // 珠江デルタ（深圳〜東莞〜広州）
+  [24.86, 67.01, 31.55, 74.34, 0.009, 0.5], // インダス回廊（カラチ〜ラホール）
+  [-6.91, 107.61, -7.5, 110.4, 0.008, 0.5], // ジャワ北岸 西
+  [-7.5, 110.4, -7.4, 112.2, 0.008, 0.5], // ジャワ北岸 東
+  [-23.55, -46.63, -22.91, -43.17, 0.009, 0.55], // サンパウロ〜リオ
 ];
 
 // The same 28 cities, in daylight.
@@ -1886,16 +2094,124 @@ const MAJOR_CITIES: [number, number, number][] = [
 // with a boundary.
 const urbanColor = new THREE.Color('#8b8778');
 
-const CITY_PATCHES = MAJOR_CITIES.map(([lat, lon, size]) => ({
-  center: latLonToDir(lat, lon),
-  // In radians of arc. Tokyo, the largest, comes out at about 0.04 — ten
-  // texels of the 1536-wide paint, which is the smallest thing that reliably
-  // survives to the screen, and about half a degree of latitude wider than
-  // the real conurbation. A souvenir globe exaggerates its landmarks.
-  radius: 0.014 + size * 0.026,
-  size,
-}));
-const CITY_COS_CUTOFF = Math.cos(Math.max(...CITY_PATCHES.map((c) => c.radius)));
+interface UrbanFeature {
+  /** patch centre, or the first endpoint of a corridor */
+  a: THREE.Vector3;
+  /** second endpoint, null for a point city */
+  b: THREE.Vector3 | null;
+  /** great-circle normal of a corridor, null for a point city */
+  n: THREE.Vector3 | null;
+  /** cos of the arc between the endpoints — the in-segment test */
+  cosSpan: number;
+  radius: number;
+  /** peak field value at the centre line */
+  peak: number;
+}
+
+// In radians of arc. Tokyo, the largest, comes out at about 0.025 — six
+// texels of the 1536-wide paint, still above the smallest thing that
+// reliably survives to the screen, and a good deal wider than the real
+// conurbation. A souvenir globe exaggerates its landmarks.
+//
+// This used to be 0.014 + size*0.026 for 28 cities. The list is now four
+// times as long, and the measured total urban area was already in the right
+// band (about 1% of land) at 28 — the layer's problem was count and
+// distribution, never area — so the per-patch radius comes down to hold the
+// total where it was.
+const cityPatch = (lat: number, lon: number, size: number): UrbanFeature => ({
+  a: latLonToDir(lat, lon),
+  b: null,
+  n: null,
+  cosSpan: 1,
+  radius: 0.0085 + size * 0.0135,
+  peak: 0.55 + size * 0.45,
+});
+
+const URBAN_FEATURES: UrbanFeature[] = MAJOR_CITIES.map(([lat, lon, size]) =>
+  cityPatch(lat, lon, size),
+);
+for (const [lat1, lon1, lat2, lon2, width, intensity] of CONURBATIONS) {
+  const a = latLonToDir(lat1, lon1);
+  const b = latLonToDir(lat2, lon2);
+  URBAN_FEATURES.push({
+    a,
+    b,
+    n: new THREE.Vector3().crossVectors(a, b).normalize(),
+    cosSpan: a.dot(b),
+    radius: width,
+    peak: intensity,
+  });
+}
+
+// A flat loop over 28 dot products was free. A flat loop over ~190 features
+// is not, at 900k vegetation candidates plus every texel of two textures, so
+// the features are bucketed into a coarse lat/lon grid once and a query
+// touches only the handful that can possibly reach its own cell. Baking the
+// field onto a grid instead was the other option and is wrong here: the
+// patches are 0.02 rad across and the existing FIELD_W=384 cell is 0.016,
+// so a bake would smear every city into its neighbourhood and lose the
+// ragged edge entirely.
+const URBAN_BUCKET_LAT = 36;
+const URBAN_BUCKET_LON = 72;
+const URBAN_BUCKETS: Int32Array[] = (() => {
+  const lists: number[][] = Array.from(
+    { length: URBAN_BUCKET_LAT * URBAN_BUCKET_LON },
+    () => [],
+  );
+  const dir = new THREE.Vector3();
+  // A 5-degree cell is 0.087 rad across, an order of magnitude wider than
+  // any patch, so testing the cell centre with a generous slack is exact
+  // enough: half the cell diagonal plus the feature's own reach.
+  const cellSlack = 0.087 * Math.SQRT2 * 0.5 + 1e-3;
+  for (let iy = 0; iy < URBAN_BUCKET_LAT; iy++) {
+    const lat = 90 - (iy + 0.5) * (180 / URBAN_BUCKET_LAT);
+    for (let ix = 0; ix < URBAN_BUCKET_LON; ix++) {
+      const lon = -180 + (ix + 0.5) * (360 / URBAN_BUCKET_LON);
+      dir.copy(latLonToDir(lat, lon));
+      const bucket = lists[iy * URBAN_BUCKET_LON + ix];
+      for (let i = 0; i < URBAN_FEATURES.length; i++) {
+        const f = URBAN_FEATURES[i];
+        if (urbanDistance(dir, f) < f.radius + cellSlack) bucket.push(i);
+      }
+    }
+  }
+  return lists.map((l) => Int32Array.from(l));
+})();
+
+/** Angular distance from `dir` to a feature's centre point or centre line. */
+function urbanDistance(dir: THREE.Vector3, f: UrbanFeature): number {
+  if (!f.b || !f.n) return dir.angleTo(f.a);
+  // Inside the span, the distance to the great circle is asin of the
+  // component along its normal; outside it, the nearer endpoint. The span
+  // test compares the projected point's dots against the endpoints with the
+  // endpoints' own dot, which is the standard spherical "between" test.
+  const along = dir.dot(f.n);
+  const px = dir.x - f.n.x * along;
+  const py = dir.y - f.n.y * along;
+  const pz = dir.z - f.n.z * along;
+  const len = Math.hypot(px, py, pz);
+  if (len > 1e-9) {
+    const inv = 1 / len;
+    const da = (px * f.a.x + py * f.a.y + pz * f.a.z) * inv;
+    const db = (px * f.b.x + py * f.b.y + pz * f.b.z) * inv;
+    if (da >= f.cosSpan && db >= f.cosSpan) {
+      return Math.asin(THREE.MathUtils.clamp(Math.abs(along), 0, 1));
+    }
+  }
+  return Math.min(dir.angleTo(f.a), dir.angleTo(f.b));
+}
+
+function urbanBucketFor(dir: THREE.Vector3): Int32Array {
+  const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
+  let phi = Math.atan2(dir.z, -dir.x);
+  if (phi < 0) phi += Math.PI * 2;
+  const iy = Math.min(URBAN_BUCKET_LAT - 1, Math.floor((theta / Math.PI) * URBAN_BUCKET_LAT));
+  const ix = Math.min(
+    URBAN_BUCKET_LON - 1,
+    Math.floor((phi / (Math.PI * 2)) * URBAN_BUCKET_LON),
+  );
+  return URBAN_BUCKETS[iy * URBAN_BUCKET_LON + ix];
+}
 
 /**
  * How built-up this point is: 0 anywhere away from a city and over water,
@@ -1908,23 +2224,23 @@ const CITY_COS_CUTOFF = Math.cos(Math.max(...CITY_PATCHES.map((c) => c.radius)))
  * computing "where the cities are" from two different expressions is exactly
  * how the snow line and the snow flecks ended up disagreeing.
  *
- * Cheap enough for the scatter's 900k candidates: 28 dot products with an
- * early-out, and the noise lookup only for the handful of points that are
- * actually inside a patch.
+ * Cheap enough for the scatter's 900k candidates: one bucket lookup, then a
+ * few distance tests, and the noise lookup only for the handful of points
+ * that are actually inside a patch. The vast majority of the sphere lands in
+ * an empty bucket and returns on the first line.
  */
 export function urbanAt(dir: THREE.Vector3): number {
+  const bucket = urbanBucketFor(dir);
+  if (bucket.length === 0) return 0;
   let best = 0;
-  for (let i = 0; i < CITY_PATCHES.length; i++) {
-    const c = CITY_PATCHES[i];
-    // A dot product against 28 points is cheap; anything that misses the
-    // widest patch on the list leaves before the acos.
-    if (dir.dot(c.center) < CITY_COS_CUTOFF) continue;
-    const dist = dir.angleTo(c.center);
-    if (dist >= c.radius) continue;
+  for (let i = 0; i < bucket.length; i++) {
+    const f = URBAN_FEATURES[bucket[i]];
+    const dist = urbanDistance(dir, f);
+    if (dist >= f.radius) continue;
     // Dense core, ragged suburbs: the falloff is steep near the middle and
     // long in the tail, which is what a conurbation actually looks like from
     // altitude and also stops the patch having a visible rim.
-    const t = Math.pow(1 - dist / c.radius, 1.9) * (0.55 + c.size * 0.45);
+    const t = Math.pow(1 - dist / f.radius, 1.9) * f.peak;
     if (t > best) best = t;
   }
   if (best <= 0) return 0;
@@ -1937,6 +2253,7 @@ export function urbanAt(dir: THREE.Vector3): number {
   const ragged = fbm3(dir.x * 70 + 1212, dir.y * 70 + 1212, dir.z * 70 + 1212, 2);
   return THREE.MathUtils.clamp(best * (1 + ragged * 1.6), 0, 1);
 }
+
 
 function drawGlow(
   ctx: CanvasRenderingContext2D,
@@ -2002,17 +2319,51 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
     drawGlow(ctx, u * width, v * height, 0.9 + rand() * 2.0, 0.05 + score * 0.17);
   }
 
-  MAJOR_CITIES.forEach(([lat, lon, size]) => {
-    const x = ((lon + 180) / 360) * width;
-    const y = ((90 - lat) / 180) * height;
+  // Both consumers read the same table. The paint samples URBAN_FEATURES as
+  // a field; this pass walks the same features and lays glows along them, so
+  // a city that is grey at noon is lit at midnight and a corridor cannot
+  // exist in one and not the other.
+  const scale = width / 1024;
+  const lit = (d: THREE.Vector3, size: number, gain: number): void => {
+    let phi = Math.atan2(d.z, -d.x);
+    if (phi < 0) phi += Math.PI * 2;
+    const x = (phi / (Math.PI * 2)) * width;
+    const y = (Math.acos(THREE.MathUtils.clamp(d.y, -1, 1)) / Math.PI) * height;
     // The sprawl around the core, then the core itself — both a good deal
     // tighter than they started. A metropolis drawn as a wide soft disc
     // reads as a glowing ball hovering over the country rather than as a
     // city: what makes it a city is that it is *small and very bright*,
     // with a faint halo, not big and bright.
-    drawGlow(ctx, x, y, (2.6 + size * 4.5) * (width / 1024), 0.22 * size);
-    drawGlow(ctx, x, y, (0.9 + size * 1.4) * (width / 1024), 0.8 * size);
-  });
+    drawGlow(ctx, x, y, (2.6 + size * 4.5) * scale, 0.22 * size * gain);
+    drawGlow(ctx, x, y, (0.9 + size * 1.4) * scale, 0.8 * size * gain);
+  };
+
+  const step = new THREE.Vector3();
+  for (const f of URBAN_FEATURES) {
+    if (!f.b) {
+      lit(f.a, (f.peak - 0.55) / 0.45, 1);
+      continue;
+    }
+    // A corridor is drawn as a run of overlapping glows rather than as a
+    // stroked line: additive sprites are what the scattered pass already
+    // uses, so the belt joins its own cities' halos instead of sitting on
+    // top of them as a drawn stripe. Spacing is a fraction of the width, so
+    // the run reads as one continuous thread.
+    const span = Math.acos(THREE.MathUtils.clamp(f.cosSpan, -1, 1));
+    const steps = Math.max(2, Math.ceil(span / (f.radius * 0.6)));
+    for (let i = 0; i <= steps; i++) {
+      step.copy(f.a).lerp(f.b, i / steps).normalize();
+      // Dark ground between towns still exists — the thread flickers in
+      // brightness along its length instead of being an even bar of light.
+      const jitter = 0.65 + 0.35 * fbm3(step.x * 90, step.y * 90, step.z * 90, 2);
+      // Fade the last few glows at each end, or a corridor terminates in a
+      // hard bright full stop out in open country and reads as a drawn
+      // stroke rather than as towns running together.
+      const t = i / steps;
+      const taper = smoothstep(Math.min(t, 1 - t), 0, 0.18);
+      lit(step, f.peak * 0.5, jitter * 0.55 * (0.35 + 0.65 * taper));
+    }
+  }
 
   ctx.globalCompositeOperation = 'source-over';
   const texture = new THREE.CanvasTexture(canvas);
