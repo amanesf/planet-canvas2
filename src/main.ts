@@ -806,6 +806,41 @@ const seasonUniforms = { uSeasonTilt: { value: 0 } };
 const sunDirection = keyLight.position.clone().normalize();
 const dayNightUniforms = { uSunDir: { value: sunDirection } };
 
+// Cloud shade, without a shadow map.
+//
+// Shadow mapping is off in this project and staying off — it was the
+// isolated cause of a real-device crash (see renderer.shadowMap above).
+// But nothing in the scene casting anything onto anything else is the
+// loudest remaining "this is a render" cue: the sea is lit identically
+// whether or not there is a cloud over it.
+//
+// The deck is baked to an equirectangular cover map once (clouds.ts), and
+// the surfaces under it offset their lookup by the same closed-form drift
+// the nodules themselves move under, so the shade tracks the cotton
+// overhead for one texture fetch and no second pass. Declared here rather
+// than beside the clouds because both materials compile before the sky is
+// built; the objects are filled in after buildClouds.
+const cloudShadowUniforms = {
+  uCloudShadow: { value: null as THREE.Texture | null },
+  uCloudTime: { value: 0 },
+  uOmegaScale: { value: 1 },
+};
+
+/** GLSL shared by the globe and the ocean, so the shade cannot disagree. */
+const CLOUD_SHADOW_GLSL = `
+  float cloudShade(vec3 objNormal, float strength) {
+    float lat = asin(clamp(objNormal.y, -1.0, 1.0));
+    float v = lat / 3.14159265 + 0.5;
+    // green is row-constant: this latitude's drift rate, encoded
+    float omega = (texture2D(uCloudShadow, vec2(0.5, v)).g - 0.5) * uOmegaScale;
+    float lon = atan(objNormal.z, -objNormal.x);
+    // a nodule now at this longitude started at lon - omega*t
+    float u = (lon - omega * uCloudTime) / 6.28318530718 + 0.5;
+    float cover = texture2D(uCloudShadow, vec2(fract(u), v)).r;
+    return 1.0 - cover * strength;
+  }
+`;
+
 await yieldToBrowser('街の灯り');
 const cityLightsTexture = buildCityLightsTexture(TEX_W, TEX_H);
 
@@ -838,10 +873,13 @@ globeMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uSeaRadius = { value: globeSeaRadius };
   shader.uniforms.uSunDir = dayNightUniforms.uSunDir;
   shader.uniforms.uCityLights = { value: cityLightsTexture };
+  shader.uniforms.uCloudShadow = cloudShadowUniforms.uCloudShadow;
+  shader.uniforms.uCloudTime = cloudShadowUniforms.uCloudTime;
+  shader.uniforms.uOmegaScale = cloudShadowUniforms.uOmegaScale;
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
-      '#include <common>\nvarying float vSeasonLat;\nvarying float vSeasonRadius;\nvarying vec3 vGlobeNormal;',
+      '#include <common>\nvarying float vSeasonLat;\nvarying float vSeasonRadius;\nvarying vec3 vGlobeNormal;\nvarying vec3 vObjNormal;',
     )
     .replace(
       '#include <begin_vertex>',
@@ -850,12 +888,15 @@ globeMaterial.onBeforeCompile = (shader) => {
       vSeasonRadius = length(position);
       // the outward direction in world space, so the terminator follows the
       // globe as it turns under the fixed key light
-      vGlobeNormal = mat3(modelMatrix) * normalize(position);`,
+      vGlobeNormal = mat3(modelMatrix) * normalize(position);
+      // the *object*-space normal as well: the cloud deck is a child of the
+      // globe, so its drift is described entirely in this frame
+      vObjNormal = normalize(position);`,
     );
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
-      '#include <common>\nuniform float uSeasonTilt;\nuniform float uSeaRadius;\nuniform vec3 uSunDir;\nuniform sampler2D uCityLights;\nvarying float vSeasonLat;\nvarying float vSeasonRadius;\nvarying vec3 vGlobeNormal;',
+      '#include <common>\nuniform float uSeasonTilt;\nuniform float uSeaRadius;\nuniform vec3 uSunDir;\nuniform sampler2D uCityLights;\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nvarying float vSeasonLat;\nvarying float vSeasonRadius;\nvarying vec3 vGlobeNormal;\nvarying vec3 vObjNormal;' + CLOUD_SHADOW_GLSL,
     )
     // City lights, on the night side only. Added to the emissive term
     // rather than to the diffuse colour: they have to survive being on the
@@ -910,7 +951,11 @@ globeMaterial.onBeforeCompile = (shader) => {
         float snowLine = mix(0.82, 0.5, winterAmount);
         float seasonalSnow = smoothstep(snowLine, snowLine + 0.14, abs(vSeasonLat)) * winterAmount * landMask;
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.799, 0.855, 0.888), seasonalSnow * 0.8);
-      }`,
+      }
+      // Cloud shade. Applied to the albedo rather than to the light so it
+      // costs nothing extra and darkens the ground the way an overcast
+      // does — the land keeps its own colour, it just receives less.
+      diffuseColor.rgb *= cloudShade(vObjNormal, 0.38);`,
     );
 };
 
@@ -981,10 +1026,13 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
 oceanMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
   shader.uniforms.uSunDir = dayNightUniforms.uSunDir;
+  shader.uniforms.uCloudShadow = cloudShadowUniforms.uCloudShadow;
+  shader.uniforms.uCloudTime = cloudShadowUniforms.uCloudTime;
+  shader.uniforms.uOmegaScale = cloudShadowUniforms.uOmegaScale;
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
-      '#include <common>\nuniform float uTime;\nvarying vec3 vOceanNormal;',
+      '#include <common>\nuniform float uTime;\nvarying vec3 vOceanNormal;\nvarying vec3 vObjNormal;',
     )
     .replace(
       '#include <begin_vertex>',
@@ -1000,7 +1048,9 @@ oceanMaterial.onBeforeCompile = (shader) => {
       // same world-space outward direction the globe material carries, for
       // the same reason: the terminator has to travel with the sphere as it
       // turns under the fixed key light
-      vOceanNormal = mat3(modelMatrix) * swellDir;`,
+      vOceanNormal = mat3(modelMatrix) * swellDir;
+      // and the object-space one, which is the frame the cloud deck drifts in
+      vObjNormal = swellDir;`,
     );
   // The night half of the sea was pure black — a glossy poured-resin surface
   // that simply stops existing wherever the sun does not reach it, which is
@@ -1012,7 +1062,18 @@ oceanMaterial.onBeforeCompile = (shader) => {
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
-      '#include <common>\nuniform vec3 uSunDir;\nvarying vec3 vOceanNormal;',
+      '#include <common>\nuniform vec3 uSunDir;\nvarying vec3 vOceanNormal;\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nvarying vec3 vObjNormal;' +
+        CLOUD_SHADOW_GLSL,
+    )
+    .replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+      // The sea takes the shade harder than the land does. Open water has
+      // almost no texture of its own to carry the eye, so cloud shadows
+      // crossing it end up being most of what says the sea is a surface
+      // under a sky rather than a painted blue field — which is where the
+      // absence of shadows was doing the most damage.
+      diffuseColor.rgb *= cloudShade(vObjNormal, 0.62);`,
     )
     .replace(
       '#include <emissivemap_fragment>',
@@ -1087,6 +1148,10 @@ globeGroup.add(species);
 // "evaporation + rain shadow" sky layer with an actual visible presence
 await yieldToBrowser('雲');
 const clouds = buildClouds(RADIUS);
+// The globe's and the sea's shaders were compiled before the sky existed,
+// so they hold the uniform objects and get the contents now.
+cloudShadowUniforms.uCloudShadow.value = clouds.shadowTexture;
+cloudShadowUniforms.uOmegaScale.value = clouds.omegaScale;
 // (castShadow is decided per layer inside buildClouds: the opaque core
 // casts, the translucent fringe does not.)
 globeGroup.add(clouds.group);

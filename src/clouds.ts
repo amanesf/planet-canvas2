@@ -493,6 +493,107 @@ function pushSpiralNodule(
 export interface CloudSystem {
   group: THREE.Group;
   tick: (t: number) => void;
+  /**
+   * Cloud cover at t = 0 as an equirectangular map, for casting shadows on
+   * the globe without a shadow map. Red is coverage. Green carries this
+   * row's drift rate, so the shader can advect the lookup by the same law
+   * the nodules themselves move under (see buildCloudShadowTexture).
+   */
+  shadowTexture: THREE.DataTexture;
+  /** decodes the green channel: omega = (g - 0.5) * omegaScale */
+  omegaScale: number;
+}
+
+/**
+ * Bake the cloud deck into a map the globe can read as shade.
+ *
+ * Shadow mapping is off in this project and staying off — it was the
+ * isolated cause of a crash on a real device (see renderer.shadowMap in
+ * main.ts). But a sky with no shadow under it is the single loudest
+ * "this is a render" cue left in the frame: the sea is lit identically
+ * whether there is a cloud over it or not.
+ *
+ * What makes a cheap fake work here is that the clouds move by a closed
+ * form rather than by simulation. A nodule's longitude at time t is just
+ * `lon + zonalOmega(lat) * t`, and the cloud group is a child of the globe,
+ * so in the globe's own object space that is the entire motion. Bake the
+ * deck once, then offset the lookup per-latitude by the same expression,
+ * and the shade tracks the cotton above it for free — no render target, no
+ * second pass, one texture fetch.
+ *
+ * The drift rate goes in the green channel rather than into a uniform array
+ * or a re-implementation of the wind profile in GLSL, because a second copy
+ * of that profile is exactly the split this file already had to undo for
+ * the ash plumes. It varies only with latitude, so a row-constant channel
+ * carries it exactly.
+ */
+function buildCloudShadowTexture(
+  nodules: Nodule[],
+  radius: number,
+  width: number,
+  height: number,
+): { texture: THREE.DataTexture; omegaScale: number } {
+  const data = new Uint8Array(width * height * 4);
+
+  let maxOmega = 1e-6;
+  for (let py = 0; py < height; py++) {
+    const lat = ((py + 0.5) / height - 0.5) * Math.PI;
+    maxOmega = Math.max(maxOmega, Math.abs(zonalOmega(lat)));
+  }
+  const omegaScale = maxOmega * 2;
+
+  for (let py = 0; py < height; py++) {
+    const lat = ((py + 0.5) / height - 0.5) * Math.PI;
+    const g = Math.round((zonalOmega(lat) / omegaScale + 0.5) * 255);
+    for (let px = 0; px < width; px++) {
+      data[(py * width + px) * 4 + 1] = g;
+      data[(py * width + px) * 4 + 3] = 255;
+    }
+  }
+
+  nodules.forEach((n) => {
+    // Cyclone nodules live in their storm's own moving frame, not at a
+    // fixed lon/lat drifting with the band, so the closed form above does
+    // not describe them and they are left out. One typhoon's missing
+    // shadow is a far smaller error than a shadow sliding across the sea
+    // with no cloud over it.
+    if (n.spiral) return;
+
+    const angular = n.size / radius;
+    const v = (n.lat / Math.PI + 0.5) * height;
+    const u = (n.lon / (Math.PI * 2) + 0.5) * width;
+    const rY = (angular / Math.PI) * height;
+    // equirectangular stretches longitude toward the poles
+    const rX = rY * (width / height) / Math.max(Math.cos(n.lat), 0.12);
+
+    const y0 = Math.max(0, Math.floor(v - rY));
+    const y1 = Math.min(height - 1, Math.ceil(v + rY));
+    const x0 = Math.floor(u - rX);
+    const x1 = Math.ceil(u + rX);
+
+    for (let py = y0; py <= y1; py++) {
+      for (let px = x0; px <= x1; px++) {
+        const dx = (px + 0.5 - u) / rX;
+        const dy = (py + 0.5 - v) / rY;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= 1) continue;
+        // soft-edged: a hard disc reads as a paper cut-out, and the cotton
+        // casting it does not have a hard edge either
+        const fall = (1 - d2) * (1 - d2);
+        const wrapped = ((px % width) + width) % width;
+        const i = (py * width + wrapped) * 4;
+        data[i] = Math.min(255, data[i] + fall * 190);
+      }
+    }
+  });
+
+  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  return { texture, omegaScale };
 }
 
 export function buildClouds(radius: number): CloudSystem {
@@ -838,5 +939,10 @@ export function buildClouds(radius: number): CloudSystem {
     });
   };
 
-  return { group, tick };
+  // 512x256 is plenty: this is soft shade cast by objects that are
+  // themselves soft, and it is sampled on a sphere that never fills more
+  // than half the frame. One megabyte of RGBA, built once.
+  const { texture: shadowTexture, omegaScale } = buildCloudShadowTexture(nodules, radius, 512, 256);
+
+  return { group, tick, shadowTexture, omegaScale };
 }
