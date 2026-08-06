@@ -59,6 +59,8 @@ canvas {
 
 .ui {
   position: absolute;
+  /* the index card hangs off this cluster */
+  z-index: 2;
   right: calc(18px + env(safe-area-inset-right, 0px));
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   display: flex;
@@ -124,6 +126,147 @@ canvas {
     padding: 11px 20px;
     font-size: 14px;
   }
+}
+
+/* ---------------------------------------------------------------------
+   The caption, and the index (see ui.ts for what they say)
+   --------------------------------------------------------------------- */
+
+/* Bottom-left, and that is the only corner it could be.
+   The globe is centre-frame with the pedestal and its brass nameplate
+   directly below it, the title sits top-left, and the controls are
+   bottom-right — so the lower left is the one region of this frame that
+   holds nothing but the dim cutting-mat wash in the page background. It is
+   also diagonally opposite the buttons, which keeps the thing that is read
+   away from the things that are pressed.
+
+   It is set like a printed plate rather than like an overlay: small, warm
+   brass on nothing, a hairline rule above it standing in for the top edge
+   of a card, and no box, border or panel of any kind. A translucent panel
+   here would read as a floating window; ink on the photograph reads as a
+   caption under it. */
+.plate {
+  position: absolute;
+  left: calc(26px + env(safe-area-inset-left, 0px));
+  bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+  max-width: min(38vw, 260px);
+  pointer-events: none;
+  /* Fades rather than appears. The plate comes and goes constantly — on
+     hover, after a drag, after a jump — and anything that snaps on and off
+     at that rate is a blinking light in the corner of a photograph. */
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+
+.plate.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.plate::before {
+  content: '';
+  display: block;
+  width: 22px;
+  height: 1px;
+  margin-bottom: 7px;
+  background: rgba(203, 171, 126, 0.45);
+}
+
+.plate-name {
+  color: #cbab7e;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  /* A caption is printed on the photograph, not lit by the scene, so it
+     gets the one thing in this frame that is allowed to be crisp against
+     the dark: a shadow just heavy enough to survive the pale sea if the
+     reader zooms until the globe reaches this corner. */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.plate-sub {
+  margin-top: 3px;
+  color: #cbab7e;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  opacity: 0.62;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+/* The index opens upward out of the button cluster, so it grows into the
+   empty right-hand margin instead of across the subject. Its palette is
+   the pause button's — the same near-white translucent brass-lettered
+   card — because there is one visual language on this screen and the
+   button already set it. */
+.index {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: 190px;
+  max-height: min(42vh, 340px);
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  padding: 10px 4px 4px;
+  border-radius: 10px;
+  background: rgba(252, 246, 236, 0.9);
+  backdrop-filter: blur(4px);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  color: #6b4a36;
+}
+
+/* No box, no magnifier, no placeholder chrome: one ruled line to write on,
+   the way a printed index card is ruled. A bordered search field is the
+   single most web-app-looking object there is and it would undo the rest
+   of this on its own. */
+.index-filter {
+  flex: none;
+  margin: 0 8px 8px;
+  padding: 0 0 4px;
+  border: none;
+  border-bottom: 1px solid rgba(107, 74, 54, 0.28);
+  background: none;
+  color: #6b4a36;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  outline: none;
+}
+
+.index-filter::placeholder {
+  color: rgba(107, 74, 54, 0.4);
+}
+
+.index-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.index-row {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: rgba(107, 74, 54, 0.82);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The modelled landmarks are the things this globe actually has objects
+   for, so they carry a little more ink than the cities. */
+.index-row-landmark {
+  color: #6b4a36;
+}
+
+.index-row:hover,
+.index-row:focus-visible {
+  background: rgba(107, 74, 54, 0.1);
+  outline: none;
 }
 
 /* Shown while the model is being built. The build yields between steps (see

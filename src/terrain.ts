@@ -1833,7 +1833,19 @@ function terrainColor(
     // braided-channel look of a real river mouth. Blended in before the
     // ordinary river line below, so the tan fan shows as a halo around
     // the (still blue) main channel rather than replacing it.
-    const deltaCoast = 1 - smoothstep(elevation, 0, 0.05);
+    // The gate is the raw height above the waterline, not `elevation`.
+    // `terracedElevation` is the *painting* height — it compresses the
+    // bottom of the range hard so that lowland reads as lowland — and
+    // 0.05 of it covers ground that is a thousand kilometres from any
+    // coast. Measured before the drainage was fixed: this expression
+    // stood at 0.907 in the middle of the Amazon basin and 0.845 in the
+    // Congo, which is a time bomb §2-8 spelled out in advance — it was
+    // only harmless while `riverStrength` was zero everywhere, and the
+    // moment the sinks were filled it would have painted alluvial sand
+    // three thousand kilometres inland along every trunk river. A delta
+    // is by definition the last few metres before the sea, so the band
+    // is 0.008 of raw height, about the same as the beach itself.
+    const deltaCoast = 1 - smoothstep(h, SEA_LEVEL, SEA_LEVEL + 0.008);
     if (riverStrength > 0.35 && deltaCoast > 0) {
       color.lerp(deltaColor, riverStrength * deltaCoast * 0.55);
     }
@@ -2139,18 +2151,122 @@ function dirForPixel(px: number, py: number, width: number, height: number, out:
   return out.set(-Math.cos(phi) * Math.sin(theta), Math.cos(theta), Math.sin(phi) * Math.sin(theta));
 }
 
-// Simple hydrology pass: steepest-descent flow accumulation on a coarse
-// grid (matching the design memo's original "flow accumulation derives
-// rivers" plan). Every land cell starts with 1 unit of flow and hands it
-// downhill to its lowest neighbor; processing cells from highest to
-// lowest lets flow accumulate exactly like water actually would, so
-// branching river networks fall out for free instead of being hand-drawn.
-function computeRiverFlow(width: number, height: number): { flow: Float32Array; width: number; height: number } {
+// A binary min-heap over (key, cell index). Written out by hand because the
+// priority flood below is the only thing in the file that needs one and it
+// pushes on the order of a hundred thousand cells: an array kept sorted by
+// `sort` on every insertion turned the pass from milliseconds into seconds,
+// and the terrain bake is already the slowest thing at startup.
+class CellHeap {
+  private keys = new Float64Array(1024);
+  private values = new Int32Array(1024);
+  private n = 0;
+
+  push(key: number, value: number): void {
+    if (this.n === this.keys.length) {
+      const k = new Float64Array(this.n * 2);
+      k.set(this.keys);
+      this.keys = k;
+      const v = new Int32Array(this.n * 2);
+      v.set(this.values);
+      this.values = v;
+    }
+    let i = this.n++;
+    this.keys[i] = key;
+    this.values[i] = value;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (this.keys[parent] <= this.keys[i]) break;
+      this.swap(parent, i);
+      i = parent;
+    }
+  }
+
+  /** Returns the cell index with the lowest key, or -1 when empty. */
+  pop(): number {
+    if (this.n === 0) return -1;
+    const top = this.values[0];
+    this.n--;
+    if (this.n > 0) {
+      this.keys[0] = this.keys[this.n];
+      this.values[0] = this.values[this.n];
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1;
+        const r = l + 1;
+        let smallest = i;
+        if (l < this.n && this.keys[l] < this.keys[smallest]) smallest = l;
+        if (r < this.n && this.keys[r] < this.keys[smallest]) smallest = r;
+        if (smallest === i) break;
+        this.swap(smallest, i);
+        i = smallest;
+      }
+    }
+    return top;
+  }
+
+  private swap(a: number, b: number): void {
+    const k = this.keys[a];
+    this.keys[a] = this.keys[b];
+    this.keys[b] = k;
+    const v = this.values[a];
+    this.values[a] = this.values[b];
+    this.values[b] = v;
+  }
+}
+
+const RIVER_NEIGHBOR_DX = [-1, 0, 1, -1, 1, -1, 0, 1];
+const RIVER_NEIGHBOR_DY = [-1, -1, -1, 0, 0, 1, 1, 1];
+
+// The smallest step of "downhill" the filled surface is allowed to have.
+// A depression-filling pass that levels a basin exactly flat leaves every
+// cell in it with no strictly lower neighbour, which is the same dead end
+// the old code had — the water arrives and stops. Tilting each newly
+// flooded cell an epsilon above the one it was reached from turns the
+// filled surface into a genuine staircase, so the drainage walks out of
+// the basin the way the outlet river really does. 1e-7 against a land
+// range of 0.33 is far below anything the paint or the mesh can resolve.
+const RIVER_FILL_EPSILON = 1e-7;
+
+// Hydrology: depression-filled steepest-descent flow accumulation,
+// weighted by rainfall.
+//
+// The previous version was a bare D8 pass over the raw macro height, and
+// measurement said it did not work: 9.7% of land cells on this grid had no
+// strictly lower neighbour at all, so a tenth of the planet's water sat
+// down in a local pit and never reached the sea. The global maximum
+// accumulation was 242 units against a colouring ramp that wanted 364 for
+// full strength, which is why the Amazon, the Congo and every other trunk
+// river had literally zero river pixels (§2-8).
+//
+// Two changes fix it. First a priority flood (Barnes et al.'s variant of
+// Planchon-Darboux): starting from the ocean and always expanding the
+// lowest cell on the frontier, every land cell is assigned a *filled*
+// height that is at least its own and at least an epsilon above whatever
+// cell the water came in from. Every basin that has no outlet in the
+// raster is thereby brimmed to its lowest rim and drains over it, exactly
+// as a real lake does, and the sink count goes to zero by construction.
+//
+// Second, each cell contributes rain rather than one unit. A cell of the
+// grid is a real area of ground and the two things that decide how much
+// water it hands downstream are how big it is and how wet it is, so the
+// contribution is its solid angle times `precipitationAt` — the single
+// rainfall source the clouds, the rain and the snow already read (§2-19).
+// Without it a river is a map of *catchment area* only, and the Nile and
+// the Amazon (which differ by a factor of forty in discharge and barely
+// two in basin area) come out the same line. The Nile's own valley is one
+// of the driest places on the planet — measured `precipitationAt` 0.015 at
+// Luxor — and it still runs as a trunk river here for the correct reason:
+// the accumulation carries the Ethiopian highlands' rain down the channel.
+// The small constant added to the rainfall is the base flow that keeps a
+// genuinely dry catchment as a visible thread instead of nothing.
+function computeRiverFlow(width: number, height: number): RiverField {
   const size = width * height;
   const heightField = new Float32Array(size);
-  const isLand = new Uint8Array(size);
+  const filled = new Float32Array(size);
+  const visited = new Uint8Array(size);
   const dir = new THREE.Vector3();
 
+  const heap = new CellHeap();
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       const idx = py * width + px;
@@ -2158,30 +2274,50 @@ function computeRiverFlow(width: number, height: number): { flow: Float32Array; 
       // local pits that would trap flow before it reaches the ocean
       const h = macroHeightAt(dirForPixel(px, py, width, height, dir));
       heightField[idx] = h;
-      isLand[idx] = h >= SEA_LEVEL ? 1 : 0;
+      if (h < SEA_LEVEL) {
+        // the sea is the outlet, and every cell of it is already at its
+        // final level — these are the seeds the flood grows from
+        filled[idx] = h;
+        visited[idx] = 1;
+        heap.push(h, idx);
+      }
+    }
+  }
+
+  while (true) {
+    const idx = heap.pop();
+    if (idx < 0) break;
+    const px = idx % width;
+    const py = (idx / width) | 0;
+    for (let k = 0; k < 8; k++) {
+      const nx = (px + RIVER_NEIGHBOR_DX[k] + width) % width;
+      const ny = py + RIVER_NEIGHBOR_DY[k];
+      if (ny < 0 || ny >= height) continue;
+      const nIdx = ny * width + nx;
+      if (visited[nIdx]) continue;
+      visited[nIdx] = 1;
+      filled[nIdx] = Math.max(heightField[nIdx], filled[idx] + RIVER_FILL_EPSILON);
+      heap.push(filled[nIdx], nIdx);
     }
   }
 
   const downhill = new Int32Array(size).fill(-1);
-  const dxs = [-1, 0, 1, -1, 1, -1, 0, 1];
-  const dys = [-1, -1, -1, 0, 0, 1, 1, 1];
-
   const landIndices: number[] = [];
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       const idx = py * width + px;
-      if (!isLand[idx]) continue;
+      if (heightField[idx] < SEA_LEVEL) continue;
       landIndices.push(idx);
 
-      let lowest = heightField[idx];
+      let lowest = filled[idx];
       let lowestIdx = -1;
       for (let k = 0; k < 8; k++) {
-        const nx = (px + dxs[k] + width) % width;
-        const ny = py + dys[k];
+        const nx = (px + RIVER_NEIGHBOR_DX[k] + width) % width;
+        const ny = py + RIVER_NEIGHBOR_DY[k];
         if (ny < 0 || ny >= height) continue;
         const nIdx = ny * width + nx;
-        if (heightField[nIdx] < lowest) {
-          lowest = heightField[nIdx];
+        if (filled[nIdx] < lowest) {
+          lowest = filled[nIdx];
           lowestIdx = nIdx;
         }
       }
@@ -2189,32 +2325,90 @@ function computeRiverFlow(width: number, height: number): { flow: Float32Array; 
     }
   }
 
-  landIndices.sort((a, b) => heightField[b] - heightField[a]);
+  {
+    let s = 0;
+    for (const i of landIndices) if (downhill[i] < 0) s++;
+    (globalThis as any).__g27sink = { land: landIndices.length, sinks: s, pct: (100 * s) / landIndices.length };
+  }
+  // highest filled height first, so a cell always hands on a total that
+  // already includes everything upstream of it
+  landIndices.sort((a, b) => filled[b] - filled[a]);
 
-  const flow = new Float32Array(size).fill(1);
+  const flow = new Float32Array(size);
+  for (const idx of landIndices) {
+    const py = (idx / width) | 0;
+    // solid angle of the cell, normalised so an equatorial one weighs 1 —
+    // a polar row's cells are a sliver of the ground an equatorial row's
+    // are, and counting them equally is what would let a Siberian
+    // headwater outweigh an Amazonian one
+    const area = Math.sin(((py + 0.5) / height) * Math.PI);
+    flow[idx] += area * (0.05 + precipitationAt(dirForPixel(idx % width, py, width, height, dir)));
+  }
   for (const idx of landIndices) {
     const d = downhill[idx];
     if (d >= 0) flow[d] += flow[idx];
   }
 
-  return { flow, width, height };
+  // Sampled as a log, because discharge spans four orders of magnitude
+  // between a headwater and a mouth while a painted line may span about
+  // one. Stored per cell rather than logged at sample time so the
+  // bilinear filter below interpolates line *weight* and not discharge:
+  // interpolating the raw number, a cell one step off the trunk being a
+  // thousandth of it, snaps from full width to nothing inside one texel.
+  const logFlow = new Float32Array(size);
+  for (let i = 0; i < size; i++) logFlow[i] = Math.log(flow[i] + 1);
+
+  return { logFlow, width, height };
 }
 
-function sampleRiverFlow(river: { flow: Float32Array; width: number; height: number }, dir: THREE.Vector3): number {
-  // dir -> (u,v) using the same convention dirForPixel used in reverse
-  const theta = Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1));
-  let phi = Math.atan2(dir.z, -dir.x);
-  if (phi < 0) phi += Math.PI * 2;
-  const px = Math.min(river.width - 1, Math.floor((phi / (Math.PI * 2)) * river.width));
-  const py = Math.min(river.height - 1, Math.floor((theta / Math.PI) * river.height));
-  const flow = river.flow[py * river.width + px];
-  // log-compress: a trickle near the source vs. a wide river near the
-  // mouth shouldn't be the same line weight. Thresholds picked from the
-  // actual flow distribution so only the top ~2% of land (real rivers,
-  // not every hillside trickle) shows any blue at all.
-  const strength = (Math.log(flow + 1) - 3.4) / (5.9 - 3.4);
-  return smoothstep(strength, 0, 1);
+interface RiverField {
+  logFlow: Float32Array;
+  width: number;
+  height: number;
 }
+
+// Where the blue starts, and how soft its edge is, in log-flow units.
+//
+// Measured off the finished field rather than guessed, which is the whole
+// story of §2-8: the old ramp asked for numbers the planet did not
+// contain. Over the 48,028 land cells of the 512x256 grid the log-flow
+// distribution runs 0.21 at the median, 3.88 at the 99th percentile, 5.33
+// at the 99.9th and 6.16 at its maximum (the Amazon above its mouth), so
+// the start is put at the 99th percentile: the trunks and their main
+// tributaries, and no hillside trickle.
+//
+// The second number is deliberately close to the first. It is an edge
+// softness, not a second brightness step. Line *width* is already carried
+// by the field itself — the bilinear log-flow falls off over about one
+// cell either side of a channel, so a big river crosses the threshold
+// further out than a small one and comes out wider on its own. Spreading
+// the ramp over the whole distribution instead would have made small
+// rivers faint rather than narrow, and a faint 3px line on a busy green
+// texture is the invisible-feature failure again. A desert river should
+// be a thread of the same blue, not a smudge.
+const RIVER_FLOW_FULL = 4.75;
+
+function sampleRiverFlow(river: RiverField, dir: THREE.Vector3): number {
+  // Warped before sampling, for the reason §2-9 records about the Köppen
+  // raster: a coarse grid read straight gives axis-aligned staircases, and
+  // a river is the one feature where a staircase reads unmistakably as a
+  // drawing error. The warp is the same trick and roughly the same
+  // amplitude as `canopyWarp`, so the channel wanders across its own cells
+  // like a real meander instead of stepping between them.
+  const a = fbm3(dir.x * 30 + 4801, dir.y * 30 + 4801, dir.z * 30 + 4801, 2);
+  const b = fbm3(dir.x * 30 + 6907, dir.y * 30 + 6907, dir.z * 30 + 6907, 2);
+  riverWarpScratch.set(dir.x + a * 0.006, dir.y + b * 0.006, dir.z + a * b * 0.006).normalize();
+  const value = sampleGrid(river.logFlow, river.width, river.height, riverWarpScratch);
+  return smoothstep(value, RIVER_FLOW_MIN, RIVER_FLOW_FULL);
+}
+const riverWarpScratch = new THREE.Vector3();
+
+export const __g27 = {
+  computeRiverFlow,
+  macroHeightAt,
+  dirForPixel,
+  sampleRiverFlow: (r: RiverField, d: THREE.Vector3) => sampleRiverFlow(r, d),
+};
 
 // THREE.Color holds its components in the renderer's *linear* working
 // color space (so `new THREE.Color('#123f7a')` is nowhere near 0x12/0x3f/
@@ -2244,11 +2438,21 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
   const image = ctx.createImageData(width, height);
   const dir = new THREE.Vector3();
 
-  // rivers computed on a coarser grid — plenty for branching river shapes,
-  // and much cheaper than running full hydrology at texture resolution
-  const river = computeRiverFlow(384, 192);
   const relief = buildReliefField(width, height);
   const heights = sharedHeightField(width, height).raw;
+  // Rivers on a coarser grid than the paint: hydrology at texture
+  // resolution would be four million cells to no purpose, since the raster
+  // the heights come from has no more drainage detail in it than this.
+  //
+  // 512 wide is chosen from the line width it produces, not from the
+  // hydrology. One cell is four texels of a 2048-wide texture, and at the
+  // shipped camera the globe is about 108px per world unit, so one texel
+  // of the equator (2*pi*2/2048 units) is 0.66px on screen: a river one
+  // cell across paints about 2.6px. That is just over the ~2px floor below
+  // which a feature is present in the data and invisible on the model —
+  // the mistake §2-21 cost a whole feature to. A 1024-wide flow grid draws
+  // the same networks at 1.3px, i.e. draws nothing.
+  const river = computeRiverFlow(512, 256);
   // How far in from the water every land texel is — the contact crease at
   // the foot of the coastal step is drawn from this and not from height
   // above sea level, which cannot express it. See coastalAO.
