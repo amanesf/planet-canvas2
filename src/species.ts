@@ -13,7 +13,6 @@ import {
   canopyAt,
   temperatureAt,
   terracedElevation,
-  habitabilityAt,
   latLonToDir,
   urbanAt,
   type ClimateGroup,
@@ -1057,6 +1056,17 @@ function speciesColor(species: Species, temperature: number, out: THREE.Color): 
 const COLD_TEMPERATURE_LIMIT = 0.02;
 
 /**
+ * How dry ground can be and still carry grass, and how much bare rock it
+ * can carry. Both sit *above* the desert/badlands thresholds the rest of
+ * the terrain uses, because grass is the one layer whose whole job is the
+ * country between the forest and the sand — see the grass block below.
+ * BW (true desert) is 0.90-0.97 arid and stays out; BS (steppe) is
+ * 0.58-0.64 and comes in.
+ */
+const GRASS_ARIDITY_LIMIT = 0.78;
+const BADLANDS_GRASS_LIMIT = 0.9;
+
+/**
  * Where on the tropical/temperate/boreal scale a point sits, expressed as
  * the hue, saturation and lightness its foliage should start from.
  */
@@ -1213,20 +1223,33 @@ export function buildSpecies(
   // that back where it belongs, which is inside the stands. Same total
   // green, more contrast between wood and clearing.
   const FOREST_SPACING_DENSE = 0.0057;
-  const FOREST_SPACING_SPARSE = 0.017;
-  // Farmed country stands its trees further apart (see `farmed` below).
+  // Widened from 0.017. This is the only dial that changes how much forest
+  // there *is* in open country, because the layer is a Poisson disc and a
+  // Poisson disc does not listen to probability — reject a candidate and
+  // the next one takes the place it would have had. Density goes as the
+  // inverse square of spacing, so 0.017 -> 0.026 against a dense 0.0057
+  // takes the range from 8.9x to 20.8x, which is what lets prairie read as
+  // prairie beside a mountain forest instead of as slightly thinner forest.
+  const FOREST_SPACING_SPARSE = 0.026;
   // The hash has to be built at the largest spacing anything will ever ask
   // for or it silently misses neighbours three cells away — the note in
-  // §7 of the gap analysis, and the reason this constant exists rather
-  // than the sparse one being handed straight to the hash.
-  const FARM_MAX_THIN = 0.62;
-  const FOREST_SPACING_MAX = FOREST_SPACING_SPARSE / Math.sqrt(1 - FARM_MAX_THIN);
+  // §7 of the gap analysis. Nothing divides the spacing any more (the old
+  // farmland term did), so the sparse value is now the true maximum.
+  const FOREST_SPACING_MAX = FOREST_SPACING_SPARSE;
   const forestHash = new SpatialHash(FOREST_SPACING_MAX);
   const forestPoints: GroundPoint[] = [];
 
-  const grassMinSpacing = 0.011;
-  const grassMinSpacingSq = grassMinSpacing * grassMinSpacing;
-  const grassHash = new SpatialHash(grassMinSpacing);
+  // Grass spacing varies the way the forest's does, and for the same
+  // reason: this is a Poisson-disc layer, so the probability test above it
+  // decides almost nothing once the disc is the binding constraint. With a
+  // single fixed spacing the grass came out at the same density on the
+  // Kazakh steppe as under the Appalachian canopy — measured 1.83 against
+  // 2.74, i.e. *more* grass in the woods than on the grassland. A steppe
+  // has to be visibly grassier than a forest floor or there is no
+  // grassland biome, only a texture that happens to be allowed everywhere.
+  const GRASS_SPACING_OPEN = 0.0085;
+  const GRASS_SPACING_UNDER_TREES = 0.018;
+  const grassHash = new SpatialHash(GRASS_SPACING_UNDER_TREES);
   const grassPoints: GroundPoint[] = [];
 
   // savanna trees and mountain rocks share one hash, as they did before —
@@ -1304,24 +1327,18 @@ export function buildSpecies(
     // measurement of this has to use city-sized bands. Averaged over a
     // 0.03 rad cap the effect vanishes into ground that was never urban.
     const urban = Math.min(1, urbanAt(dir) * 3.4);
-    // Farmland, without a cropland raster.
+    // Farmland used to be thinned here, off habitabilityAt alone, and it
+    // has moved into openLandAt (terrain.ts) where it is multiplied by
+    // flatness. It could not stay: settlement on its own points the wrong
+    // way. Measured, the Appalachians score 0.842 habitable and Iowa 0.645,
+    // because the field counts the eastern seaboard's cities — so the term
+    // meant to clear the Corn Belt was thinning the Blue Ridge at 0.62 and
+    // the Corn Belt at 0.37, pulling hardest on the one region that should
+    // not have moved. That is most of why North America came out uniform.
     //
-    // Cities are not the only mark people leave and they are far from the
-    // biggest one: the country around them is farmed. With nothing saying
-    // so, every temperate continent came out under one unbroken canopy
-    // from coast to coast — a fair picture of what the Köppen classes say
-    // *could* grow there, and a poor picture of what is there, which is
-    // fields. The globe already has one answer to "is this settled land"
-    // (habitabilityAt: climate, elevation, and the halo round the city
-    // list — the same field the night lights are drawn from), so the trees
-    // read that rather than a second invented one.
-    //
-    // Thinning, never clearing, and only where the field is emphatic:
-    // it opens the canopy over Iowa, the Ganges and the North China plain
-    // and leaves the Amazon, the Congo and the taiga shut. Grass and scrub
-    // are untouched — a cleared field is not bare ground, and the layers
-    // below are what keep it from reading as scorched.
-    const farmed = THREE.MathUtils.smoothstep(habitabilityAt(dir, s.height), 0.35, 0.85) * 0.62;
+    // Nothing replaces it in this file. `s.canopy` is already the reduced
+    // field, so the spacing below opens over farmland without being told
+    // about farmland twice.
     const clearedByCity = (strength: number) => strength > 0 && rand() < strength;
 
     // ---- species classification, then the regional icons on top ----
@@ -1330,11 +1347,7 @@ export function buildSpecies(
     // applies to a baobab exactly as it did to the acacia it replaced.
     const species = regionalIcon(s, classify(s, rand), rand);
 
-    // Trees only: a field is cleared of forest, not of the butte standing
-    // in it, and the scrub layer is what a hedgerow reads as.
-    const clearable = species !== null && !MINERAL.has(species) && species !== 'shrub';
-    const thinned = urban + (1 - urban) * (clearable ? farmed : 0);
-    if (species && !clearedByCity(thinned) && !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)) {
+    if (species && !clearedByCity(urban) && !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)) {
       const point = dir.clone();
       coreHash.add(point);
       placements.push({ dir: point, height: s.height, species });
@@ -1407,12 +1420,25 @@ export function buildSpecies(
       // simply takes the place it would have had, so a rejection test
       // measured a 44% thinning over the Ganges and removed 2% of the
       // trees. Distance is the only thing a Poisson-disc layer listens to.
-      const spacing =
-        THREE.MathUtils.lerp(
-          FOREST_SPACING_SPARSE,
-          FOREST_SPACING_DENSE,
-          THREE.MathUtils.clamp(s.canopy, 0, 1),
-        ) / Math.sqrt(1 - farmed);
+      // Not linear in the canopy, and that is the difference between
+      // giving the continents contrast and just deleting forest.
+      //
+      // A straight lerp moves every stand at once: widening the sparse end
+      // far enough for prairie to read as prairie also pulled the Amazon,
+      // the taiga and the Blue Ridge apart, and the planet lost 40% of its
+      // trees to buy a 3.5x spread. What is wanted is a threshold, because
+      // that is what real forest does — closed canopy is packing-limited
+      // and stays closed until the climate genuinely stops supporting it,
+      // then opens quickly. So anything above about 0.7 canopy packs at
+      // the dense spacing regardless, and the whole range of the dial is
+      // spent between 0.05 and 0.7 where the woodland/grassland margin
+      // actually lives.
+      const closed = THREE.MathUtils.smoothstep(s.canopy, 0.05, 0.7);
+      const spacing = THREE.MathUtils.lerp(
+        FOREST_SPACING_SPARSE,
+        FOREST_SPACING_DENSE,
+        closed,
+      );
       if (
         rand() < density &&
         !clearedByCity(urban) &&
@@ -1425,11 +1451,25 @@ export function buildSpecies(
     }
 
     // ---- grass: dense tiny tufts covering the open, non-desert ground ----
+    // The two vetoes that used to stand here were `badlands <= 0.28` and
+    // `arid <= DESERT_ARIDITY_THRESHOLD` (0.52), and between them they cut
+    // the planet's grasslands out of the grass layer twice over. BSk is
+    // 0.58 arid and 0.85 badlands, BSh is 0.64 and 0.45: the steppe classes
+    // fail both tests, so the Eurasian steppe, the Sahel, the pampas and
+    // the western Great Plains were held to be sand-and-rock. Steppe is the
+    // word for grassland; it is the one biome that should never have been
+    // asked whether it is dry enough for grass.
+    //
+    // Real desert still has to stay bare, so the dryness test is kept and
+    // moved out to where the desert actually is. BW is 0.90-0.97 arid
+    // against the steppe's 0.58-0.64, so a threshold between them separates
+    // the two cleanly where 0.52 could not. Badlands stay a veto only where
+    // the rock is genuinely dominant rather than merely present.
     if (
       s.elevation <= 0.16 &&
       s.temperature >= COLD_TEMPERATURE_LIMIT &&
-      s.badlands <= BADLANDS_THRESHOLD &&
-      s.arid <= DESERT_ARIDITY_THRESHOLD
+      s.badlands <= BADLANDS_GRASS_LIMIT &&
+      s.arid <= GRASS_ARIDITY_LIMIT
     ) {
       // Grass covers the ground the canopy does not. The old test asked
       // for aridity inside a band 0.08 wide between the forest and desert
@@ -1440,10 +1480,15 @@ export function buildSpecies(
       // sand, thinning to nothing under closed forest rather than stopping
       // at a contour line.
       const openness = 1 - THREE.MathUtils.clamp(s.canopy, 0, 1);
+      const grassSpacing = THREE.MathUtils.lerp(
+        GRASS_SPACING_UNDER_TREES,
+        GRASS_SPACING_OPEN,
+        THREE.MathUtils.smoothstep(openness, 0.25, 0.85),
+      );
       if (
         rand() < openness * clumpDensity(dir, 199) &&
         !clearedByCity(urban * 0.55) &&
-        !grassHash.hasNeighborWithin(dir, grassMinSpacingSq)
+        !grassHash.hasNeighborWithin(dir, grassSpacing * grassSpacing)
       ) {
         const point = dir.clone();
         grassHash.add(point);

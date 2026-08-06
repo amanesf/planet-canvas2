@@ -764,7 +764,135 @@ let canopyGrid: Float32Array | null = null;
  */
 export function canopyAt(dir: THREE.Vector3): number {
   canopyGrid ??= bakeField(FIELD_W, FIELD_H, (d) => KOPPEN_CANOPY[climateClassAt(d)]);
-  return sampleField(canopyGrid, dir);
+  // Köppen says what the climate *could* grow. Open land is what is
+  // actually there instead — see openLandAt.
+  return sampleField(canopyGrid, dir) * (1 - 0.88 * openLandAt(dir));
+}
+
+// ---------------------------------------------------------------------
+// Open land: grassland and cropland (G11, and the missing biome)
+// ---------------------------------------------------------------------
+// KOPPEN_CANOPY answers "what could grow here", and for most of the planet
+// that is also what is there. Across the temperate middle latitudes it is
+// not, and measuring the difference against real forest cover made the gap
+// impossible to argue with:
+//
+//   region              canopy field   real forest cover
+//   Corn Belt (IA/IL)      0.850             8%
+//   Pampas (AR)            0.811             3%
+//   European plain         0.900            30%
+//   Appalachia             0.840            60%
+//
+// Iowa and the Appalachians carry the same field and differ by a factor of
+// seven on the ground. The whole of North America came out inside a 1.6x
+// spread where the real range is 15x, which is why the continent read as
+// one even middling woodland — "trees everywhere, stone age".
+//
+// Two different things are missing, and they need two different signals.
+//
+// GRASSLAND is climate, and Köppen already carries it: BS is *steppe*,
+// which is the word for grassland. The bug was not that the field was
+// wrong but that grass was gated by `arid <= DESERT_ARIDITY_THRESHOLD`
+// (0.52) while BSk is 0.58 and BSh is 0.64 — so every steppe on the
+// planet sat on the desert side of one threshold and got no grass at all.
+// The Eurasian steppe, the Sahel and the western Great Plains were being
+// treated as Sahara. KOPPEN_GRASS below states openness directly instead
+// of inferring it from a dryness cutoff, so steppe can be open ground
+// without being sand.
+//
+// CROPLAND is not climate — it is history, and no raster here has it. But
+// it has a geography that two existing fields do describe between them:
+// people plough *flat* land, and they plough it where they *live*. Either
+// signal alone is useless and measurement says so:
+//
+//   - flat alone clears the Amazon (relief 0.0032), the Congo (0.0036)
+//     and the Siberian taiga (0.0040), which are the three flattest
+//     forests on Earth;
+//   - settled alone clears the Appalachians, whose habitability is 0.842
+//     — higher than Iowa's 0.645, because the field counts the eastern
+//     seaboard's cities. This is why the farmland thinning already in the
+//     scatter could not work by being turned up: it was pulling hardest
+//     on the one place that should not move.
+//
+// Their product separates all sixteen regions measured. Flat and settled:
+// Corn Belt, Pampas, the European plain, Texas. Steep: Appalachia (0.0159),
+// the Pacific NW (0.0440). Flat but empty: Amazon (habitability 0.160),
+// Congo (0.188), Siberia (0.015), Scandinavia (0.000).
+const KOPPEN_GRASS = [
+  0.3, // 0: no data
+  0.02, 0.05, 0.55, // Af Am Aw — savanna is grass with trees standing in it
+  // Desert is not grassland. The steppe classes beside it are almost
+  // nothing else, and this is the line the old aridity gate could not draw
+  // because both sit on the same side of it.
+  0.02, 0.06, 0.85, 0.85, // BWh BWk BSh BSk
+  // Csa is genuinely open — Spain, inland California, the Anatolian
+  // uplands are grass and scrub. Csb is not, and a first pass that lent it
+  // 0.35 took the Pacific North-West down with it: Csb is the class of the
+  // Douglas fir coast, the wettest temperate forest on the continent, and
+  // it measured 0.409 open when almost none of it is.
+  0.45, 0.14, 0.12, // Csa Csb Csc
+  0.3, 0.25, 0.22, // Cwa Cwb Cwc
+  // The humid temperate classes carry the eastern US, western Europe,
+  // Japan and eastern China. What is open about them is *farmed*, not
+  // climatic, so they state almost nothing here and let the cropland term
+  // decide — otherwise every one of them is cleared everywhere at once,
+  // including the parts nobody ever ploughed.
+  0.16, 0.12, 0.14, // Cfa Cfb Cfc
+  0.4, 0.22, 0.18, 0.18, // Dsa Dsb Dsc Dsd
+  0.28, 0.2, 0.12, 0.14, // Dwa Dwb Dwc Dwd
+  0.18, 0.14, 0.08, 0.1, // Dfa Dfb Dfc Dfd — the taiga is closed, not open
+  0.25, 0.0, // ET EF
+];
+
+/**
+ * How much the ground rises and falls within about 60 km.
+ *
+ * The *range* over a neighbourhood, not the gradient at a point: what
+ * decides whether country can be plophed is whether there is a hill in it,
+ * and a single derivative reads zero halfway up a uniform slope.
+ */
+const RELIEF_ARC = 0.0096; // radians ≈ 61 km
+function localRelief(dir: THREE.Vector3): number {
+  const t1 = new THREE.Vector3(0, 1, 0).cross(dir);
+  if (t1.lengthSq() < 1e-8) t1.set(1, 0, 0);
+  t1.normalize();
+  const t2 = new THREE.Vector3().crossVectors(dir, t1).normalize();
+  const probe = new THREE.Vector3();
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    probe
+      .copy(dir)
+      .addScaledVector(t1, Math.cos(a) * RELIEF_ARC)
+      .addScaledVector(t2, Math.sin(a) * RELIEF_ARC)
+      .normalize();
+    const h = heightAt(probe);
+    if (h < lo) lo = h;
+    if (h > hi) hi = h;
+  }
+  return hi - lo;
+}
+
+let openLandGrid: Float32Array | null = null;
+
+/**
+ * How much of this ground is open — grass or field — rather than closed
+ * forest, 0..1. Read by canopyAt, so every layer that thins itself against
+ * the canopy picks it up without asking for it separately.
+ */
+export function openLandAt(dir: THREE.Vector3): number {
+  openLandGrid ??= bakeField(FIELD_W, FIELD_H, (d) => {
+    const h = heightAt(d);
+    if (h <= SEA_LEVEL) return 0;
+    const grass = KOPPEN_GRASS[climateClassAt(d)];
+    // Flat, by the measured split: the ploughed plains come in under
+    // 0.0065 and the forested uplands over 0.0159.
+    const flat = 1 - smoothstep(localRelief(d), 0.004, 0.015);
+    const settled = smoothstep(habitabilityAt(d, h), 0.25, 0.70);
+    return Math.max(grass, flat * settled);
+  });
+  return sampleField(openLandGrid, dir);
 }
 
 /**
