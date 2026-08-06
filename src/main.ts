@@ -19,6 +19,8 @@ import {
 } from './terrain';
 import { buildSpecies } from './species';
 import { buildClouds, zonalWind } from './clouds';
+import { buildAurora } from './aurora';
+import { buildFog } from './fog';
 import { buildSnowfall } from './snowfall';
 import { buildEruptions } from './eruptions';
 import { buildLandmarks } from './landmarks';
@@ -1536,6 +1538,24 @@ await yieldToBrowser('降雪');
 const snowfall = buildSnowfall(RADIUS, seasonUniforms, renderer.getPixelRatio());
 globeGroup.add(snowfall.points);
 
+// Fog, in the two kinds the globe already has the data for: radiation fog
+// ponding in enclosed basins before the sun burns it off, and advection fog
+// on the cold-current coasts. Unlike the deck above it, fog lies *on* the
+// surface and hides what is under it — which is the whole of what separates
+// it from a low cloud. See fog.ts.
+await yieldToBrowser('霧');
+const fog = buildFog(RADIUS, BUMP_HEIGHT, seasonUniforms, dayNightUniforms.uSunDir.value);
+globeGroup.add(fog.mesh);
+
+// The aurora, on whichever pole is in darkness. On this globe that is
+// almost always the south: the key light is fixed, so the terminator does
+// not sweep (§2-12) and the southern band is in night at every rotation
+// while the northern one only clears the limb occasionally. Both are built;
+// the night test decides which is lit. See aurora.ts.
+await yieldToBrowser('オーロラ');
+const aurora = buildAurora(RADIUS, dayNightUniforms);
+globeGroup.add(aurora.mesh);
+
 // The four volcanoes stop being scenery and start being events.
 await yieldToBrowser('火山');
 const eruptions = buildEruptions(
@@ -1621,6 +1641,8 @@ globeTick = (t) => {
   // one rigid rotation.
   clouds.tick(t);
   snowfall.tick(t);
+  fog.tick(t);
+  aurora.tick(t);
   eruptions.tick(t);
   ships.tick(t);
   aircraft.tick(t);
