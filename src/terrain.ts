@@ -2715,12 +2715,27 @@ interface UrbanFeature {
 // what the patch radius is for on a hand-sized model; the size term is what
 // keeps Tokyo bigger than Perth, and the absolute scale is set by what can
 // be seen.
+// Widened again, and this time because the *buildings* measured too small
+// rather than the paint. 0.015 + size*0.023 makes a patch 9-16 px across at
+// the shipped camera, and a broadleaf crown on this globe is 7 px: a city
+// was one to two tree-widths wide, which is smaller than a single tree
+// standing in it. Nothing standing on ground that size can read as a town
+// no matter how it is built or tinted, so the ground had to grow first —
+// this is 22-33 px, three to five crowns, which is the least that leaves
+// room for a street grid inside it (landmarks.ts).
+//
+// Exported because landmarks.ts builds on exactly this disc. Two
+// expressions of "how big is Tokyo" is how the paint and the buildings
+// would come to disagree, and this file has been bitten by that before
+// (the snow line and the snow flecks).
+export const cityPatchRadius = (size: number): number => 0.022 + size * 0.034;
+
 const cityPatch = (lat: number, lon: number, size: number): UrbanFeature => ({
   a: latLonToDir(lat, lon),
   b: null,
   n: null,
   cosSpan: 1,
-  radius: 0.015 + size * 0.023,
+  radius: cityPatchRadius(size),
   peak: 0.55 + size * 0.45,
 });
 
