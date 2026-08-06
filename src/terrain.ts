@@ -27,9 +27,33 @@ const landColor = new THREE.Color('#5e7a3f');
 // Two separate deserts, because sand and stone desert look nothing alike:
 // pale wind-sorted sand, and the darker gravel pavement that surrounds it.
 const desertColor = new THREE.Color('#d6a855');
-const desertGravelColor = new THREE.Color('#9c7a48');
+// Paler and much less saturated than the #9c7a48 this started at. Reg is
+// a dull buff gravel; at that saturation it was orange, and orange over
+// most of the desert's area is what made the Sahara read as Mars.
+const desertGravelColor = new THREE.Color('#b3a077');
+// Grassland, and the biome this globe did not have.
+//
+// The scatter was measured and re-measured for it — the pampas came out at
+// 5.86 tufts against the Amazon's 1.00 — and none of it put a grassland on
+// the planet, because a tuft is 1 px wide against a 7 px tree crown and no
+// ratio of invisible things is visible. A prairie is not read as blades of
+// grass at this scale; it is read as *ground of a different colour with no
+// trees on it*, and the ground here was painted the same forest green
+// everywhere from Iowa to the Congo. So the biome lives in the paint now
+// and the tufts are its texture.
+//
+// Two of them, because grassland is not one colour: temperate prairie and
+// steppe are a dry olive-straw, and the tropical savanna belt is yellower
+// and browner still. Both are markedly paler than `landColor`, which is
+// what separates them from forest at any distance where the trees
+// themselves have stopped resolving.
+const grasslandColor = new THREE.Color('#9a9a5b');
+const savannaGrassColor = new THREE.Color('#b09a55');
 // Warm sedimentary rock, for the foothills a forest could grow on.
 const rockColor = new THREE.Color('#7d5c3e');
+// The dark rock of a desert massif — the Ahaggar and the Tibesti, the
+// thing that is not sand in a desert full of sand.
+const desertRockColor = new THREE.Color('#6b5540');
 // Alpine stone is a *different rock*, and it is the difference the eye
 // reads first at altitude: cold grey granite scoured bare, not the warm
 // brown of a lowland outcrop. Colouring high ground as merely a darker
@@ -972,6 +996,28 @@ function sampleField(grid: Float32Array, dir: THREE.Vector3): number {
   return sampleGrid(grid, FIELD_W, FIELD_H, dir);
 }
 
+/**
+ * Where a desert is a sand sea rather than gravel plain, 0..1.
+ *
+ * A desert is not a sand sea, and this globe's was: `BW` scattered dunes
+ * at a flat 30% everywhere, every ridge the same 20 px and aligned to one
+ * bearing field, all in one colour. Rendered, the Sahara came out looking
+ * like **combed hair** — maximum detail, no information, and not
+ * recognisable as desert. The Sahara is roughly a quarter erg; the rest is
+ * reg and hamada, gravel and rock plain, with dark massifs standing out of
+ * it. That internal contrast is what says "desert"; the dunes alone do not.
+ *
+ * Deliberately the lowest-frequency field in this file. An erg is hundreds
+ * of kilometres across (the Grand Erg Oriental, the Rub' al Khali), so it
+ * has to change slowly enough to survive as one shape at globe scale
+ * rather than dissolving into patchiness. Read by both the paint and the
+ * dune scatter, so the pale sand and the ridges standing on it are one
+ * feature described once rather than two that can drift apart.
+ */
+export function ergAt(dir: THREE.Vector3): number {
+  return (fbm3(dir.x * 2.1 + 913, dir.y * 2.1 + 913, dir.z * 2.1 + 913, 2) + 1) * 0.5;
+}
+
 let aridityGrid: Float32Array | null = null;
 export function aridityAt(dir: THREE.Vector3): number {
   aridityGrid ??= bakeField(FIELD_W, FIELD_H, rawAridityAt);
@@ -1486,6 +1532,12 @@ function biomeColor(
   temperature: number,
   badlandsRaw: number,
   beltCloseness: number,
+  /** how open this ground is — grass and field rather than wood, 0..1 */
+  open: number,
+  /** how much of a sand sea this is, if it is desert at all, 0..1 */
+  erg: number,
+  /** low-frequency mottle, so a painted biome is not a flat fill */
+  mottle: number,
 ): THREE.Color {
   // polar ice caps: cold enough, and it's ice regardless of elevation or
   // aridity — Antarctica doesn't care if it would otherwise be a beach.
@@ -1496,7 +1548,18 @@ function biomeColor(
     return outColor.copy(iceColor);
   }
 
-  const desertAmount = smoothstep(aridity, 0.4, 0.58);
+  // 0.4 -> 0.58 was the single worst line in this file for "there is no
+  // grassland". It reaches **full desert gravel exactly at BSk (0.58)**,
+  // and BSh is 0.64 — so every steppe on the planet was painted as desert
+  // pavement, and Csa (0.48, the Mediterranean) came out half-way there
+  // too. Grassland could not be seen because the desert ramp had already
+  // painted over it, whatever the grass layer did.
+  //
+  // This is the same threshold-catching-two-biomes trap the scatter fell
+  // into with `arid <= 0.52`, one file over, and the fix is the same one:
+  // put the ramp in the gap between the steppe classes and the true desert
+  // classes. BS is 0.58-0.64 and stays out; BW is 0.90-0.97 and comes in.
+  const desertAmount = smoothstep(aridity, 0.66, 0.86);
   // How equatorial this is: drives the tropical/temperate/boreal split that
   // used to be missing entirely — every warm lowland was painted the same
   // olive regardless of whether it sat on the equator or near the tree line.
@@ -1538,14 +1601,53 @@ function biomeColor(
       // Köppen map went in. Bare laterite is what open, seasonally-dry
       // tropical ground looks like, so the savanna and the Sahel margins
       // keep it and the rainforest does not.
-      outColor.lerp(tropicalSoilColor, tropical * 0.65 * smoothstep(aridity, 0.16, 0.34));
+      // Not in the desert. `tropical` is latitude, so at the Sahara's
+      // latitude this applied full-strength red laterite under the sand —
+      // and with the gravel pavement over it the whole desert came out
+      // orange-red rather than sand-coloured. Laterite is what *wet*
+      // seasonal tropics leave behind; the Sahara has none of it.
+      outColor.lerp(
+        tropicalSoilColor,
+        tropical * 0.42 * smoothstep(aridity, 0.16, 0.34) * (1 - desertAmount),
+      );
       outColor.lerp(taigaColor, boreal * 0.7);
+
+      // GRASSLAND. The one biome with no colour of its own until now: open
+      // country was painted the same green as closed forest, so the only
+      // thing separating a prairie from a wood was the density of objects
+      // standing on it — and at 1 px a tuft, that is nothing. `open` is
+      // the same `openLandAt` the scatter thins its trees against, so the
+      // ground goes pale exactly where the trees come off it and the two
+      // cannot disagree.
+      //
+      // Not all the way to the grass colour even at open = 1: some soil
+      // and some green have to stay, or the steppe reads as a painted
+      // region rather than as ground. The mottle is what keeps it from
+      // being a flat fill — a prairie has old burns, ploughed sections and
+      // dry patches, and this is the cheapest version of that.
+      const grassTone = outColor
+        .clone()
+        .copy(grasslandColor)
+        .lerp(savannaGrassColor, tropical);
+      outColor.lerp(grassTone, open * (0.72 + mottle * 0.16));
 
       // A sand sea has a pale, almost bleached core with a darker gravel
       // margin. Ramping straight to one sand colour gave a flat khaki
       // patch that read as discoloured grass rather than as desert.
       outColor.lerp(desertGravelColor, desertAmount);
-      outColor.lerp(desertColor, smoothstep(aridity, 0.56, 0.72));
+      // DESERT INTERNAL CONTRAST. The pale sand is no longer the whole
+      // desert: it is applied where `ergAt` says there is a sand sea, and
+      // the gravel plain between the ergs keeps the darker pavement colour
+      // it already had, with rock massifs darker again. A desert made
+      // entirely of one pale sand had nothing in it for the eye to measure
+      // against, which is why it read as a flat khaki blank whatever was
+      // scattered on top.
+      const sand = smoothstep(aridity, 0.78, 0.93);
+      outColor.lerp(desertColor, sand * smoothstep(erg, 0.42, 0.62));
+      outColor.lerp(
+        desertRockColor,
+        sand * (1 - smoothstep(erg, 0.3, 0.5)) * smoothstep(mottle, 0.1, 0.45),
+      );
     }
   } else if (elevation < 0.22) {
     const t = (elevation - 0.15) / 0.07;
@@ -1954,7 +2056,16 @@ function terrainColor(
     const elevation = terracedElevation(h);
     const aridity = aridityAt(dir);
     const badlandsRaw = badlandsAt(dir);
-    color = biomeColor(elevation, aridity, temperature, badlandsRaw, beltCloseness);
+    color = biomeColor(
+      elevation,
+      aridity,
+      temperature,
+      badlandsRaw,
+      beltCloseness,
+      openLandAt(dir),
+      ergAt(dir),
+      fbm3(dir.x * 17 + 2255, dir.y * 17 + 2255, dir.z * 17 + 2255, 3),
+    );
 
     // River delta: right at the coast, a big river fans out into a wide
     // sediment plain instead of staying a single blue thread — the
@@ -1969,7 +2080,7 @@ function terrainColor(
 
     // Salt lake: a dry, flat desert basin crusted white instead of
     // ordinary sand.
-    if (aridity > DESERT_ARIDITY_THRESHOLD + 0.02 && elevation < 0.045) {
+    if (aridity > 0.72 && elevation < 0.045) {
       const pan = saltPanAt(dir);
       if (pan > SALT_PAN_THRESHOLD) {
         color.lerp(saltFlatColor(dir), smoothstep(pan, SALT_PAN_THRESHOLD, SALT_PAN_THRESHOLD + 0.12));

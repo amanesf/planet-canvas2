@@ -11,6 +11,7 @@ import {
   SEA_LEVEL,
   snowinessAt,
   canopyAt,
+  ergAt,
   temperatureAt,
   terracedElevation,
   latLonToDir,
@@ -227,10 +228,28 @@ function classify(s: Sample, rand: () => number): Species | null {
 
     // --- B: dry ---
     case 'BW': {
-      // sand desert: dunes are the landform, succulents only at the warm
-      // margins where there is any moisture at all
-      if (rand() < 0.3 * clumpDensity(dir, 167)) return 'dune';
-      if (temperature > 0.55 && rand() < 0.1 * clumpDensity(dir, 83)) return 'cactus';
+      // A desert is not a sand sea. It was built as one here — 30% dune
+      // everywhere BW, every ridge 20 px long and aligned to `duneBearing`,
+      // one colour — and rendered, the Sahara came out as **combed hair**:
+      // maximum detail, zero information, and not recognisable as desert.
+      // The Sahara is roughly a quarter erg; the rest is reg and hamada,
+      // gravel and rock plain, with dark massifs (Ahaggar, Tibesti)
+      // standing out of it. That internal contrast is the thing that says
+      // "desert", not the dunes.
+      //
+      // So the dunes are gathered into sand *seas* by a low-frequency
+      // field, and outside them the ground is left open for the paint's
+      // gravel plain to show, with the occasional butte for the massifs.
+      const erg = ergAt(dir);
+      if (erg > 0.56) {
+        if (rand() < 0.58 * clumpDensity(dir, 167)) return 'dune';
+        return null;
+      }
+      // Rock and gravel country. Deliberately nearly empty: a plain reads
+      // as a plain by *being* flat and bare, and anything scattered evenly
+      // over it turns it back into texture.
+      if (rand() < 0.006 * clumpDensity(dir, 173)) return 'butte';
+      if (temperature > 0.55 && rand() < 0.06 * clumpDensity(dir, 83)) return 'cactus';
       return null;
     }
     case 'BS': {
@@ -1222,7 +1241,17 @@ export function buildSpecies(
   // planet simply lost 24% of its forest. Packing the stands tighter puts
   // that back where it belongs, which is inside the stands. Same total
   // green, more contrast between wood and clearing.
-  const FOREST_SPACING_DENSE = 0.0057;
+  // 0.0057 was a closed roof and nothing else, and it is the number behind
+  // "there is no grassland and no desert": a crown on this globe is 0.069
+  // units across, so trees at 0.0057 apart overlap **twelve deep**. Every
+  // wooded climate came out as one unbroken sheet of green with no ground
+  // visible anywhere under it, and no other biome could be seen because
+  // there was no bare ground left to see it on. A closed canopy only needs
+  // the crowns to touch — 0.014 still overlaps 2.5x, which reads as a solid
+  // wood from any distance and lets the paint through in the gaps between
+  // stands. The tree count falls by about 6x and none of that is canopy
+  // area; it is redundant geometry inside a stand.
+  const FOREST_SPACING_DENSE = 0.014;
   // Widened from 0.017. This is the only dial that changes how much forest
   // there *is* in open country, because the layer is a Poisson disc and a
   // Poisson disc does not listen to probability — reject a candidate and
@@ -1230,7 +1259,12 @@ export function buildSpecies(
   // inverse square of spacing, so 0.017 -> 0.026 against a dense 0.0057
   // takes the range from 8.9x to 20.8x, which is what lets prairie read as
   // prairie beside a mountain forest instead of as slightly thinner forest.
-  const FOREST_SPACING_SPARSE = 0.026;
+  // Widened with the dense end, and by more, because open woodland is the
+  // half of the range that has to *look* open: at 0.026 against a 0.069
+  // crown the trees still touched, so a wooded steppe was a slightly
+  // thinner forest rather than grassland with trees standing in it. 0.055
+  // puts a crown's worth of bare ground between neighbours.
+  const FOREST_SPACING_SPARSE = 0.055;
   // The hash has to be built at the largest spacing anything will ever ask
   // for or it silently misses neighbours three cells away — the note in
   // §7 of the gap analysis. Nothing divides the spacing any more (the old
@@ -1247,8 +1281,14 @@ export function buildSpecies(
   // 2.74, i.e. *more* grass in the woods than on the grassland. A steppe
   // has to be visibly grassier than a forest floor or there is no
   // grassland biome, only a texture that happens to be allowed everywhere.
-  const GRASS_SPACING_OPEN = 0.0085;
-  const GRASS_SPACING_UNDER_TREES = 0.018;
+  // Both widened with the tuft, which is now 2.4 px rather than 1: at
+  // 0.0085 the old blades were spaced closer together than they were wide,
+  // so the layer was a solid mat that could only read as a change of ground
+  // tone. Spacing a little over the tuft's own width keeps a grassland
+  // dense while leaving the paint visible between the tufts, which is where
+  // the grassland's actual colour now lives.
+  const GRASS_SPACING_OPEN = 0.016;
+  const GRASS_SPACING_UNDER_TREES = 0.034;
   const grassHash = new SpatialHash(GRASS_SPACING_UNDER_TREES);
   const grassPoints: GroundPoint[] = [];
 
@@ -1953,8 +1993,18 @@ export function buildSpecies(
 
   // ---- grass: dense tiny tufts covering the (non-desert) ground ----
 
-  const grassGeometry = new THREE.ConeGeometry(0.005, 0.013, 5);
-  grassGeometry.translate(0, 0.0065, 0);
+  // A tuft was 0.010 across and 0.013 tall: **1 px wide and 1.3 px high**,
+  // against a tree crown of 7 px. That is the same mistake the cities were
+  // built on, and it is why measuring grass as a *ratio* (the pampas at
+  // 5.86 against the Amazon at 1.00) did not put a grassland on the globe —
+  // nine times as many invisible things is still invisible. At this size
+  // the layer can only ever be a faint speckle on the paint, so the paint
+  // has to carry the grassland's colour (terrain.ts, `grasslandColor`) and
+  // this layer's job is the *texture* on top of it. 2.4 px across and 2.6
+  // tall: a third of a tree, enough to break the ground up into something
+  // with a nap to it, still far too small to be mistaken for scrub.
+  const grassGeometry = new THREE.ConeGeometry(0.012, 0.026, 5);
+  grassGeometry.translate(0, 0.013, 0);
   const grassMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.9,
