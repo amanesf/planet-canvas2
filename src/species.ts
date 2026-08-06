@@ -678,11 +678,27 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
         const widthProfile = Math.pow(Math.max(0, 1 - Math.pow(a, 7)), 0.4);
         // The crest itself runs level for most of the length and sinks into
         // the sand at both ends.
-        const heightProfile = Math.pow(Math.max(0, 1 - a * a), 0.8);
+        //
+        // It did not. This said `(1 - a*a) ** 0.8`, which is an ellipse:
+        // measured along the crest it gave 1.00 at the centre, 0.58 at 70%
+        // of the length and 0.27 at 90% — a lens standing on its end.
+        //
+        // The plan outline above was fixed for exactly this and the height
+        // was left behind, and the height is the half that matters. At the
+        // size a dune is drawn, what the eye gets is not the outline on the
+        // sand but the *lit top surface*, and the lit surface of an
+        // elliptical crest is a pointed oval. So the almond that §2-13
+        // recorded and §2-23 was supposed to have removed was still there,
+        // now made of shading instead of silhouette. Same profile family as
+        // the width: level to about four fifths, then down.
+        const heightProfile = Math.pow(Math.max(0, 1 - Math.pow(a, 6)), 0.45);
         // Sinuous, not ruled. A real linear dune wanders by a fraction of
         // its own width along its length; dead-straight ridges laid in
         // parallel read as corduroy.
-        const meander = Math.sin(t * 2.3 + rand0) * 0.5;
+        // Half the dune's own width was not "a fraction of its own width" —
+        // it swung the crest far enough to bend the ridge into a leaf. A
+        // real linear dune wanders, but it stays a line.
+        const meander = Math.sin(t * 2.3 + rand0) * 0.28;
         let z = (nz + meander) * HALF_WIDTH * widthProfile;
         // The slip face. A dune is not symmetric — the windward side
         // climbs gently and the lee side drops at the angle of repose, and
