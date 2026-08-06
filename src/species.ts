@@ -204,7 +204,12 @@ function classify(s: Sample, rand: () => number): Species | null {
   // claimed by here falls through to its group below and gets sand or
   // scrub. Making it terminal is what left the Sahara a field of mesas
   // with not one dune in it.
-  if (badlands > BADLANDS_THRESHOLD + 0.04 && rand() < 0.22 * clumpDensity(dir, 71)) return 'butte';
+  // 0.22 is a *field* of mesas, and with the canopy opened and the desert's
+  // sand gathered into ergs there is nothing left covering them: from Libya
+  // to Egypt the dry country came out as evenly-spaced brown lumps, which is
+  // the "field-of-mesas Sahara" this file's dune note says was fixed once
+  // already. A mesa is a landmark — a handful in a region, not a texture.
+  if (badlands > BADLANDS_THRESHOLD + 0.04 && rand() < 0.05 * clumpDensity(dir, 71)) return 'butte';
 
   // Above the tree line: standing deadwood, whatever the climate below is.
   if (elevation > 0.15) return rand() < 0.18 * clumpDensity(dir, 101) ? 'deadTree' : null;
@@ -242,7 +247,13 @@ function classify(s: Sample, rand: () => number): Species | null {
       // field, and outside them the ground is left open for the paint's
       // gravel plain to show, with the occasional butte for the massifs.
       const erg = ergAt(dir);
-      if (erg > 0.56) {
+      // A dune ridge is a rigid 0.2-unit bar laid flat against the local
+      // ground plane at its centre. On anything that slopes, its ends leave
+      // the surface — one buried, one in the air — so the sand appeared to
+      // be sticking out of the hillsides around the Nile and the Red Sea
+      // scarp. An erg is a basin anyway: sand collects at the bottom of the
+      // country, it does not drape over the relief above it.
+      if (erg > 0.56 && elevation < 0.07) {
         if (rand() < 0.58 * clumpDensity(dir, 167)) return 'dune';
         return null;
       }

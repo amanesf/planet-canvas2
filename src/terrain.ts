@@ -1444,7 +1444,58 @@ export function displayHeight(height: number, dir: THREE.Vector3): number {
     boost = Math.max(boost, volcanoBoost);
   }
 
-  return SEA_LEVEL + coastalStep + terracedElevation(height) * LAND_BOOST * boost;
+  // Desert relief, and the answer to a desert that reads as a flat pale
+  // decal laid on the sphere rather than as ground.
+  //
+  // It is a *geometry* problem and it was being treated as a paint problem.
+  // The Sahara is genuinely flat in the elevation raster, so
+  // `terracedElevation` is near-constant across it and the displaced mesh
+  // there is a smooth piece of sphere. That was survivable only while the
+  // surface was hidden under wall-to-wall props; with the canopy opened and
+  // the mesas cut back, a large, evenly-painted, geometrically smooth area
+  // is exactly what "floating" looks like — there is no normal variation
+  // anywhere in it, so nothing in it catches the light.
+  //
+  // This is the one place worth putting it. `displaceSphere` reads
+  // displayHeight, so the mesh gets real vertices and real normals;
+  // `buildReliefField` reads displayHeight too, so the drybrush and the wash
+  // describe the shape the model actually has instead of a painted
+  // substitute; and everything that stands on the ground samples the same
+  // function, so the dunes and the buttes sit on the swells rather than
+  // through them. No draw calls and no new texture.
+  //
+  // Sized against the mesh, not by eye. The globe is 384 segments around, so
+  // one quad is 2pi/384 = 0.0164 rad: anything with a wavelength under about
+  // four quads cannot be represented and would only alias. Noise scale 9
+  // gives features around 0.11 rad — seven quads — and fbm's second octave
+  // lands at 0.055, still three and a half. The amplitude is set from the
+  // slope it produces rather than from its height in pixels, because relief
+  // this shallow is read through shading and not through silhouette: 0.03
+  // over a 0.065 rad half-wavelength is about 12 degrees, which is an erg,
+  // and the gravel plain gets a third of it. 0.045 after the first render:
+  // at 0.03 the swells were there in the normals but too shallow to catch
+  // the light against a pale, low-contrast sand.
+  const arid = aridityAt(dir);
+  const desert = smoothstep(arid, 0.62, 0.82);
+  let dunefield = 0;
+  if (desert > 0) {
+    const swell = fbm3(dir.x * 9 + 517, dir.y * 9 + 517, dir.z * 9 + 517, 2);
+    const sandiness = 0.3 + 0.7 * smoothstep(ergAt(dir), 0.42, 0.62);
+    // Faded out towards the coast. The coastal step and the ocean shell meet
+    // within a few thousandths here, and a swell riding on top of that is
+    // how a desert coastline starts poking through its own sea.
+    // Measured, not guessed: terracedElevation over the western Sahara runs
+    // 0.0125-0.0298 (median 0.0187) and over Egypt 0.0086-0.0189 (median
+    // 0.0118). A fade running to 0.02 therefore held Egypt at about 60% of
+    // the relief the Sahara got, for no reason — Egypt is plateau country,
+    // not coast. It only has to reach far enough to keep a swell off the
+    // shoreline, where the coastal step and the ocean shell meet within a
+    // few thousandths and a bump would push the desert through its own sea.
+    const inland = smoothstep(terracedElevation(height), 0.002, 0.009);
+    dunefield = swell * 0.045 * desert * sandiness * inland;
+  }
+
+  return SEA_LEVEL + coastalStep + terracedElevation(height) * LAND_BOOST * boost + dunefield;
 }
 
 export function seaLevelRadius(radius: number, bumpHeight: number): number {
