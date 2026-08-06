@@ -246,17 +246,14 @@ function classify(s: Sample, rand: () => number): Species | null {
       // So the dunes are gathered into sand *seas* by a low-frequency
       // field, and outside them the ground is left open for the paint's
       // gravel plain to show, with the occasional butte for the massifs.
+      // The sand seas are no longer built here. A dune coming out of this
+      // scatter got a random position, a random scale and a random bearing
+      // within +-0.225 rad, which is three ways of guaranteeing that no two
+      // of them can line up into the one thing an erg actually is: a
+      // continuous corrugation. They are laid as ridges instead — see
+      // `placeErgRidges` — and this branch only has to keep the plain bare.
       const erg = ergAt(dir);
-      // A dune ridge is a rigid 0.2-unit bar laid flat against the local
-      // ground plane at its centre. On anything that slopes, its ends leave
-      // the surface — one buried, one in the air — so the sand appeared to
-      // be sticking out of the hillsides around the Nile and the Red Sea
-      // scarp. An erg is a basin anyway: sand collects at the bottom of the
-      // country, it does not drape over the relief above it.
-      if (erg > 0.56 && elevation < 0.07) {
-        if (rand() < 0.58 * clumpDensity(dir, 167)) return 'dune';
-        return null;
-      }
+      if (erg > 0.56 && elevation < 0.07) return null;
       // Rock and gravel country. Deliberately nearly empty: a plain reads
       // as a plain by *being* flat and bare, and anything scattered evenly
       // over it turns it back into texture.
@@ -627,28 +624,31 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
       break;
     }
     case 'dune': {
-      const rand0 = rand() * 6.283;
-      // A dune is a ridge, not a lump.
+      // A CROSS-SECTION, and nothing else. This model used to try to be a
+      // whole dune — tapered at both ends, meandering along its length,
+      // sized and spun at random by the generic scatter — and that is why
+      // no profile ever fixed it. An erg is not a collection of mounds. It
+      // is one continuous corrugation running across the country, and a
+      // thing with two ends that sinks into the sand at both of them can
+      // only ever read as an object lying on the ground: place a hundred of
+      // them at random offsets, random scales and +-0.225 rad of random
+      // bearing and they cannot join, so what the eye gets is a scatter of
+      // almonds, then of split almonds once the profile is flattened.
       //
-      // This used to be a sphere scaled to (1.5, 0.18, 0.55). An ellipsoid
-      // squashed that way is a lens: from above it comes to a sharp point
-      // at both ends, and it stops in mid-air there rather than going
-      // anywhere. At the size these are actually drawn, every single one
-      // read as an almond lying on the sand instead of reading as sand —
-      // which is the same failure as the old field-of-mesas Sahara, just
-      // with a rounder mesa.
-      //
-      // What makes an erg look like an erg is not the individual mound. It
-      // is that the mounds are long, that they all run the same way (see
-      // duneBearing at the placement loop), and that they sink back into
-      // the ground at their ends. Only the last of those is geometry.
+      // So the work is split where it belongs. This builds a straight
+      // segment of ridge with **flat ends**, so consecutive segments butt
+      // together into a continuous crest, and `placeErgRidges` below walks
+      // the segments along the wind. The sinuosity that used to be baked in
+      // as a meander now comes from the walk following `duneBearing`, which
+      // is a real field and curves the whole ridge rather than wobbling
+      // each piece independently.
       const R = 0.05;
       const g = new THREE.SphereGeometry(R, 16, 8);
       // Gentle: sand is a smooth material. The noise amplitude that reads
       // as "weathered rock" on a butte reads as "gravel" here.
-      displaceWithNoise(g, 0.09, 3.4, rand() * 500);
+      displaceWithNoise(g, 0.07, 3.4, rand() * 500);
 
-      const HALF = 0.1; // half-length of the ridge along its crest line
+      const HALF = DUNE_HALF_LENGTH;
       const HALF_WIDTH = 0.03;
       const HEIGHT = 0.017;
       const pos = g.attributes.position as THREE.BufferAttribute;
@@ -656,70 +656,26 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
         const x0 = pos.getX(i);
         const y0 = pos.getY(i);
         const z0 = pos.getZ(i);
-        // Off the sphere's own cross-section first.
-        //
-        // Scaling a sphere along one axis was the whole bug, and tapering
-        // the *height* afterwards (the first fix) did not undo it: at a
-        // given x the sphere's cross-section is already narrowed by
-        // sqrt(R²−x²), so the plan outline stayed a lens whatever was done
-        // to y. Seen from above — which is how a globe is seen — a lens is
-        // an almond, and the sand still read as a scatter of almonds.
-        // Dividing that factor out gives a lateral coordinate that runs
-        // −1..1 at every station along the crest, so the plan shape can be
-        // stated outright instead of inherited.
+        // Off the sphere's own cross-section first: at a given x the sphere
+        // is already narrowed by sqrt(R^2-x^2), so dividing that out gives a
+        // lateral coordinate running -1..1 at every station along the crest
+        // and the plan shape can be stated outright instead of inherited.
         const cross = Math.sqrt(Math.max(R * R - x0 * x0, 1e-6));
         const ny = y0 / cross;
         const nz = z0 / cross;
-        const t = x0 / R; // −1..1 along the crest
-        const a = Math.abs(t);
-        // A ridge holds its width nearly to its ends and then rounds off,
-        // rather than coming to a point: this is flat until about 0.8 and
-        // falls to zero over the last fifth.
-        const widthProfile = Math.pow(Math.max(0, 1 - Math.pow(a, 7)), 0.4);
-        // The crest itself runs level for most of the length and sinks into
-        // the sand at both ends.
-        //
-        // It did not. This said `(1 - a*a) ** 0.8`, which is an ellipse:
-        // measured along the crest it gave 1.00 at the centre, 0.58 at 70%
-        // of the length and 0.27 at 90% — a lens standing on its end.
-        //
-        // The plan outline above was fixed for exactly this and the height
-        // was left behind, and the height is the half that matters. At the
-        // size a dune is drawn, what the eye gets is not the outline on the
-        // sand but the *lit top surface*, and the lit surface of an
-        // elliptical crest is a pointed oval. So the almond that §2-13
-        // recorded and §2-23 was supposed to have removed was still there,
-        // now made of shading instead of silhouette. Same profile family as
-        // the width: level to about four fifths, then down.
-        const heightProfile = Math.pow(Math.max(0, 1 - Math.pow(a, 6)), 0.45);
-        // Sinuous, not ruled. A real linear dune wanders by a fraction of
-        // its own width along its length; dead-straight ridges laid in
-        // parallel read as corduroy.
-        // Half the dune's own width was not "a fraction of its own width" —
-        // it swung the crest far enough to bend the ridge into a leaf. A
-        // real linear dune wanders, but it stays a line.
-        const meander = Math.sin(t * 2.3 + rand0) * 0.28;
-        let z = (nz + meander) * HALF_WIDTH * widthProfile;
-        // The slip face. A dune is not symmetric — the windward side
-        // climbs gently and the lee side drops at the angle of repose, and
-        // that asymmetry is most of what says "wind put this here" rather
-        // than "something was dropped here".
-        if (z > 0) z *= 0.55;
-        // A crest, not a tube. The sphere's own cross-section is a
-        // semicircle, so taking the height straight off it gave a rounded
-        // bolster lying on the sand — read as a sausage where the old
-        // version read as an almond. Sand does not hold that shape: it
-        // stands at the angle of repose, which makes a ridge with a line
-        // along the top, gentle on the windward side and steep on the lee
-        // (the z compression above). Stating the profile against the
-        // lateral coordinate instead gives that ridge line.
-        //
-        // Flat underneath either way: only the half above the ground is
-        // ever seen, and carrying a buried lower hemisphere is what forced
-        // the whole shape to be so thin in the first place.
+        const t = THREE.MathUtils.clamp(x0 / R, -1, 1);
+        const z = nz * HALF_WIDTH;
+        // The slip face. A dune is not symmetric — the windward side climbs
+        // gently and the lee side drops at the angle of repose, and that
+        // asymmetry is most of what says "wind put this here" rather than
+        // "something was dropped here".
+        const zAsym = z > 0 ? z * 0.55 : z;
+        // A crest, not a tube: sand stands at the angle of repose, which
+        // makes a ridge with a line along the top. Flat underneath — only
+        // the half above the ground is ever seen.
         const flank = Math.pow(Math.max(0, 1 - Math.abs(nz)), 0.62);
-        const y = ny > 0 ? HEIGHT * heightProfile * flank : 0;
-        pos.setXYZ(i, t * HALF, y, z);
+        const y = ny > 0 ? HEIGHT * flank : 0;
+        pos.setXYZ(i, t * HALF, y, zAsym);
       }
       g.computeVertexNormals();
       pos.needsUpdate = true;
@@ -1003,6 +959,33 @@ function buildModel(species: Species, rand: () => number): THREE.BufferGeometry 
  * Sahara, which keeps the far side of one from looking like a copy of the
  * near side.
  */
+/**
+ * Half the length of one ridge segment, in world units.
+ *
+ * The segment is the unit the erg is built from: `placeErgRidges` steps by
+ * exactly `2 * DUNE_HALF_LENGTH` along the wind so that consecutive
+ * segments meet end to end, and the model above is built flat-ended to the
+ * same figure so the join is a continuous crest rather than a seam. Both
+ * sides have to read it from here — two expressions of one length is how a
+ * ridge comes out either overlapping itself or dashed.
+ *
+ * Short on purpose. The globe is a sphere and a segment is a straight bar:
+ * over 0.1 rad the surface falls away by R(1-cos) = 0.005 units, which is a
+ * third of the dune's own height, so a longer bar would start burying one
+ * end and lifting the other. The curve of the ridge is carried by the walk,
+ * which re-seats every segment on the ground it actually stands on.
+ */
+const DUNE_HALF_LENGTH = 0.032;
+
+/** A local compass at `dir`: which way is east and north on the ground. */
+function localFrameOf(dir: THREE.Vector3): { east: THREE.Vector3; north: THREE.Vector3 } {
+  const east = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), dir);
+  if (east.lengthSq() < 1e-8) east.set(1, 0, 0);
+  east.normalize();
+  const north = new THREE.Vector3().crossVectors(dir, east).normalize();
+  return { east, north };
+}
+
 function duneBearing(dir: THREE.Vector3): number {
   return fbm3(dir.x * 1.6 + 71, dir.y * 1.6 + 71, dir.z * 1.6 + 71, 2) * Math.PI * 2;
 }
@@ -2039,6 +2022,163 @@ export function buildSpecies(
   };
   placeCanopy(coarseVariants, coarseBuckets);
   placeCanopy(fineVariants, fineBuckets);
+
+  // ---- the sand seas, laid as ridges rather than scattered as lumps ----
+  //
+  // Everything else on this globe is a Poisson scatter because everything
+  // else is a population of separate objects: trees, rocks, drifts. A dune
+  // field is not. It is one surface with a repeating corrugation in it, and
+  // the way to get that is to walk along the wind laying segments end to
+  // end, not to drop mounds and hope they line up.
+  //
+  // The walk also fixes what the scatter could not. Each step re-seats the
+  // segment on its own ground, so a ridge follows the terrain instead of a
+  // long rigid bar cutting through it; the bearing is re-read at every step
+  // from `duneBearing`, so the ridge curves with the field instead of each
+  // piece wobbling on its own; and the scale is fixed for a whole ridge, so
+  // neighbouring segments are the same size and meet flush.
+  {
+    const rand = mulberry32(90210);
+    // Lateral pitch between ridges. The dune is 0.06 wide, so 0.075 leaves a
+    // corridor of open sand between crests — an erg is stripes, and stripes
+    // need the gap as much as the ridge. Comfortably under the along-crest
+    // step (0.1), so the hash keeps ridges apart without ever rejecting the
+    // next segment of the ridge being walked.
+    // ANGLES, not world units, and the difference is the whole feature. The
+    // model is built in world units on a globe of radius `radius`, so a
+    // segment 2*DUNE_HALF_LENGTH = 0.1 long subtends 0.1/2 = 0.05 rad. The
+    // walk moves a unit vector, where a tangent step of L turns into an
+    // angle of about L — so stepping by the world length would space the
+    // segments at twice their own size and lay a dashed line, which is the
+    // very failure this rewrite exists to remove.
+    // 0.86 of the segment's own length, not 1.0. Butting the flat ends
+    // together is right in principle and wrong in practice: the bearing is
+    // re-read at every step, so two neighbouring segments sit at slightly
+    // different angles and their end faces are not coplanar — the crest
+    // came out as a chain of planks with a notch at every join. Overlapping
+    // them buries the join inside the next segment, which is also what sand
+    // does. The cost is 16% more segments for the same length of ridge.
+    const STEP = ((DUNE_HALF_LENGTH * 2) / radius) * 0.86;
+    // Measured before it was believed: of 90,000 seeds spread evenly over
+    // the sphere, 1,197 landed in erg — 1.3% of the sphere. At the first
+    // pitch (0.034) and segment length (0.05 rad) that area holds about 115
+    // segments *at its packing limit*, and 131 were built. The walk was not
+    // failing; the field was simply too small and too coarsely ruled to
+    // read as a sand sea. Both the ruling and the extent are widened below.
+    // Lateral pitch between ridges, in the same angular units. The dune is
+    // 0.06 wide = 0.03 rad, so 0.0375 leaves a corridor of open sand
+    // between crests — an erg is stripes, and stripes need the gap as much
+    // as the ridge. Under the along-crest step (0.05), so the hash keeps
+    // ridges apart without ever rejecting the next segment of the ridge
+    // being walked.
+    //
+    // It must stay below `STEP * minimum scale` (0.032 * 0.86 * 0.85 =
+    // 0.0234) or a ridge blocks its own next segment on the hash and every
+    // ridge comes out one segment long. That invariant is not obvious from
+    // either number on its own, which is exactly why it is written down
+    // here — and the overlap above tightened it, so it is checked again.
+    const RIDGE_PITCH = 0.021;
+    const ridgeHash = new SpatialHash(RIDGE_PITCH);
+    const ergPoints: { dir: THREE.Vector3; height: number; scale: number; fade: number }[] = [];
+
+    const ergHere = (d: THREE.Vector3): boolean => {
+      const h = sampledHeight(d);
+      if (h.raw < SEA_LEVEL) return false;
+      // Matched to where the *paint* lays pale sand down (terrain.ts:
+      // `sand` needs aridity past 0.78 and erg past 0.42), so the sand sea
+      // the eye is shown and the ridges standing in it are one feature.
+      // The old gate sat well inside the painted sand, which left most of
+      // every erg as bare pale ground with the ridges in a corner of it.
+      if (ergAt(d) <= 0.46) return false;
+      if (aridityAt(d) < 0.74) return false;
+      return terracedElevation(h.raw) < 0.07;
+    };
+
+    // Seeds come off a coarse spiral over the whole sphere rather than the
+    // candidate stream, because a ridge has to be started somewhere its
+    // neighbours have not already claimed, and that is a question about the
+    // ridges rather than about the ground.
+    const SEEDS = 90000;
+    const seed = new THREE.Vector3();
+    for (let i = 0; i < SEEDS; i++) {
+      // Fibonacci sphere: even coverage with no clustering at the poles.
+      const y = 1 - (2 * i) / (SEEDS - 1);
+      const r = Math.sqrt(Math.max(0, 1 - y * y));
+      const phi = i * 2.399963229728653;
+      seed.set(Math.cos(phi) * r, y, Math.sin(phi) * r);
+      if (!ergHere(seed)) continue;
+      if (ridgeHash.hasNeighborWithin(seed, RIDGE_PITCH * RIDGE_PITCH)) continue;
+
+      // One scale for the whole ridge. Random per *ridge* keeps the field
+      // from being a machined grating; random per *segment* is what made
+      // the old dunes fail to meet.
+      const scale = 0.85 + rand() * 0.5;
+      for (const sense of [1, -1]) {
+        const walk = seed.clone();
+        // Walking outwards from the seed in both directions, so a ridge is
+        // not a line that starts at a wall and ends in open sand.
+        const run: THREE.Vector3[] = [];
+        for (let step = 0; step < 40; step++) {
+          const bearing = duneBearing(walk);
+          const { east, north } = localFrameOf(walk);
+          walk
+            .addScaledVector(east, Math.cos(bearing) * STEP * scale * sense)
+            .addScaledVector(north, Math.sin(bearing) * STEP * scale * sense)
+            .normalize();
+          if (!ergHere(walk)) break;
+          if (ridgeHash.hasNeighborWithin(walk, RIDGE_PITCH * RIDGE_PITCH)) break;
+          const point = walk.clone();
+          ridgeHash.add(point);
+          run.push(point);
+        }
+        // The ridge dies into the sand over its last few segments instead of
+        // stopping dead. This is the taper the *model* used to carry, moved
+        // to where it belongs: onto the ridge, and measured from the end the
+        // walk actually reached rather than from a guessed maximum.
+        run.forEach((point, k) => {
+          const fade = Math.min(1, (run.length - k) / 3);
+          ergPoints.push({ dir: point, height: sampledHeight(point).raw, scale, fade });
+        });
+      }
+      ridgeHash.add(seed.clone());
+      ergPoints.push({ dir: seed.clone(), height: sampledHeight(seed).raw, scale, fade: 1 });
+    }
+
+    if (ergPoints.length > 0) {
+      const duneGeometry = buildModel('dune', rand);
+      const duneMesh = new THREE.InstancedMesh(duneGeometry, mineralMaterial, ergPoints.length);
+      const duneColor = new THREE.Color();
+      ergPoints.forEach((p, i) => {
+        const surface = radius + sampledHeight(p.dir).display * bumpHeight - 0.004;
+        dummy.position.copy(p.dir).multiplyScalar(surface);
+        const align = new THREE.Quaternion().setFromUnitVectors(up, p.dir);
+        // No jitter on the bearing. The whole point is that the crests are
+        // parallel; the variation comes from the field turning, not from
+        // each segment being nudged off it.
+        const spin = new THREE.Quaternion().setFromAxisAngle(p.dir, duneBearing(p.dir));
+        dummy.quaternion.copy(spin).multiply(align);
+        // Length and width are the ridge's, height fades at its ends.
+        // Height varies along the crest, but *slowly*: a low-frequency field
+        // read at the segment's own position, so neighbours land within a
+        // few percent of each other and the ridge undulates instead of
+        // stepping. Per-segment randomness is what would put the notches
+        // back.
+        const swell =
+          0.82 + 0.36 * (fbm3(p.dir.x * 24 + 611, p.dir.y * 24 + 611, p.dir.z * 24 + 611, 2) + 0.5);
+        dummy.scale.set(p.scale, p.scale * p.fade * swell, p.scale);
+        dummy.updateMatrix();
+        duneMesh.setMatrixAt(i, dummy.matrix);
+        speciesColor('dune', temperatureAt(p.dir, terracedElevation(p.height)), duneColor);
+        duneColor.offsetHSL(0, (rand() - 0.5) * 0.03, (rand() - 0.5) * 0.05);
+        duneMesh.setColorAt(i, duneColor);
+      });
+      duneMesh.instanceMatrix.needsUpdate = true;
+      if (duneMesh.instanceColor) duneMesh.instanceColor.needsUpdate = true;
+      duneMesh.castShadow = true;
+      duneMesh.receiveShadow = true;
+      group.add(duneMesh);
+    }
+  }
 
   // ---- grass: dense tiny tufts covering the (non-desert) ground ----
 
