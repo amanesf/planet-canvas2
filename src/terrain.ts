@@ -117,6 +117,9 @@ const saltCrackColor = new THREE.Color('#8c7c68');
 const basaltColor = new THREE.Color('#1c1815');
 const lavaGlowColor = new THREE.Color('#ff5a1f');
 const craterLakeColor = new THREE.Color('#2f6f8a');
+// Standing fresh water seen from above: darker and a shade greener than
+// the river line, which is a thread of moving water catching the sky.
+const lakeColor = new THREE.Color('#3187b2');
 
 // A river mouth's sediment fan: pale silty tan, distinct from both the
 // riverbed blue and ordinary shore sand.
@@ -457,6 +460,218 @@ function macroHeightAt(dir: THREE.Vector3): number {
   return realElevationAt(dir);
 }
 
+// ---------------------------------------------------------------------
+// Lakes
+// ---------------------------------------------------------------------
+// The elevation raster has no lakes in it, and no amount of work on the
+// hydrology will conjure them: measured, Lake Superior reads 0.0819 and a
+// cornfield in Iowa reads 0.0843, which is to say the source is a
+// topography/bathymetry composite that simply paints inland water as the
+// ground around it. Only the Caspian survives, and only because it is
+// below sea level and the bathymetry half of the composite therefore
+// covers it.
+//
+// So they go in by hand, from the same kind of table the cities, the ports
+// and the volcanoes use. Each is a spine of one or more points with a half
+// width, which covers both the round ones (Victoria, Ladoga) and the long
+// thin ones (Baikal, Tanganyika) without needing a polygon editor.
+//
+// Sized against the thing standing next to them, per 2-34, and that is
+// what settles it. The globe runs about 204 screen pixels per radian, so
+// at true scale Superior is 8px wide, Victoria 8px and Baikal 2.5px —
+// against a tree crown of 7px. Drawn honestly, every lake on the planet
+// except the Caspian is narrower than one tree, and the first attempt
+// proved it: the height field was carved correctly, the paint was correct,
+// the scatter correctly refused to stand a tree in the water, and Lake
+// Victoria was still invisible in the render because the crowns on its two
+// shores met over the top of it.
+//
+// So they are exaggerated, which is what everything else on this globe
+// does — runways by 177x, buildings by about 500x, roads to a fixed two
+// texels. One crown of width was not enough and the render said so: at
+// 0.018 rad Victoria was a six-pixel patch of water with crowns closing
+// over its top half, and Tanganyika was a dark thread. The floor is 0.030
+// rad — 12px, three crowns — with the larger ones scaled to keep their
+// order (Caspian 0.055, Superior 0.042, Victoria 0.045), which is roughly
+// 2x real. That is also what finally lets the resin shell cover them:
+// below about 0.03 rad a basin is under two globe quads across and the
+// mesh climbs back through the shell before it can hold any water.
+//
+// Athabasca goes too, at that width it merges with Great Slave. Great
+// Salt Lake, Titicaca and Nicaragua were never in: exaggerating a 2px lake
+// to 12px is not stylisation, it is invention. Lake Eyre is already a salt
+// pan and stays one.
+interface LakeSpec {
+  name: string;
+  /** [lat, lon] along the lake's long axis; a single point is a round one. */
+  spine: [number, number][];
+  /** half width, radians */
+  width: number;
+}
+
+const LAKE_SPECS: LakeSpec[] = [
+  { name: 'Caspian', spine: [[46.5, 51.5], [42.0, 50.5], [38.0, 52.5]], width: 0.055 },
+  { name: 'Superior', spine: [[47.3, -91.0], [47.8, -85.5]], width: 0.042 },
+  { name: 'Michigan', spine: [[45.7, -86.6], [42.1, -87.2]], width: 0.032 },
+  { name: 'Huron', spine: [[45.9, -83.4], [43.7, -82.0]], width: 0.038 },
+  { name: 'Erie', spine: [[41.9, -83.1], [42.6, -79.6]], width: 0.030 },
+  { name: 'Ontario', spine: [[43.5, -79.3], [44.0, -76.6]], width: 0.030 },
+  { name: 'Baikal', spine: [[55.7, 109.5], [51.7, 104.6]], width: 0.030 },
+  { name: 'Victoria', spine: [[-1.0, 33.0]], width: 0.045 },
+  { name: 'Tanganyika', spine: [[-3.4, 29.2], [-8.8, 31.0]], width: 0.030 },
+  { name: 'Malawi', spine: [[-9.5, 34.1], [-14.4, 35.2]], width: 0.030 },
+  { name: 'GreatBear', spine: [[66.0, -121.0]], width: 0.034 },
+  { name: 'GreatSlave', spine: [[62.5, -110.8], [61.3, -116.5]], width: 0.030 },
+  { name: 'Winnipeg', spine: [[53.8, -98.1], [50.6, -96.7]], width: 0.030 },
+  { name: 'Ladoga', spine: [[60.8, 31.4]], width: 0.030 },
+  { name: 'Balkhash', spine: [[46.7, 74.5], [45.6, 78.5]], width: 0.030 },
+  { name: 'Aral', spine: [[45.0, 59.5]], width: 0.030 },
+  { name: 'Chad', spine: [[13.2, 14.2]], width: 0.030 },
+  { name: 'Turkana', spine: [[4.5, 36.0], [2.5, 36.6]], width: 0.030 },
+  { name: 'Maracaibo', spine: [[9.8, -71.5]], width: 0.032 },
+];
+interface LakeSegment {
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  n: THREE.Vector3;
+  cosSpan: number;
+}
+
+interface Lake {
+  segments: LakeSegment[];
+  points: THREE.Vector3[];
+  width: number;
+  /** bounding cone, for the early-out every one of two million calls takes */
+  centre: THREE.Vector3;
+  cosReach: number;
+}
+
+function dirForLatLon(lat: number, lon: number): THREE.Vector3 {
+  const theta = ((90 - lat) * Math.PI) / 180;
+  const phi = ((lon + 180) * Math.PI) / 180;
+  return new THREE.Vector3(
+    -Math.sin(theta) * Math.cos(phi),
+    Math.cos(theta),
+    Math.sin(theta) * Math.sin(phi),
+  );
+}
+
+const LAKES: Lake[] = LAKE_SPECS.map((spec) => {
+  const points = spec.spine.map(([lat, lon]) => dirForLatLon(lat, lon));
+  const segments: LakeSegment[] = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    segments.push({
+      a,
+      b,
+      n: new THREE.Vector3().crossVectors(a, b).normalize(),
+      cosSpan: a.dot(b),
+    });
+  }
+  const centre = new THREE.Vector3();
+  for (const p of points) centre.add(p);
+  centre.normalize();
+  let reach = 0;
+  for (const p of points) reach = Math.max(reach, centre.angleTo(p));
+  // the mask's jitter and its outer ramp both push past the nominal width
+  return { segments, points, width: spec.width, centre, cosReach: Math.cos(reach + spec.width * 2) };
+});
+
+/** Angular distance from `dir` to a lake's spine. */
+function lakeDistance(dir: THREE.Vector3, lake: Lake): number {
+  let best = Infinity;
+  for (const p of lake.points) best = Math.min(best, dir.angleTo(p));
+  for (const s of lake.segments) {
+    const along = dir.dot(s.n);
+    const px = dir.x - s.n.x * along;
+    const py = dir.y - s.n.y * along;
+    const pz = dir.z - s.n.z * along;
+    const len = Math.hypot(px, py, pz);
+    if (len <= 1e-9) continue;
+    const inv = 1 / len;
+    const da = (px * s.a.x + py * s.a.y + pz * s.a.z) * inv;
+    const db = (px * s.b.x + py * s.b.y + pz * s.b.z) * inv;
+    if (da >= s.cosSpan && db >= s.cosSpan) {
+      best = Math.min(best, Math.asin(THREE.MathUtils.clamp(Math.abs(along), 0, 1)));
+    }
+  }
+  return best;
+}
+
+/**
+ * How far into a lake this point is: 0 on dry land, 1 out in open water.
+ *
+ * The edge is pushed around by noise at a wavelength shorter than the lake
+ * itself, because the giveaway of a hand-placed body of water is a shore
+ * that is exactly a capsule. Real lakes are all bays and points, and at
+ * eight to eighteen pixels that irregularity is most of what identifies
+ * one as a lake rather than as a spill.
+ */
+/**
+ * Distance to the nearest lake, in units of that lake's own half width:
+ * 0 at the middle, 1 at its nominal shore, Infinity nowhere near one.
+ *
+ * Normalised so that one set of thresholds describes every lake, and
+ * computed once because three different readings are taken off it — the
+ * water, the shore the canopy is held off, and the coastal step.
+ */
+function lakeProximity(dir: THREE.Vector3): number {
+  let best = Infinity;
+  for (const lake of LAKES) {
+    if (dir.dot(lake.centre) < lake.cosReach) continue;
+    const jitter = (fbm3(dir.x * 90 + 511, dir.y * 90 + 511, dir.z * 90 + 511, 3) - 0.5) * 0.75;
+    const d = lakeDistance(dir, lake) / lake.width - jitter;
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/**
+ * The lake and its immediate shore, 0..1. What the coastal step and the
+ * surf band read, both of which have to stop slightly *outside* the water.
+ */
+function lakeAt(dir: THREE.Vector3): number {
+  return smoothstep(lakeProximity(dir), LAKE_SHORE_REACH, 0.4);
+}
+
+/** The water itself, 0..1. */
+function lakeWaterAt(dir: THREE.Vector3): number {
+  return smoothstep(lakeAt(dir), LAKE_WATERLINE, 1);
+}
+
+/**
+ * How hard the canopy is held off a lake, 0..1 — full out to just past the
+ * waterline, gone by about twice the lake's half width.
+ *
+ * Reaching further than the water is the whole point, and the first attempt
+ * did not: with the clearing tied to the waterline, trees standing legally
+ * on the bank at 1.2 half widths kept their crowns, and a crown is 3.5px of
+ * overhang against a lake 6.5px in radius. Rendered with the water forced
+ * to magenta, 2.3% of Victoria's footprint reached the camera. The reach
+ * has to cover the lake plus a crown, not the lake.
+ */
+export function lakeShoreAt(dir: THREE.Vector3): number {
+  return smoothstep(lakeProximity(dir), LAKE_CLEAR_REACH, 1.05);
+}
+
+// Where the bed of an inland sea sits. Deep enough that the resin shell
+// over it reads as water rather than as a wet sandbar: the shell's alpha
+// is driven by depth (buildOceanTexture), and at a couple of hundredths
+// under the waterline it is transparent enough to show the pale shallow
+// seabed straight through, which is a beach, not a lake.
+const LAKE_BED = -0.05;
+
+// How far past the waterline the mask reaches, and where in it the water
+// starts. The gap between the two is the shore: open ground the canopy is
+// held off, without which a lake this size is roofed over by the crowns
+// standing on its banks.
+const LAKE_SHORE_REACH = 1.55;
+const LAKE_WATERLINE = 0.42;
+// How far out the canopy is held off, in half widths. Sized off the crown
+// it has to clear rather than off the lake.
+const LAKE_CLEAR_REACH = 1.9;
+
 export function heightAt(dir: THREE.Vector3): number {
   const macro = macroHeightAt(dir);
 
@@ -531,6 +746,24 @@ export function heightAt(dir: THREE.Vector3): number {
       volcanoHeight = THREE.MathUtils.lerp(volcanoHeight, craterFloor, smoothstep(volcano.crater, 0, 1));
     }
     n = THREE.MathUtils.lerp(n, volcanoHeight, smoothstep(volcano.cone, 0.05, 0.3));
+  }
+
+  // Lakes, last, because a lake is a hole in whatever was there.
+  //
+  // Cutting them into the height field rather than painting them blue is
+  // the whole of G28's "they are not treated as sea": everything that asks
+  // whether a point is under water asks this one function. Carve the basin
+  // and the ocean shell covers it, the coast distance field rings it with
+  // a shore, the whitecaps break on it, the paint reads it as seabed, the
+  // scatter refuses to stand a tree in it and the cities step back off it —
+  // none of which has to be told separately about lakes.
+  //
+  // `min`, so a lake can only ever cut down. Several of these sit in
+  // country the raster already has under water (the Caspian, Maracaibo)
+  // and a lake that could also raise ground would build a plateau there.
+  const lake = lakeWaterAt(dir);
+  if (lake > 0) {
+    n = Math.min(n, THREE.MathUtils.lerp(SEA_LEVEL + 0.002, LAKE_BED, lake));
   }
 
   return Math.max(n, -0.2); // flatten the deep ocean floor a bit
@@ -1431,7 +1664,18 @@ export function displayHeight(height: number, dir: THREE.Vector3): number {
   // there's a lot more of that terrain in the real data than the old
   // fictional coasts ever had) need a bit more guaranteed lift to clear the
   // ocean shell, especially with LAND_BOOST halved.
-  const coastalStep = 0.028 + coastCliffiness(dir) * 0.15;
+  // ...but not around a lake, where the same step is a wall.
+  //
+  // On a continent the step is the carved edge that makes this read as a
+  // relief globe rather than as a decal, and it is worth 8.4 screen pixels.
+  // A lake is a few pixels across, so the identical step turns it into the
+  // bottom of a well: measured at Victoria, the water sat 0.84px below the
+  // shell with an 8.4px wall standing round it, and at this camera's
+  // obliquity the near wall covered the water completely. The height field,
+  // the paint, the scatter and the shell were all correct and none of it
+  // could be seen. Held down to a fifth on the shore, a lake is a dish.
+  const lakeShore = smoothstep(lakeAt(dir), 0.05, 0.4);
+  const coastalStep = (0.028 + coastCliffiness(dir) * 0.15) * (1 - 0.8 * lakeShore);
   let boost = orogenyBoost;
 
   // A volcano's summit is meant to read as one singular landmark, taller
@@ -2081,6 +2325,24 @@ function terrainColor(
         }
       }
     }
+
+    // A lake is painted as water, not as a bed seen through water.
+    //
+    // Every other sea on this globe gets its blue from the resin shell over
+    // it and leaves the paint to describe the bottom. A lake is too small
+    // for that to survive: at 384 segments the globe's quads are 0.0164 rad
+    // and Victoria's water is 0.028 rad across, so the basin is about two
+    // vertices wide and the mesh climbs back through the shell almost
+    // immediately. Measured with the shell forced opaque magenta, only 2.8%
+    // of the lake's own footprint had any shell showing over it — the rest
+    // was terrain poking through, painted seabed silt, reading as ground.
+    //
+    // The paint has 2048 texels to work with and no such problem, so the
+    // water goes there. Where the shell does show it still adds its gloss
+    // on top, which is the right way round: a printed lake on a relief
+    // globe with resin over the deepest part of it.
+    const lakeWater = lakeWaterAt(dir);
+    if (lakeWater > 0) color.lerp(lakeColor, smoothstep(lakeWater, 0, 0.45) * 0.92);
 
     color.lerp(iceColor, seaIce);
   } else if (h < SEA_LEVEL + COAST_WIDTH * 0.35) {
@@ -3776,7 +4038,17 @@ export function buildOceanTexture(width = 1536, height = 768): THREE.CanvasTextu
       // every continent foams.
       const d = coastDist[py * width + px];
       const jittered = d > 0 ? d + coastlineJitter(dir) * 220 * texelScale : 0;
-      const surf = d > 0 ? surfAt(dir, jittered, texelScale) : 0;
+      // No surf on a lake. The whitecaps are a distance-from-shore band
+      // (2-10), and an inland sea is *all* shore: measured, every texel of
+      // Victoria and of Tanganyika fell inside the band, so each lake came
+      // out as a solid white-grey blob — and since foam also overrides the
+      // shell's alpha, an opaque one. That is what was hiding the lakes in
+      // the render while the height field, the paint and the scatter were
+      // all already treating them correctly. Cut just inside the waterline,
+      // which leaves the pale sliver at the very edge that a shore should
+      // have.
+      const surfMask = 1 - smoothstep(lakeAt(dir), 0.42, 0.62);
+      const surf = d > 0 ? surfAt(dir, jittered, texelScale) * surfMask : 0;
       const occlusion = d > 0 ? shoreOcclusion(dir, jittered, texelScale) : 0;
       const c = oceanColor(dir, h, surf, occlusion);
 

@@ -12,6 +12,7 @@ import {
   snowinessAt,
   canopyAt,
   ergAt,
+  lakeShoreAt,
   riverAt,
   riverCorridorAt,
   roadAt,
@@ -1362,6 +1363,11 @@ export function buildSpecies(
     // crowns either side, so from above the channel reads as a break in the
     // canopy with water in it rather than as a line drawn underneath one.
     const riverClearing = Math.min(1, riverCorridorAt(dir) * 1.35);
+    // A lake's shore, for the same reason and more of it: `lakeAt` already
+    // runs past the waterline, so this clears a beach rather than only the
+    // water, and an eight-pixel lake survives the seven-pixel crowns on its
+    // banks instead of being roofed over by them.
+    const lakeShore = lakeShoreAt(dir);
     // and the water itself, which not even grass stands in
     const inChannel = Math.min(1, riverAt(dir) * 2.4);
 
@@ -1376,6 +1382,7 @@ export function buildSpecies(
       !clearedByCity(urban) &&
       !clearedByCity(roadClearing) &&
       !clearedByCity(riverClearing) &&
+      !clearedByCity(lakeShore) &&
       !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)
     ) {
       const point = dir.clone();
@@ -1474,6 +1481,7 @@ export function buildSpecies(
         !clearedByCity(urban) &&
         !clearedByCity(roadClearing) &&
         !clearedByCity(riverClearing) &&
+        !clearedByCity(lakeShore) &&
         !forestHash.hasNeighborWithin(dir, spacing * spacing)
       ) {
         const point = dir.clone();
@@ -1548,6 +1556,7 @@ export function buildSpecies(
             rand() < openWoodland * clumpDensity(dir, 163) &&
             !clearedByCity(urban) &&
             !clearedByCity(riverClearing) &&
+            !clearedByCity(lakeShore) &&
             !pointsHash.hasNeighborWithin(dir, pointsMinSpacingSq)
           ) {
             const point = dir.clone();
