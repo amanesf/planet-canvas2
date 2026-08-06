@@ -12,6 +12,8 @@ import {
   snowinessAt,
   canopyAt,
   ergAt,
+  riverAt,
+  riverCorridorAt,
   roadAt,
   temperatureAt,
   terracedElevation,
@@ -1348,6 +1350,21 @@ export function buildSpecies(
     // this opens a lane a few crowns wide, which is what shows.
     const roadClearing = Math.min(1, roadAt(dir) * 1.9);
 
+    // A river is the same problem as a road, one size smaller. The paint
+    // draws a channel about four texels across; a crown is eleven. Left to
+    // itself the wood closes straight over the Amazon and what reaches the
+    // eye is unbroken green with the occasional blue fleck in it — which is
+    // precisely how the road looked before 2-35, and precisely what the
+    // river looked like when this was measured.
+    //
+    // Cleared harder than a road, because unlike a road this one is true:
+    // no tree stands in a river. The gain widens the gap to a couple of
+    // crowns either side, so from above the channel reads as a break in the
+    // canopy with water in it rather than as a line drawn underneath one.
+    const riverClearing = Math.min(1, riverCorridorAt(dir) * 1.35);
+    // and the water itself, which not even grass stands in
+    const inChannel = Math.min(1, riverAt(dir) * 2.4);
+
     // ---- species classification, then the regional icons on top ----
     // The order matters: the icons stand in for what the climate already
     // decided, so everything below — clearing, thinning, spacing —
@@ -1358,6 +1375,7 @@ export function buildSpecies(
       species &&
       !clearedByCity(urban) &&
       !clearedByCity(roadClearing) &&
+      !clearedByCity(riverClearing) &&
       !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)
     ) {
       const point = dir.clone();
@@ -1455,6 +1473,7 @@ export function buildSpecies(
         rand() < density &&
         !clearedByCity(urban) &&
         !clearedByCity(roadClearing) &&
+        !clearedByCity(riverClearing) &&
         !forestHash.hasNeighborWithin(dir, spacing * spacing)
       ) {
         const point = dir.clone();
@@ -1501,6 +1520,7 @@ export function buildSpecies(
       if (
         rand() < openness * clumpDensity(dir, 199) &&
         !clearedByCity(urban * 0.55) &&
+        !clearedByCity(inChannel) &&
         !grassHash.hasNeighborWithin(dir, grassSpacing * grassSpacing)
       ) {
         const point = dir.clone();
@@ -1527,6 +1547,7 @@ export function buildSpecies(
           if (
             rand() < openWoodland * clumpDensity(dir, 163) &&
             !clearedByCity(urban) &&
+            !clearedByCity(riverClearing) &&
             !pointsHash.hasNeighborWithin(dir, pointsMinSpacingSq)
           ) {
             const point = dir.clone();
