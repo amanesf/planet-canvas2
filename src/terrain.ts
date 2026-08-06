@@ -2432,7 +2432,7 @@ export function buildTerrainTexture(width = 1536, height = 768): THREE.CanvasTex
 // the globe's emissive term gated by which side is facing the sun:
 // a scattered glow wherever the existing climate fields say people could
 // plausibly live, and named metropolises at their real coordinates on top.
-const MAJOR_CITIES: [number, number, number][] = [
+export const MAJOR_CITIES: [number, number, number][] = [
   // latitude, longitude, relative size
   // --- 東アジア ---
   [35.68, 139.69, 1.0], // 東京

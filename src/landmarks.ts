@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { SEA_LEVEL, latLonToDir, sampledHeight } from './terrain';
+import { MAJOR_CITIES, SEA_LEVEL, latLonToDir, sampledHeight } from './terrain';
+import { mulberry32 } from './spatialHash';
 import { AIR_ROUTES, PORTS } from './traffic';
 
 // ---------------------------------------------------------------------
@@ -925,6 +926,184 @@ function portParts(): Part[] {
   return parts;
 }
 
+// ---------------------------------------------------------------------
+// The cities themselves (G43)
+// ---------------------------------------------------------------------
+// Until now this globe had twenty-three buildings on it — the famous ones
+// — and nothing else. Every one of its 186 cities was a grey smudge of
+// paint with the trees cleared off it, which measured worse than useless:
+// the clearing is real (trees within 0.012 rad of a centre are down 80%),
+// so a city was a *balder* patch of ground than the country around it,
+// carrying less than the forest it replaced. Counted against the scatter,
+// the planet held 32,561 pieces of vegetation and 23 built structures.
+//
+// The coordinates cost nothing: MAJOR_CITIES is the same table urbanAt
+// paints from, so a block stands where the paint is grey by construction
+// and cannot drift away from it.
+//
+// SIZE, worked out before any of it was built, because that is what
+// decides whether this is worth doing at all. At the shipped camera the
+// globe is about 102 px per world unit. A city's painted patch has radius
+// 0.015 + size*0.023 radians, so on a sphere of radius 2 that is 7.8 px
+// for Tokyo and 4.5 px for a small one — the *whole city* is 9 to 16 px
+// across. Anything standing in it has single-digit pixels to work with.
+//
+// True scale is hopeless, as always here: a 200 m tower is 6.3e-5 units,
+// which is 0.006 px, and §2-21 is the record of what happens to things
+// drawn at a fraction of a pixel. The exaggeration that follows is about
+// 500x, and the check on it is not the real world but the trees standing
+// next door — those are already about 3000x life, so a block matched to a
+// tree clump is *less* exaggerated than the vegetation it stands among,
+// and reads as belonging to the same model rather than as a separate joke.
+// Blocks are 1.5-2.8 px across and 2-6 px tall against a trunk of 1.4 px.
+//
+// What separates them from the trees is not size but shape and colour:
+// flat tops, square plans, pale stone and glass against round green
+// blobs. That is also why they are drawn from the same seven materials the
+// landmarks use — merged into the same buckets, so all of this costs
+// **no additional draw call at all**.
+const CITY_BLOCK_SEED = 4300;
+
+interface CityStats {
+  cities: number;
+  blocks: number;
+  nudged: number;
+  dropped: number;
+  onWater: number;
+}
+
+/**
+ * Blocks for every city in MAJOR_CITIES.
+ *
+ * Water is tested twice, and it has to be. §2-11 measured 26 of the 186
+ * centres landing on water in the elevation raster, and §2-28 found 2 of
+ * 12 airports doing the same: a coastal city downsampled to a 4096-wide
+ * raster is as likely as not to come out in the sea. So the centre is
+ * nudged ashore first, and then every individual block is tested again on
+ * its own footprint — a centre that passes can still scatter half its
+ * blocks into the bay, which is exactly what a harbour city looks like
+ * from above.
+ */
+function placeCityBlocks(
+  radius: number,
+  bumpHeight: number,
+  push: (material: MaterialKey, geometry: THREE.BufferGeometry) => void,
+): CityStats {
+  const stats: CityStats = { cities: 0, blocks: 0, nudged: 0, dropped: 0, onWater: 0 };
+  const basis = new THREE.Matrix4();
+
+  MAJOR_CITIES.forEach(([lat0, lon0, size], index) => {
+    const rand = mulberry32(CITY_BLOCK_SEED + index * 7919);
+
+    // The painted patch, in radians, straight out of terrain.ts's
+    // cityPatch. Blocks stay inside 0.78 of it so the built-up area sits
+    // within the grey rather than spilling onto green ground.
+    // 0.55 of the painted patch, not 0.78. Two reasons, both from looking
+    // at renders: blocks spread over the full patch read as scattered grit
+    // rather than as a town — a tight cluster is what says "settlement" at
+    // fifteen pixels — and the outer patch is only partly cleared of
+    // trees, since the scatter's clearing follows the same falloff. Inside
+    // 0.55 the ground is bare, so the buildings stand on their own paint
+    // instead of half-buried in canopy.
+    const patch = (0.015 + size * 0.023) * 0.55;
+
+    // A ring at the cluster's own radius is enough of a footprint test for
+    // the centre: it is asking "is there room for a town here", not "is
+    // this one block dry".
+    const ring: [number, number][] = [];
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      ring.push([Math.cos(a) * patch * 0.6, Math.sin(a) * patch * 0.6]);
+    }
+    const placed = nudgeToLand(lat0, lon0, [{ bearing: [1, 0], footprint: ring }]);
+    if (!placed) {
+      stats.dropped++;
+      return;
+    }
+    if (placed.moved > 0) stats.nudged++;
+    stats.cities++;
+
+    const centre = latLonToDir(placed.lat, placed.lon);
+    const { east, north } = localFrame(centre);
+
+    // More blocks in a bigger city, and the count is what carries size
+    // rather than the blocks themselves being fatter: a metropolis is a
+    // wide field of ordinary buildings, not a village of giant ones.
+    const count = Math.round(5 + size * 13);
+    for (let i = 0; i < count; i++) {
+      // Square-rooted radius so the scatter is uniform over the disc
+      // instead of piling into the middle, then biased back in a little —
+      // a city is denser downtown, but not a spike.
+      const r = Math.pow(rand(), 0.62) * patch;
+      const a = rand() * Math.PI * 2;
+      const at = offsetDir(centre, east, north, Math.cos(a) * r, Math.sin(a) * r);
+      if (!isLand(at)) {
+        stats.onWater++;
+        continue;
+      }
+
+      const frame = localFrame(at);
+      const ground = sampledHeight(at);
+      // Sunk a touch, like the landmarks, so a block does not float where
+      // the displaced mesh dips below the height field between samples.
+      const surface = radius + ground.display * bumpHeight - 0.003;
+      basis.makeBasis(frame.east, frame.up, frame.north);
+      basis.setPosition(frame.up.x * surface, frame.up.y * surface, frame.up.z * surface);
+
+      // Downtown is taller. The tallest thing in a big city is a tower and
+      // there are only ever one or two of them, so height comes off a
+      // steep curve on the distance from the centre times a per-block roll,
+      // not off a uniform range.
+      const central = 1 - r / patch;
+      const tower = rand() < 0.12 + size * 0.14 ? 1 : 0;
+      // Sized up hard from a first pass at 1.5-2.9 px across. Rendered,
+      // that came out as scattered pale specks reading as grit on the
+      // paint rather than as a town — one step short of the failure §2-21
+      // records for the lightning. Fewer and bigger is the trade every
+      // small feature on this globe ends up making: 2.4-4.1 px wide, so
+      // four or five of them span a city instead of eight.
+      const w = 0.024 + rand() * 0.016;
+      const d = 0.024 + rand() * 0.016;
+      // Height is what actually makes a city legible, and the first two
+      // passes both got it wrong by keeping blocks the same height as the
+      // trees (2-4 px against a canopy of 3-4). Rendered over Europe they
+      // vanished into the forest: same size, same tone, and the eye had
+      // nothing to separate them by. A skyline reads because it stands
+      // *above* the tree line, so these do too. That is more exaggeration
+      // than the footprint got, which is the right way round — it is also
+      // what the landmarks do (LANDMARK_SCALE 3.8) and what the runways do
+      // (177x life, §2-28). Typical block 3-5 px, the rare downtown tower
+      // in a large city up to 11.
+      const h =
+        0.03 +
+        rand() * 0.022 +
+        central * central * (0.008 + size * 0.014) +
+        tower * (0.01 + size * 0.022);
+
+      const box = new THREE.BoxGeometry(w, h, d);
+      box.translate(0, h / 2, 0);
+      box.rotateY(rand() * Math.PI * 0.5);
+      box.applyMatrix4(basis);
+      // Glass for the towers, stone for the rest — the same two materials
+      // the landmark list already compiles, so no new shader.
+      push(tower && rand() < 0.7 ? 'glass' : 'stone', box);
+
+      // A flat roof slab a shade darker, very slightly proud of the walls.
+      // One extra box per building and the only thing that stops a block
+      // reading as an untextured white pillar at four pixels.
+      const cap = new THREE.BoxGeometry(w * 1.12, 0.004, d * 1.12);
+      cap.translate(0, h + 0.002, 0);
+      cap.rotateY(0);
+      cap.applyMatrix4(basis);
+      push('roof', cap);
+
+      stats.blocks++;
+    }
+  });
+
+  return stats;
+}
+
 export function buildLandmarks(radius: number, bumpHeight: number): THREE.Group {
   const group = new THREE.Group();
   const buckets: Record<MaterialKey, THREE.BufferGeometry[]> = {
@@ -1001,6 +1180,12 @@ export function buildLandmarks(radius: number, bumpHeight: number): THREE.Group 
 
   resolveAirfields(radius).forEach((site) => placeFlat(site, airfieldParts()));
   resolvePorts(radius).forEach((site) => placeFlat(site, portParts()));
+
+  // The cities. Same buckets, so the whole of it merges into the meshes
+  // the landmarks were already going to draw.
+  placeCityBlocks(radius, bumpHeight, (material, geometry) => {
+    buckets[material].push(geometry);
+  });
 
   (Object.keys(buckets) as MaterialKey[]).forEach((key) => {
     const parts = buckets[key];
