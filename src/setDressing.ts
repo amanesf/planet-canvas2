@@ -51,7 +51,36 @@ const DESK_Y = -2.08;
  * can drift out of step with main.ts's.
  */
 export const GLOBE_RADIUS = 2;
-export const GLOBE_CENTRE_Y = 0.6;
+/**
+ * Raised from 0.6 when the sphere stopped resting in a brass collar and
+ * went up onto an axis. 0.26 of a world unit is 3cm at this model's scale
+ * — the props are the ruler: book covers 0.17-0.36 thick, standing books
+ * 1.57-2.52 tall, pot mouths 0.85-1.02 across and a 1.15 nameplate all
+ * agree on about 11.5cm to the unit, which makes the globe itself a 46cm
+ * library piece. On screen the lift is 30px (114.5 px/unit at a
+ * 800px-tall viewport), and it opens 0.385 units — 4.4cm, 44px — of air
+ * between the south pole and the top of the wood.
+ */
+export const GLOBE_CENTRE_Y = 0.86;
+
+/**
+ * The obliquity, and the one number the globe, its mount and the
+ * satellites all have to agree on.
+ *
+ * It was 0.04 radians — a 2.3 degree lean that was never meant as an axial
+ * tilt, only as a hint that the model was set down by hand. A globe with a
+ * rod through it has to commit: the rod points somewhere, and the only
+ * defensible somewhere is 23.4 degrees. Stated here rather than in main.ts
+ * because three separate objects read it (the sphere, the brass mount, and
+ * the satellite orbits, which share the seat and the tilt but not the
+ * spin), and this project has twice been bitten by two places computing
+ * the same physical fact and disagreeing.
+ *
+ * The sign is the one 0.04 already had: a rotation about +Z leans the
+ * north pole toward -X, which is the viewer's left, and so toward the key
+ * light. The northern hemisphere is the one tipped into the lamp.
+ */
+export const AXIAL_TILT = (23.4 * Math.PI) / 180;
 
 // ---------------------------------------------------------------------
 // The shadow the globe throws on the desk

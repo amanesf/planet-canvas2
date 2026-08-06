@@ -27,7 +27,13 @@ import { buildLandmarks } from './landmarks';
 import { buildAircraft, buildSatellites, buildShips } from './traffic';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
-import { buildWorkshop, GLOBE_CENTRE_Y, GLOBE_RADIUS, KEY_LIGHT_POSITION } from './setDressing';
+import {
+  AXIAL_TILT,
+  buildWorkshop,
+  GLOBE_CENTRE_Y,
+  GLOBE_RADIUS,
+  KEY_LIGHT_POSITION,
+} from './setDressing';
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -160,13 +166,17 @@ window.addEventListener('unhandledrejection', (event) => {
 // lamp, and a second copy of either number is free to drift out of step.
 const RADIUS = GLOBE_RADIUS;
 const BUMP_HEIGHT = 0.36; // exaggerated on purpose — mountains were reading as flat/thin at 0.22
-// The globe *sits on* the pedestal. It used to hover above it with a
-// visible gap, as a nod to a magnetic-levitation idea — and that gap was
-// one of the strongest anti-physical cues left in the frame: a thing that
-// floats is unmistakably not a thing standing on a workbench, however well
-// it is lit or painted. In the reference the sphere nests into a brass
-// collar on the wood, which is what this height and the cradle ring below
-// are set up to reproduce.
+// The globe hangs on its axis, 3cm clear of the wood.
+//
+// It used to nest into a brass collar, and before that it hovered over the
+// pedestal with a gap as a nod to magnetic levitation. The collar was the
+// right correction to the levitation — a thing that floats unsupported is
+// not a thing standing on a workbench — but it is not the only way to
+// support something, and it is not how a globe is supported. A gap under a
+// sphere reads as levitation when nothing crosses it and as an axle when a
+// rod does. The rod crosses it now, so the sphere can come up off the wood
+// without going back to floating: it is held at both poles, which is more
+// visibly *held* than resting in a collar ever was.
 const GLOBE_SEAT_Y = GLOBE_CENTRE_Y;
 
 // ---------- renderer / scene / camera ----------
@@ -204,7 +214,19 @@ const camera = new THREE.PerspectiveCamera(
 // from 84% to 63% of the frame height — still by a distance the largest
 // thing in the picture, and the set dressing that was already built (the
 // book piles, the plants) finally reads at a size where it can do its job.
-const BASE_CAMERA_DISTANCE = 9.6;
+//
+// 10.2, from 9.6, because the subject grew a mount. The rule above is the
+// one being applied again, not overridden: the frame has to hold the whole
+// object, and the object is no longer just the sphere and the wood. The
+// tallest brass is the north pin, 3.301 up, and at 9.6 it landed 19.15
+// degrees off the axis against a 20 degree half-frame — 17px short of the
+// top edge, close enough that the arc read as running off the picture.
+// 10.2 puts it at 17.99 degrees, 40px clear, and it buys the bottom back
+// at the same time: the desk at z = 2.5 goes from -20.02 (exactly on the
+// edge, which is what 9.6 was chosen to do) to -18.71, so there is finally
+// margin at both ends instead of none at either. The globe pays 6% of its
+// diameter for that, 458px to 431px, and is still over half the frame.
+const BASE_CAMERA_DISTANCE = 10.2;
 // Portrait pulls back, but not by the full 1/aspect it used to.
 //
 // The old rule divided the distance by the aspect ratio outright, which
@@ -546,6 +568,26 @@ scene.add(buildWorkshop());
 
 const globeGroup = new THREE.Group();
 globeGroup.position.set(0, GLOBE_SEAT_Y, 0);
+// Tilt first, then spin — which is not what three does by default, and the
+// difference is the whole difference between a planet and a wobbling top.
+//
+// This group carries two rotations: z is the axial tilt, y is the day's
+// spin. Under the default XYZ order three composes them as Rx·Ry·Rz, so
+// the z tilt is applied *innermost* and the y spin then turns the already
+// tilted globe about the world's vertical. The pole does not stay put: it
+// walks round a cone. Measured at the current 23.4 degrees, a quarter turn
+// takes the north pole 32.6 degrees away from where the brass rod is, and
+// half a turn takes it 46.8 — the axis would visibly climb out of its own
+// mounting and back in again, once per day.
+//
+// It has been wrong the whole time and could not be seen, because the lean
+// was 0.04 radians and a 2.3 degree cone is nothing. Putting a rod through
+// the poles is what made it a real bug: the rod is fixed to the stand, so
+// it cannot follow a pole that moves, and any error shows up immediately as
+// brass that misses the ice. ZYX composes as Rz·Ry·Rx, which spins about
+// the local axis and then tilts the result — pole nailed to the rod at
+// every spin angle, measured 0.0 degrees off at all four quarters.
+globeGroup.rotation.order = 'ZYX';
 scene.add(globeGroup);
 
 // terrain color is painted once onto a texture (crisp, cheap to sample)
@@ -713,40 +755,123 @@ standBrass.push(
   new THREE.CylinderGeometry(1.655, 1.655, 0.045, 48, 1, true).translate(0, -1.75, 0),
 );
 
-// The brass collar the sphere rests in. A pulsing glow ring used to sit
-// here; a glowing ring belongs to a sci-fi prop, not to something
-// photographed on a workbench next to a jar of paint.
-// A ring of radius 1.2 at this height was not cradling anything: the
-// sphere's bottom is only about 1.42 below its centre, so at that height
-// the sphere is already down to a point and the ring was a wide disc
-// around its tip. Sized to the sphere's actual horizontal radius where it
-// meets the collar, and raised onto a turned wooden neck so the brass has
-// something to sit on.
-standWood.push(new THREE.CylinderGeometry(1.16, 1.2, 0.48, 44).translate(0, -1.29, 0));
-
-// Sized to where the sphere actually is at the collar's height, so the
-// brass meets the curve instead of ringing empty air below the south pole.
+// ---------------------------------------------------------------------
+// The mount: an axis through the poles, and a meridian arc to carry it
+// ---------------------------------------------------------------------
+// The turned wooden neck and the brass collar that used to stand here are
+// gone. They existed to cradle a sphere that sat *in* them, and the sphere
+// no longer sits on anything — it is held on a rod, 3cm clear of the wood,
+// the way a globe is.
+//
+// A meridian ring was tried once before and removed, and the reason it was
+// removed is worth restating because this is not a quiet reversal of it.
+// That ring had a radius barely over the sphere's own, sat in the plane
+// facing the camera, and so projected to a circle riding the silhouette:
+// brass tracing the limb the whole way round, and a planet that read as
+// something mounted behind a hoop. Three things are different here, and
+// all three were measured before any of it was built:
+//
+//   - The radius is 2.66 against a sphere of 2. Every point of the arc
+//     projects at least 2.542 units from the disc's centre, so it never
+//     crosses the silhouette at all — it stands 76px off the limb rather
+//     than riding it.
+//   - It is half a ring, not a whole one. It runs from the south pin,
+//     round the left, to the north pin, and stops. Nothing encircles.
+//   - The radius is set by the weather, not by the sphere. The opaque
+//     cloud cores reach 2.540 and their halos 2.615 (measured over every
+//     vertex of all 15 cloud layers, at three points in the drift); this
+//     planet has a troposphere and a globe's ring has to clear it. That is
+//     why the brass stands so much further out than a real globe's does,
+//     and it is the whole reason the old objection does not apply.
+//
+// The half-ring is also what makes it fit. A full ring of this radius has
+// its topmost point 2.66 above the centre, which at this camera lands
+// 20.76 degrees off the axis against a 20 degree half-frame — cropped. An
+// arc that stops at the north pin tops out at the pin itself, 19.15
+// degrees, because the pin is 23.4 degrees round from the top. The
+// composition §2-18 measured out did not have to move.
+const MOUNT_RADIUS = 2.66;
+const mountBrass: THREE.BufferGeometry[] = [];
 {
-  const ring = new THREE.TorusGeometry(1.16, 0.065, 12, 56);
-  ring.rotateX(Math.PI / 2);
-  ring.translate(0, -1.05, 0);
-  standBrass.push(ring);
+  // Where the pins are: the poles, out at the ring rather than at the
+  // sphere's surface. The arc's own frame is the world XY plane, which is
+  // also the plane the tilt turns in, so the whole mount is flat and the
+  // rod's ends meet the brass exactly.
+  const northAngle = Math.PI / 2 + AXIAL_TILT; // 113.4 degrees from +X
+
+  // The rod. Two-thirds of a unit of it shows at each pole (76px), which
+  // is the length that made this worth doing at all: at a real globe's
+  // proportions the pin would be a few pixels of brass poking out of the
+  // ice and would have read as a blemish rather than as an axis. The
+  // radius, though, is honest — 0.042 units is 5mm on a 46cm globe, and
+  // it comes out 9.6px across without any exaggeration.
+  const rod = new THREE.CylinderGeometry(0.042, 0.042, MOUNT_RADIUS * 2, 14);
+  rod.rotateZ(AXIAL_TILT);
+  rod.translate(0, GLOBE_CENTRE_Y, 0);
+  mountBrass.push(rod);
+
+  // The arc, from the north pin round the left and down into the wood.
+  //
+  // It stops 6.3 degrees past the south pin rather than at it, so the end
+  // of the brass is buried in the tier below instead of meeting its top
+  // face in a visible seam. Measured: at 250 degrees the arc is at
+  // x = -0.910, y = -1.640, and the wood there is 1.461 in radius.
+  const arcStart = northAngle;
+  const arcSweep = (250 * Math.PI) / 180 - northAngle;
+  const arc = new THREE.TorusGeometry(MOUNT_RADIUS, 0.055, 8, 96, arcSweep);
+  // A meridian ring is a flat band, not a wire. Left as a round tube it
+  // reads as coat-hanger; flattened across the ring's own plane it catches
+  // the key light on a broad face the way rolled brass does. 0.11 units
+  // wide radially (12.6px) by 0.040 thick (4.6px).
+  arc.scale(1, 1, 0.36);
+  arc.rotateZ(arcStart);
+  arc.translate(0, GLOBE_CENTRE_Y, 0);
+  mountBrass.push(arc);
+
+  // Two fittings on the top face of the wood, where the brass goes in.
+  // Without them the rod and the arc simply intersect the tier and stop,
+  // and a rod that ends inside a surface reads as a modelling mistake
+  // rather than as a joint. These are the escutcheons a real stand has.
+  //
+  // Both positions are the measured crossings of y = -1.525, the top of
+  // the upper tier: the rod at x = 1.032 and the arc at x = -1.178.
+  ([
+    [1.032, 0.115],
+    [-1.178, 0.1],
+  ] as [number, number][]).forEach(([x, r]) => {
+    mountBrass.push(
+      new THREE.CylinderGeometry(r, r * 1.25, 0.05, 20).translate(x, -1.515, 0),
+    );
+  });
 }
 
-// There is deliberately no meridian half-ring around the sphere. One used
-// to arc from the collar up over the pole and back down, with an engraved
-// scale along it, on the argument that a desk globe is not legible as a
-// globe without one. In the frame this piece actually uses it did the
-// opposite: sitting in the plane facing the camera it projects to a circle
-// riding the silhouette, so the brass traces the limb all the way round and
-// the planet reads as something mounted behind a hoop rather than as a
-// sphere sitting on a workbench. The collar below is enough to say "this
-// object is held" — the earth itself stays unencircled.
+// The mount does not share the nameplate's brass, and the first build of
+// it did. That material is tuned for a small flat plate seen almost
+// face-on — metalness held down to 0.55 and the environment pushed up to
+// 1.8 so a plaque that would otherwise render as a dull brown slab keeps
+// some warmth. Put that on a long curved band and every part of it samples
+// the environment from a different angle, so all of it lights up at once:
+// the arc came out a flat bright orange, the most saturated object in a
+// frame that is otherwise deep walnut and lamplight, and read as plastic.
+//
+// Brass in a dim room is mostly dark with one bright streak where it turns
+// to face the lamp, and that is a *curved* metal's behaviour, not a flat
+// one's — so the fix is the opposite of the plaque's: let it be properly
+// metallic and let the room be as dark as it actually is. The streak the
+// arc gets along its length is worth more than an even glow, because it is
+// the thing that says the brass is round.
+const mountMaterial = new THREE.MeshStandardMaterial({
+  color: 0x9d7c43,
+  metalness: 0.8,
+  roughness: 0.34,
+  envMapIntensity: 0.6,
+});
 
-// two meshes for the whole pedestal, instead of one per turned part
+// three meshes for the whole stand, instead of one per turned part
 [
   [standWood, baseMaterial],
   [standBrass, plaqueMaterial],
+  [mountBrass, mountMaterial],
 ].forEach(([parts, material]) => {
   const list = parts as THREE.BufferGeometry[];
   if (list.length === 0) return;
@@ -791,10 +916,11 @@ function animate() {
     globeGroup.rotation.y += 0.0025 * 60 * (1 / 60);
   }
 
-  // A display globe sits still in its collar; the bob that used to be here
-  // was the levitation idea, and it survived the sphere being seated only
-  // as a slow wobble that read as the whole model being loose.
-  globeGroup.rotation.z = 0.04;
+  // A display globe sits still on its pins; the bob that used to be here
+  // was the levitation idea, and it survived the sphere being mounted only
+  // as a slow wobble that read as the whole model being loose. The lean is
+  // the obliquity now, and the rod through the poles is drawn along it.
+  globeGroup.rotation.z = AXIAL_TILT;
 
   // The globe's own per-frame work is registered once it exists. It cannot
   // be referenced directly from here: rendering starts before those
@@ -1590,7 +1716,7 @@ globeGroup.add(aircraft.group);
 // group that shares the globe's seat and axial tilt but none of its spin.
 const orbitGroup = new THREE.Group();
 orbitGroup.position.copy(globeGroup.position);
-orbitGroup.rotation.z = 0.04; // the same tilt the globe sits at
+orbitGroup.rotation.z = AXIAL_TILT; // the same tilt the globe sits at
 scene.add(orbitGroup);
 const satellites = buildSatellites(RADIUS);
 orbitGroup.add(satellites.group);

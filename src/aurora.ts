@@ -27,28 +27,31 @@ import { mulberry32 } from './spatialHash';
 // The pixel arithmetic, done before anything was built (handover §3)
 // ---------------------------------------------------------------------
 // Measured by projecting known points through the shipped camera (40° fov,
-// 9.6 units out, polar angle 0.405π, aiming at y = 0.15) at 1280×760: the
-// globe's centre lands at (640, 333), its limbs at x = 419.5 and x = 860.5.
-// That is 110 px per world unit and a disc 441 px across — the handover's
-// "≈108 px per unit" measured again at the current framing.
+// polar angle 0.405π, aiming at y = 0.15) at 1280×760. The camera moved out
+// from 9.6 to 10.2 when the globe went up on its axis and grew a meridian
+// arc that had to fit the frame, so these are the numbers at 10.2: 102 px
+// per world unit and a disc 409 px across, where it was 110 and 441. Every
+// pixel figure below is the smaller one; none of the conclusions turn on
+// the 7% difference, but leaving the old numbers here would have been the
+// "修正済みを疑う" failure the handover warns about.
 //
 //   - The band sits 30° from the magnetic pole. Its circle of feet has
 //     world radius 2·sin30° = 1.00, so a circumference of 6.28 units ≈
-//     690 px. Split into 30 curtains, that is 23 px of arc each: a sheet,
+//     643 px. Split into 30 curtains, that is 21 px of arc each: a sheet,
 //     not a hair. This is the wide, storm-time oval rather than the 20–23°
 //     quiet one — measured against the camera (below), 23° puts 30% of the
 //     band where it can be seen and 30° puts 40% of it there, and a wider
 //     oval also reaches far enough down the limb to stand against the room
 //     instead of hiding behind the pedestal.
 //   - Each curtain stands from 0.36 to 0.92 above the surface: 0.56 units
-//     ≈ 62 px tall. That number is conservative against the rest of the
+//     ≈ 57 px tall. That number is conservative against the rest of the
 //     scene rather than generous. The cloud deck already hovers at
 //     0.14–0.34, which at true scale is 450–1100 km, so this planet's
 //     atmosphere is exaggerated about 45× already; a curtain drawn at the
 //     clouds' own exaggeration would be several globe radii tall. Making
 //     it only 1.6× the height of the cloud deck under-scales it, which is
 //     the direction §2-21 says to err in.
-//   - The fine vertical rays run 55 times round the band, so about 13 px
+//   - The fine vertical rays run 55 times round the band, so about 12 px
 //     apart, and they are evaluated per fragment rather than per vertex —
 //     360 columns of geometry round the band would sample them only five
 //     times a cycle and turn a comb into a sawtooth.
@@ -61,12 +64,18 @@ import { mulberry32 } from './spatialHash';
 // axis — and the globe simply spins under it about y. Two consequences,
 // and both of them decided the design:
 //
-//   1. sun·(north pole) = +0.595 permanently, and sun·(south pole)
-//      = −0.595 permanently. Sampled round the whole southern band at
+//   1. sun·(north pole) = +0.815 permanently, and sun·(south pole)
+//      = −0.815 permanently. Sampled round the whole southern band at
 //      eight rotations, 100% of it is on the night side at all times. The
 //      aurora that shows is therefore the *southern* one. That is not a
 //      problem to design around, it is what this room's lighting means.
-//   2. The camera sits 14.5° above the globe's equator, so the southern
+//      These were ±0.595 while the globe leaned 0.04 radians; giving it a
+//      real 23.4° obliquity tipped the north pole further into the lamp
+//      and the south further out of it, so the finding is not just intact
+//      but stronger. It stays constant under spin only because the globe
+//      now rotates in ZYX order — see main.ts, where the default order was
+//      walking the pole round a 46.8° cone.
+//   2. The camera sits 13.2° above the globe's equator, so the southern
 //      band is just over the bottom limb rather than on the visible face.
 //      That is the best place this feature could have landed: seen from
 //      outside the limb the curtains stand up off the edge of the planet
@@ -288,6 +297,10 @@ export function buildAurora(
     uRadius: { value: radius },
     uBase: { value: BASE_ALTITUDE },
     uTop: { value: TOP_ALTITUDE },
+    // World height at which the southern band has to be gone. See the
+    // floor term in the vertex shader.
+    uFloorY: { value: -0.9 },
+    uFloorFade: { value: 0.35 },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -316,6 +329,8 @@ export function buildAurora(
       uniform float uRadius;
       uniform float uBase;
       uniform float uTop;
+      uniform float uFloorY;
+      uniform float uFloorFade;
 
       varying vec3 vColor;
       varying float vAlpha;
@@ -419,7 +434,32 @@ export function buildAurora(
         float centreZ = (modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0)).z;
         float behind = smoothstep(0.05, -0.35, mvPosition.z - centreZ);
 
-        vAlpha = night * ends * surge * grazing * behind * (0.55 + 0.55 * midnight) * 0.62;
+        // ...and it has to stop before it reaches the wood.
+        //
+        // The behind term hides the curtains in front of the globe. It
+        // cannot help
+        // with the ones behind it that are also *below* it, and until the
+        // globe went up on its axis nothing had to: the sphere sat in a
+        // brass collar, so there was no line of sight under it and the far
+        // side of the southern band was occluded by solid geometry. Lifting
+        // the globe 3cm opened 44px of daylight between the south pole and
+        // the top of the pedestal, and the far curtains promptly showed
+        // through it — additive, so they did not read as "an aurora seen
+        // through a gap" but as a green ribbon lying on the walnut. Which
+        // is the same failure §2-29 already fixed once from the other side.
+        //
+        // The depth test cannot do this one either, because the near half
+        // of the pedestal's top face is in front of the curtains and the
+        // far half is behind them, so the wood correctly occludes only
+        // half of what is wrong. A world-height cutoff does it properly:
+        // the fade runs out at -1.25, which is a tenth of a unit below the
+        // sphere's own bottom edge at -1.14, so the band is already gone
+        // by the time there is any gap for it to be seen through.
+        float worldY = (modelMatrix * vec4(dir * (uRadius + height), 1.0)).y;
+        float floorFade = smoothstep(uFloorY - uFloorFade, uFloorY, worldY);
+
+        vAlpha = night * ends * surge * grazing * behind * floorFade
+          * (0.55 + 0.55 * midnight) * 0.62;
 
         // Green low — the 557.7 nm oxygen line, the one everybody has
         // actually seen — going violet and then a little crimson high up
