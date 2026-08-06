@@ -12,6 +12,7 @@ import {
   snowinessAt,
   canopyAt,
   ergAt,
+  roadAt,
   temperatureAt,
   terracedElevation,
   latLonToDir,
@@ -1381,13 +1382,33 @@ export function buildSpecies(
     // about farmland twice.
     const clearedByCity = (strength: number) => strength > 0 && rand() < strength;
 
+    // A road has to be *seen* to be a road, and painting one under a closed
+    // canopy paints it under the trees: rendered, the line was there and the
+    // wood stood on top of it, so what reached the eye was an occasional
+    // pale fleck between crowns. Real roads are cleared corridors, and a
+    // corridor through forest is far more legible from above than the
+    // surface of the road itself — the gap in the canopy is the thing you
+    // actually see from orbit.
+    //
+    // Same shape as the city clearing and for the same reason: probabilistic
+    // off the same field the paint uses, so the cleared strip and the
+    // painted strip cannot drift apart. Gained hard, because `roadAt` is
+    // tuned for a two-texel line and a two-texel clearing is no clearing —
+    // this opens a lane a few crowns wide, which is what shows.
+    const roadClearing = Math.min(1, roadAt(dir) * 1.9);
+
     // ---- species classification, then the regional icons on top ----
     // The order matters: the icons stand in for what the climate already
     // decided, so everything below — clearing, thinning, spacing —
     // applies to a baobab exactly as it did to the acacia it replaced.
     const species = regionalIcon(s, classify(s, rand), rand);
 
-    if (species && !clearedByCity(urban) && !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)) {
+    if (
+      species &&
+      !clearedByCity(urban) &&
+      !clearedByCity(roadClearing) &&
+      !coreHash.hasNeighborWithin(dir, coreMinSpacingSq)
+    ) {
       const point = dir.clone();
       coreHash.add(point);
       placements.push({ dir: point, height: s.height, species });
@@ -1482,6 +1503,7 @@ export function buildSpecies(
       if (
         rand() < density &&
         !clearedByCity(urban) &&
+        !clearedByCity(roadClearing) &&
         !forestHash.hasNeighborWithin(dir, spacing * spacing)
       ) {
         const point = dir.clone();

@@ -2093,6 +2093,12 @@ function terrainColor(
     // enough that Tokyo, the Nile delta and the US northeast are visibly
     // duller than the country around them, not enough to read as a drawn
     // patch.
+    // Roads first, then the built-up smudge over them, so a road runs
+    // *into* a town and disappears in it rather than being drawn across the
+    // top of it like a route on a map.
+    const road = roadAt(dir);
+    if (road > 0) color.lerp(roadColor, road * 0.5);
+
     const urban = urbanAt(dir);
     if (urban > 0) color.lerp(urbanColor, urban * 0.45);
 
@@ -2903,6 +2909,175 @@ const buildUrbanBuckets = (): Int32Array[] => {
 
 const URBAN_BUCKETS = buildUrbanBuckets();
 
+// ---------------------------------------------------------------------
+// Roads (G46)
+// ---------------------------------------------------------------------
+// A city on this globe is 22-33 px across on a sphere that fills about 500.
+// However well a 25 px dot is built, a dot is what it stays, and a planet
+// of dots does not read as inhabited. A *line* is the cheapest thing on a
+// map that says people: it is only two texels wide but it runs for
+// hundreds, so it carries far more of the frame than the places it joins,
+// and it is what turns a scatter of settlements into a network.
+//
+// The earlier note over `urbanColor` argued the opposite — "not as roads,
+// which is a map's answer". That is right about a *road map*, drawn as
+// symbols over everything. It is wrong about a souvenir globe, which has
+// always had a few pale threads running between the towns, and it left the
+// cities with nothing to connect them.
+//
+// No new data. Every road here is a segment between two entries of
+// MAJOR_CITIES, chosen by nearness and rejected if it crosses water — the
+// same table the paint, the night lights, the tree clearing and the
+// buildings all read, so a road cannot arrive anywhere there is not a city.
+const roadColor = new THREE.Color('#9a8b72');
+
+interface Road {
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  n: THREE.Vector3;
+  cosSpan: number;
+  /** half-width in radians */
+  radius: number;
+  /** how major the route is: the smaller of the two cities it joins */
+  weight: number;
+}
+
+// Long enough to link a country up, short enough that the network follows
+// the cities rather than striking out across empty continent: a road only
+// exists between cities that are already near neighbours.
+const ROAD_MAX_ARC = 0.13; // radians, about 830 km
+// How many neighbours a city may reach. Three is enough for the network to
+// be connected without becoming a mesh — at six, the Rhine and the Kanto
+// plain fill in solid and the lines stop reading as roads.
+const ROAD_MAX_LINKS = 3;
+
+const buildRoads = (): Road[] => {
+  const dirs = MAJOR_CITIES.map(([lat, lon]) => latLonToDir(lat, lon));
+  const roads: Road[] = [];
+  const seen = new Set<string>();
+  const probe = new THREE.Vector3();
+
+  // A road may not swim. The endpoints are cities and the city list has
+  // coastal entries whose nearest neighbour is across a sea, so the whole
+  // segment is sampled — sixteen points is enough to catch a strait at this
+  // scale, and cheap because it only runs for candidate pairs.
+  const overLand = (a: THREE.Vector3, b: THREE.Vector3): boolean => {
+    for (let i = 1; i < 16; i++) {
+      probe.copy(a).lerp(b, i / 16).normalize();
+      if (heightAt(probe) < SEA_LEVEL) return false;
+    }
+    return true;
+  };
+
+  MAJOR_CITIES.forEach(([, , sizeA], i) => {
+    const near: { j: number; d: number }[] = [];
+    MAJOR_CITIES.forEach((_, j) => {
+      if (i === j) return;
+      const d = dirs[i].angleTo(dirs[j]);
+      if (d < ROAD_MAX_ARC) near.push({ j, d });
+    });
+    near.sort((p, q) => p.d - q.d);
+    let links = 0;
+    for (const { j } of near) {
+      if (links >= ROAD_MAX_LINKS) break;
+      const key = i < j ? `${i}:${j}` : `${j}:${i}`;
+      if (seen.has(key)) {
+        links++;
+        continue;
+      }
+      if (!overLand(dirs[i], dirs[j])) continue;
+      seen.add(key);
+      links++;
+      const sizeB = MAJOR_CITIES[j][2];
+      const weight = Math.min(sizeA, sizeB);
+      roads.push({
+        a: dirs[i],
+        b: dirs[j],
+        n: new THREE.Vector3().crossVectors(dirs[i], dirs[j]).normalize(),
+        cosSpan: dirs[i].dot(dirs[j]),
+        // Two to three texels of the 1536-wide paint. Below two a road
+        // dashes and disappears under downsampling; much above three and it
+        // stops being a road and becomes a drawn border.
+        radius: 0.0042 + weight * 0.0026,
+        weight,
+      });
+    }
+  });
+  return roads;
+};
+
+const ROADS = buildRoads();
+
+const ROAD_BUCKETS = ((): Int32Array[] => {
+  const lists: number[][] = Array.from(
+    { length: URBAN_BUCKET_LAT * URBAN_BUCKET_LON },
+    () => [],
+  );
+  const dir = new THREE.Vector3();
+  const cellSlack = 0.087 * Math.SQRT2 * 0.5 + 1e-3;
+  for (let iy = 0; iy < URBAN_BUCKET_LAT; iy++) {
+    const lat = 90 - (iy + 0.5) * (180 / URBAN_BUCKET_LAT);
+    for (let ix = 0; ix < URBAN_BUCKET_LON; ix++) {
+      const lon = -180 + (ix + 0.5) * (360 / URBAN_BUCKET_LON);
+      dir.copy(latLonToDir(lat, lon));
+      const bucket = lists[iy * URBAN_BUCKET_LON + ix];
+      for (let i = 0; i < ROADS.length; i++) {
+        if (roadDistance(dir, ROADS[i]) < ROADS[i].radius + cellSlack) bucket.push(i);
+      }
+    }
+  }
+  return lists.map((l) => Int32Array.from(l));
+})();
+
+/** Angular distance from `dir` to a road's centre line — as urbanDistance. */
+function roadDistance(dir: THREE.Vector3, r: Road): number {
+  const along = dir.dot(r.n);
+  const px = dir.x - r.n.x * along;
+  const py = dir.y - r.n.y * along;
+  const pz = dir.z - r.n.z * along;
+  const len = Math.hypot(px, py, pz);
+  if (len > 1e-9) {
+    const inv = 1 / len;
+    const da = (px * r.a.x + py * r.a.y + pz * r.a.z) * inv;
+    const db = (px * r.b.x + py * r.b.y + pz * r.b.z) * inv;
+    if (da >= r.cosSpan && db >= r.cosSpan) {
+      return Math.asin(THREE.MathUtils.clamp(Math.abs(along), 0, 1));
+    }
+  }
+  return Math.min(dir.angleTo(r.a), dir.angleTo(r.b));
+}
+
+/**
+ * How much of a road is at this point, 0..1.
+ *
+ * Exported so the night side can light the same lines the day side paints —
+ * the one rule this file keeps repeating is that two systems describing the
+ * same thing from two expressions is how they come to disagree.
+ */
+export function roadAt(dir: THREE.Vector3): number {
+  const bucket = ROAD_BUCKETS[bucketIndex(dir)];
+  if (bucket.length === 0) return 0;
+  let best = 0;
+  for (let i = 0; i < bucket.length; i++) {
+    const r = ROADS[bucket[i]];
+    const d = roadDistance(dir, r);
+    if (d >= r.radius) continue;
+    // A soft shoulder rather than a hard edge: at two texels wide a road
+    // with a step edge aliases into a dotted line the moment the globe
+    // turns.
+    const t = 1 - d / r.radius;
+    const v = smoothstep(t, 0, 0.65) * (0.55 + r.weight * 0.45);
+    if (v > best) best = v;
+  }
+  if (best <= 0) return 0;
+  if (sampledHeight(dir).raw < SEA_LEVEL) return 0;
+  // Broken up like everything else here: a perfectly even ribbon reads as
+  // vector art. This also thins the road where it crosses rough ground,
+  // which is where a real one would be a track rather than a highway.
+  const wobble = fbm3(dir.x * 55 + 3131, dir.y * 55 + 3131, dir.z * 55 + 3131, 2);
+  return THREE.MathUtils.clamp(best * (1 + wobble * 0.5), 0, 1);
+}
+
 /** Angular distance from `dir` to a feature's centre point or centre line. */
 function urbanDistance(dir: THREE.Vector3, f: UrbanFeature): number {
   if (!f.b || !f.n) return dir.angleTo(f.a);
@@ -3151,6 +3326,26 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
       const t = i / steps;
       const taper = smoothstep(Math.min(t, 1 - t), 0, 0.18);
       lit(step, f.peak * 0.5, jitter * 0.55 * (0.35 + 0.65 * taper));
+    }
+  }
+
+  // The roads, lit the same way. A road that is painted by day and dark by
+  // night is two different planets, and the lit network is the better half
+  // of the feature: a thread of light between two towns is the single most
+  // legible sign of habitation there is at this scale. Much dimmer than a
+  // city — a highway is not a conurbation — and broken along its length, so
+  // it reads as strung-out lamps rather than as a drawn line.
+  for (const r of ROADS) {
+    const span = Math.acos(THREE.MathUtils.clamp(r.cosSpan, -1, 1));
+    const steps = Math.max(2, Math.ceil(span / 0.006));
+    for (let i = 0; i <= steps; i++) {
+      step.copy(r.a).lerp(r.b, i / steps).normalize();
+      if (heightAt(step) < SEA_LEVEL) continue;
+      const flicker = fbm3(step.x * 130 + 55, step.y * 130 + 55, step.z * 130 + 55, 2);
+      if (flicker < -0.1) continue;
+      const t = i / steps;
+      const taper = smoothstep(Math.min(t, 1 - t), 0, 0.12);
+      lit(step, 0.1 + r.weight * 0.12, 0.24 * (0.4 + 0.6 * taper) * (0.6 + flicker));
     }
   }
 
