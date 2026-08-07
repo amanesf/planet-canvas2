@@ -712,8 +712,20 @@ function buildNoduleGeometry(rand: () => number, flatten: number, undersideFloor
 // rather than run around a parallel like a drawn line. It is strongest
 // where the westerlies are and dies away toward the equator and the pole.
 
-/** Peak wind speed, in radians of great circle per second. */
-const WIND_SCALE = 0.02;
+/**
+ * Peak wind speed, in radians of great circle per second.
+ *
+ * The globe itself spins at roughly 0.15 rad/s (a full day in ~42s), so the
+ * old 0.02 here — a peak drift of ~0.027 rad/s in the westerlies — was 5-7x
+ * slower than the globe's own rotation. `clouds.group` is a child of the
+ * globe, so with the wind that faint the dominant visible motion was always
+ * the sphere spinning under a nearly-static cloud deck: the drift was real
+ * (the per-frame advection math was correct) but too small a fraction of
+ * the total motion on screen to read as clouds moving *relative to the
+ * ground*. Raised so the westerlies are a clearly separate, slower-than-
+ * rotation motion instead of visually merging into it.
+ */
+const WIND_SCALE = 0.05;
 
 /**
  * Eastward wind speed at a latitude, in radians of great circle per second.
@@ -1155,36 +1167,84 @@ export function buildClouds(
   // restored most of the way back now that shadows are off there.
   const seeds: { dir: THREE.Vector3; type: CloudType }[] = [];
   const dir = new THREE.Vector3();
-  for (let i = 0; i < 4000 && seeds.length < 10; i++) {
-    const z = rand() * 2 - 1;
-    const t = rand() * Math.PI * 2;
-    const r = Math.sqrt(1 - z * z);
-    dir.set(r * Math.cos(t), z, r * Math.sin(t));
-    if (cloudDensityAt(dir) < 0.16) continue; // only inside a weather patch
-    // ...and only at a latitude that actually gets weather. Rejection
-    // against the zonal mean, normalised by the wettest band so the ITCZ
-    // is accepted outright rather than the whole planet being thinned:
-    // this is what empties the horse latitudes, which is where every
-    // subtropical desert on the globe underneath is.
-    const zonal = zonalPrecipitationAt(dir.y);
-    if (rand() > cloudinessFor(zonal, dir.y)) continue;
-    if (seeds.some((s) => s.dir.dot(dir) > 0.68)) continue; // keep the bands apart
 
-    // Type follows the climate the band lives in rather than a latitude
-    // ladder, so the same rainfall field decides both how much cloud there
-    // is and what it is made of. Thunderheads need heat *and* water, so
-    // they are the tropics' wet bands only; the mid-latitude storm track is
-    // where sheets of stratus belong; the dry, cold, high latitudes get
-    // cirrus, which is the one type that is ice rather than rain.
-    const lat = Math.abs(dir.y);
-    let type: CloudType;
-    const roll = rand();
-    const wet = cloudinessFor(zonal, dir.y);
-    if (lat < 0.35) type = roll < 0.15 + 0.5 * wet ? 'storm' : 'cumulus';
-    else if (lat < 0.72) type = roll < 0.2 + 0.4 * wet ? 'stratus' : 'cumulus';
-    else type = roll < 0.7 - 0.4 * wet ? 'cirrus' : 'stratus';
+  // Latitude *quota*, not a flat rejection roll over the whole sphere.
+  //
+  // The previous version sampled a direction uniformly (fine — that is
+  // area-correct) and then kept it with probability `cloudinessFor(zonal,
+  // y)`, i.e. the raw wetness at that latitude, checked against a single
+  // shared budget of 10 seeds. That reads as "fair" but is not: wetness is
+  // sharply peaked at the ITCZ (`zonalPrecipitationAt` — see its own
+  // comment), so the equator's acceptance odds are several times the
+  // storm track's and the better part of an order of magnitude the polar
+  // cirrus belt's. With one shared pool of attempts, the equatorial ring
+  // fills up (bands there only need to clear each other by ~47°, so a
+  // dozen fit around it) long before enough low-probability high-latitude
+  // draws land — the visible result was every band strung around the
+  // equator in a single ring, i.e. "clouds form in one line".
+  //
+  // Fixing it means the thing that was implicit (how many seeds does each
+  // latitude regime get) has to become explicit. Six zones, mirrored across
+  // the equator, each with its own attempt budget and slot count — the
+  // wetness roll still decides *whether* a given candidate in a zone is
+  // kept (so a bone-dry stretch of storm track can still come up emptier
+  // than a wet one), but a dry zone can no longer be crowded out of
+  // existing at all by a wetter one elsewhere on the planet.
+  const LATITUDE_ZONES: { loDeg: number; hiDeg: number; slots: number }[] = [
+    { loDeg: 0, hiDeg: 12, slots: 1 }, // ITCZ core
+    { loDeg: 12, hiDeg: 30, slots: 2 }, // tropics / subtropical fringe
+    { loDeg: 30, hiDeg: 55, slots: 2 }, // mid-latitude storm track
+    { loDeg: 55, hiDeg: 78, slots: 2 }, // sub-polar
+    { loDeg: 78, hiDeg: 90, slots: 1 }, // polar cap
+  ];
+  const MIN_SEPARATION_DOT = 0.68; // ~47°, unchanged from before
 
-    seeds.push({ dir: dir.clone(), type });
+  for (const zone of LATITUDE_ZONES) {
+    for (const hemi of [1, -1]) {
+      let placed = 0;
+      for (let attempt = 0; attempt < 400 && placed < zone.slots; attempt++) {
+        // uniform in sin(latitude) within this zone's band, so the zone
+        // itself is not biased toward its own equatorward edge
+        const sinLo = Math.sin((zone.loDeg * Math.PI) / 180);
+        const sinHi = Math.sin((zone.hiDeg * Math.PI) / 180);
+        const z = hemi * (sinLo + rand() * (sinHi - sinLo));
+        const t = rand() * Math.PI * 2;
+        const r = Math.sqrt(Math.max(0, 1 - z * z));
+        dir.set(r * Math.cos(t), z, r * Math.sin(t));
+        if (cloudDensityAt(dir) < 0.16) continue; // only inside a weather patch
+
+        // Wetness still gates *within* the zone, so a parched stretch of an
+        // otherwise-wet zone (e.g. the Sahara's own latitude band) is less
+        // likely to draw a seed than a monsoon stretch at the same
+        // latitude — the last third of the attempt budget relaxes the
+        // gate so a truly dry zone still ends up with *something* rather
+        // than standing empty for lack of a lucky roll, matching the
+        // original design note that the horse latitudes should get "very
+        // few" bands, not zero.
+        const zonal = zonalPrecipitationAt(dir.y);
+        const wet = cloudinessFor(zonal, dir.y);
+        const relaxed = attempt > 260;
+        if (!relaxed && rand() > wet) continue;
+        if (seeds.some((s) => s.dir.dot(dir) > MIN_SEPARATION_DOT)) continue;
+
+        // Type follows the climate the band lives in rather than a
+        // latitude ladder, so the same rainfall field decides both how
+        // much cloud there is and what it is made of. Thunderheads need
+        // heat *and* water, so they are the tropics' wet bands only; the
+        // mid-latitude storm track is where sheets of stratus belong; the
+        // dry, cold, high latitudes get cirrus, which is the one type that
+        // is ice rather than rain.
+        const lat = Math.abs(dir.y);
+        let type: CloudType;
+        const roll = rand();
+        if (lat < 0.35) type = roll < 0.15 + 0.5 * wet ? 'storm' : 'cumulus';
+        else if (lat < 0.72) type = roll < 0.2 + 0.4 * wet ? 'stratus' : 'cumulus';
+        else type = roll < 0.7 - 0.4 * wet ? 'cirrus' : 'stratus';
+
+        seeds.push({ dir: dir.clone(), type });
+        placed++;
+      }
+    }
   }
 
   const nodules: Nodule[] = [];

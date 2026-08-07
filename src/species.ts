@@ -2350,7 +2350,13 @@ export function buildSpecies(
       // tighter pitch, so the field is denser *and* each ridge is six to
       // twelve times its own width, which is what a linear dune looks like.
       const HALF_WIDTH = 0.018;
-      const HEIGHT = 0.017;
+      // Raised a little (0.017 -> 0.021): a ridge this low casts almost no
+      // shadow at this globe's lighting, so from a distance it reads as a
+      // faintly textured patch of the same sand-coloured ground rather than
+      // as a landform. Width and spacing (which the fusion/lozenge notes
+      // above are about) are untouched — only how far each crest stands
+      // above the ground it is dug into.
+      const HEIGHT = 0.021;
 
       const positions: number[] = [];
       const colors: number[] = [];

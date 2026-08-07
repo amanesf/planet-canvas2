@@ -828,8 +828,17 @@ export function buildEruptions(
         // near-overhead view. Cutting the footprint (both of these) rather
         // than only the height is what actually shrinks the dome as seen
         // from where it is actually seen.
-        float rise = (1.0 - pow(1.0 - life, 2.2)) * 0.30 * power;
-        float spread = (0.005 + pow(life, 1.8) * 0.035) * power;
+        // Rise cut hard on request: "the smoke plume is unsatisfying, a
+        // small cloud-like puff that streams sideways would read better."
+        // A tall anvil column is a texture-book ash eruption, but from the
+        // near-overhead angle this globe is mostly seen at, height barely
+        // shows — what showed instead was a fat grey dome sitting on the
+        // vent. Lowering the rise and leaning harder on downwind streaking
+        // (below) turns that dome into something that reads as a small
+        // cloud being blown off the summit, which is both more legible at
+        // this scale and closer to what the user actually asked for.
+        float rise = (1.0 - pow(1.0 - life, 2.2)) * 0.12 * power;
+        float spread = (0.005 + pow(life, 1.8) * 0.026) * power;
 
         // Downwind drift, with shear.
         //
@@ -846,21 +855,21 @@ export function buildEruptions(
         // what turns a straight lean into the hockey-stick profile a real
         // ash column has.
         float wind = dot(aOwner, uWind);
-        float heightFrac = rise / max(0.30 * power, 1e-4);
-        // Raised from 0.30 alongside the wider along/across split below:
-        // a near-overhead view is exactly the angle a lean reads best in
-        // (a column's own height foreshortens away, but its drift off to
-        // one side does not), so this is the term actually carrying "flows
-        // from the vent" now that the dome itself is smaller.
-        float drift = wind * heightFrac * heightFrac * 0.42 * power;
+        float heightFrac = rise / max(0.12 * power, 1e-4);
+        // The drift constant is what carries "flows from the vent" now
+        // that the dome itself is smaller and lower — raised again
+        // (0.42 -> 0.85) so a puff this low still reads as being *carried*
+        // sideways by the wind rather than just puffing up in place, which
+        // is the "does not flow" half of the complaint this shape change
+        // is answering.
+        float drift = wind * heightFrac * heightFrac * 0.85 * power;
 
         // The spread goes with the wind too: a plume in still air puffs out
         // as a circle, one in a wind is drawn out into a streak that is far
         // longer downwind than it is wide. Without this the anvil stayed a
-        // round blob that had merely been moved sideways. Both terms
-        // widened (1.9 -> 2.6, 0.35 -> 0.55) so that streak is unmistakable
-        // rather than a slightly-oval dome.
-        float along = spread * (1.0 + abs(wind) * 2.6);
+        // round blob that had merely been moved sideways. Widened further
+        // (2.6 -> 3.4) to match the flatter, more wind-drawn cloud shape.
+        float along = spread * (1.0 + abs(wind) * 3.4);
         float across = spread * (1.0 - abs(wind) * 0.55);
 
         vec3 lateral = east * (aJitter.x * along + drift) + other * (aJitter.y * across);
@@ -890,10 +899,13 @@ export function buildEruptions(
         // grey fog instead of reading as a body of smoke with an edge.
         float mask = 1.0 - smoothstep(0.24, 0.46, length(d));
         if (vAlpha <= 0.002 || mask <= 0.002) discard;
-        // incandescent at the vent, cooling to grey ash within the first
-        // fraction of the climb
+        // incandescent at the vent, cooling within the first fraction of
+        // the climb to a pale grey — lightened from a dark sooty ash
+        // (0.34/0.31/0.30) toward something that reads as a small cloud
+        // being blown off the summit rather than a chimney's smoke, to
+        // match the shape change above.
         vec3 hot = vec3(1.0, 0.55, 0.17);
-        vec3 ash = vec3(0.34, 0.31, 0.30);
+        vec3 ash = vec3(0.62, 0.60, 0.58);
         vec3 color = mix(hot, ash, smoothstep(0.0, 0.16, vLife));
         // Raised from 0.75, alongside the trim above: the streak/flow shape
         // this is meant to read as needs its sprites to actually cover the
@@ -951,9 +963,17 @@ export function buildEruptions(
   };
 
   // Active cones erupt often; dormant ones are rare events, not never.
+  //
+  // The active schedule used to be gap 14 ± 18, duration 11 — against a
+  // ~14-32s gap and an 11s eruption, the two active cones (Kilauea,
+  // Cotopaxi) were live close to half the time each, so on a planet with
+  // only four volcanoes there was very rarely a moment with nothing
+  // erupting. Widened the gap and trimmed the duration so an eruption
+  // reads as an event you catch happening, not a standing feature of the
+  // globe.
   const schedules: Schedule[] = VOLCANOES.map((v) =>
     v.active
-      ? { gap: 14, spread: 18, duration: 11, nextAt: 3 + rand() * 12, startedAt: -1e9 }
+      ? { gap: 55, spread: 40, duration: 8, nextAt: 8 + rand() * 40, startedAt: -1e9 }
       : { gap: 70, spread: 60, duration: 8, nextAt: 30 + rand() * 60, startedAt: -1e9 },
   );
 

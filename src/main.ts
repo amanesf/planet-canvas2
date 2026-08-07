@@ -1136,7 +1136,11 @@ globeMaterial.onBeforeCompile = (shader) => {
         // a soft terminator — a hard one reads as a stencil laid over the
         // globe rather than as the edge of the daylight
         float night = smoothstep(0.16, -0.12, sun);
-        totalEmissiveRadiance += texture2D(uCityLights, vMapUv).rgb * night * 2.4;
+        // Raised from 2.4: with the night side darkened further below, the
+        // lights need more headroom above that darker floor to still read
+        // as distinct bright points instead of getting lost in a merely
+        // dim rather than genuinely dark sky.
+        totalEmissiveRadiance += texture2D(uCityLights, vMapUv).rgb * night * 3.6;
 
         // Dusk. Until now the only thing that happened at the terminator was
         // the city lights fading up out of nothing; the daylight itself just
@@ -1177,8 +1181,16 @@ globeMaterial.onBeforeCompile = (shader) => {
         // not a revived atmosphere shell (gap-analysis §9 rules that back
         // out explicitly), just this object's own surface catching a rim
         // the way the resin ocean and every painted edge here already do.
-        float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 3.0);
-        totalEmissiveRadiance += vec3(0.20, 0.30, 0.46) * rimFresnel * night * 0.12;
+        // Exponent lowered (3.0 -> 2.2) and both gains below raised: at the
+        // old settings this "is there an atmosphere?" rim was a sliver only
+        // a handful of pixels wide and weak enough that ACES at this
+        // scene's exposure (1.9) all but flattened it away, so the honest
+        // answer to "atmosphere ある？みえない" was that the code drew one
+        // but it did not survive the pipeline. Still no shell mesh — that
+        // stays ruled out (gap-analysis §9) — just a wider, brighter
+        // version of the same silhouette-only trick.
+        float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 2.2);
+        totalEmissiveRadiance += vec3(0.20, 0.30, 0.46) * rimFresnel * night * 0.26;
 
         // A thin atmosphere, on request. Still not a revived shell mesh —
         // same constraint as the night rim just above, same technique (add
@@ -1189,7 +1201,7 @@ globeMaterial.onBeforeCompile = (shader) => {
         // the night rim's cooler, dimmer tone. Kept well under the dusk
         // bands' strength, same as the night rim, so it stays a thin
         // haze at the edge rather than a halo around the whole ball.
-        totalEmissiveRadiance += vec3(0.55, 0.72, 1.0) * rimFresnel * (1.0 - night) * 0.1;
+        totalEmissiveRadiance += vec3(0.55, 0.72, 1.0) * rimFresnel * (1.0 - night) * 0.24;
 
         // The far side's own colour, not just what lights it. Cutting the
         // ambient/fill/rim rig (see the note by their definitions) only goes
@@ -1202,7 +1214,17 @@ globeMaterial.onBeforeCompile = (shader) => {
         // here" — city lights, the dusk bands and the rim above are all in
         // totalEmissiveRadiance, a separate accumulator, so none of them
         // are dimmed by this.
-        diffuseColor.rgb *= mix(1.0, 0.32, night);
+        // Deepened from 0.32: even with the fill/rim/ambient rig cut back
+        // (see their own definitions), those lights are not gated by day/
+        // night at all — they light the whole ball from fixed directions,
+        // the way a photography rig would — so their contribution here was
+        // only ever reduced in proportion to whatever this multiplier kept,
+        // never zeroed. At 0.32 the far side still read as "dim daytime"
+        // rather than night, which is also most of why the city lights
+        // above struggled to read as bright points against it: they were
+        // competing with a sky-and-ground base that was too bright to look
+        // dark next to, not just under-lit lights.
+        diffuseColor.rgb *= mix(1.0, 0.14, night);
       }`,
     )
     .replace(

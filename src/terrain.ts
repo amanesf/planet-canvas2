@@ -81,9 +81,11 @@ const badlandsColorC = new THREE.Color('#68482f');
 // as black; a real poured-resin ocean over blue paint keeps its color
 // even in shadow; only the *highlight* should go near-white, not the
 // whole sea.
-const deepOceanColor = new THREE.Color('#0a4a78');
-const midOceanColor = new THREE.Color('#1479ad');
-const shallowOceanColor = new THREE.Color('#2bbccf');
+// Lifted a step brighter on request (each was reading darker than the
+// "rich sapphire, never near-black" intent above actually described).
+const deepOceanColor = new THREE.Color('#0f5c93');
+const midOceanColor = new THREE.Color('#1f92c4');
+const shallowOceanColor = new THREE.Color('#3ecfe0');
 
 // G18: a current is a temperature signature, not a paint stripe, so both
 // ends stay close to the ordinary sea colors rather than reaching for a
@@ -2542,8 +2544,14 @@ function terrainColor(
     const road = roadAt(dir);
     if (road > 0) color.lerp(roadColor, road * 0.5);
 
+    // Raised from 0.45: at ACES exposure 1.9 (see main.ts) the mid-tone
+    // contrast between this grey and the greens/browns around it compresses
+    // a good deal, so a blend that looked like a clearly duller patch in
+    // isolation read as barely-there once tone mapped. Still short of 1.0
+    // at the centre — the "not a drawn patch" intent from the note above
+    // stands, just recalibrated against the pipeline that actually ships.
     const urban = urbanAt(dir);
-    if (urban > 0) color.lerp(urbanColor, urban * 0.45);
+    if (urban > 0) color.lerp(urbanColor, urban * 0.62);
 
     // Ground shade under the canopy.
     //
