@@ -3736,9 +3736,11 @@ function urbanBuckets(): Int32Array[] {
 // cities with nothing to connect them.
 //
 // No new data. Every road here is a segment between two entries of
-// MAJOR_CITIES, chosen by nearness and rejected if it crosses water — the
-// same table the paint, the night lights, the tree clearing and the
-// buildings all read, so a road cannot arrive anywhere there is not a city.
+// resolvedMajorCities(), chosen by nearness and rejected if it crosses
+// water — the same nudged-onto-land table the paint, the night lights, the
+// tree clearing and the buildings all read (G48), so a road cannot arrive
+// anywhere there is not a city, and its endpoints sit exactly on the same
+// spot those do rather than on the raw, sometimes-offshore coordinate.
 const roadColor = new THREE.Color('#9a8b72');
 
 interface Road {
@@ -3762,8 +3764,9 @@ const ROAD_MAX_ARC = 0.13; // radians, about 830 km
 const ROAD_MAX_LINKS = 3;
 
 const buildRoads = (): Road[] => {
-  const dirs = MAJOR_CITIES.map(([lat, lon]) => latLonToDir(lat, lon));
-  const roads: Road[] = [];
+  const cities = resolvedMajorCities();
+  const dirs = cities.map(([lat, lon]) => latLonToDir(lat, lon));
+  const result: Road[] = [];
   const seen = new Set<string>();
   const probe = new THREE.Vector3();
 
@@ -3779,9 +3782,9 @@ const buildRoads = (): Road[] => {
     return true;
   };
 
-  MAJOR_CITIES.forEach(([, , sizeA], i) => {
+  cities.forEach(([, , sizeA], i) => {
     const near: { j: number; d: number }[] = [];
-    MAJOR_CITIES.forEach((_, j) => {
+    cities.forEach((_, j) => {
       if (i === j) return;
       const d = dirs[i].angleTo(dirs[j]);
       if (d < ROAD_MAX_ARC) near.push({ j, d });
@@ -3798,9 +3801,9 @@ const buildRoads = (): Road[] => {
       if (!overLand(dirs[i], dirs[j])) continue;
       seen.add(key);
       links++;
-      const sizeB = MAJOR_CITIES[j][2];
+      const sizeB = cities[j][2];
       const weight = Math.min(sizeA, sizeB);
-      roads.push({
+      result.push({
         a: dirs[i],
         b: dirs[j],
         n: new THREE.Vector3().crossVectors(dirs[i], dirs[j]).normalize(),
@@ -3813,12 +3816,32 @@ const buildRoads = (): Road[] => {
       });
     }
   });
-  return roads;
+  return result;
 };
 
-const ROADS = buildRoads();
+// Lazy and memoized, not a top-level const — the same reason
+// resolvedMajorCities() is (see its comment above). buildRoads samples
+// heightAt along every candidate link's whole span to keep it off the
+// water, and a top-level `const ROADS = buildRoads()` runs during module
+// evaluation, before main.ts's `await loadRealElevationData` resolves.
+// Measured directly (§2-45's sibling bug): built against the unloaded,
+// raster-less world, 157 roads come out instead of 172, and of those, only
+// 118 (75%) are ones the real coastline would also draw — 39 are roads
+// that only "exist" because the land was fictional that moment, and 54
+// real, valid roads never get built at all. Not a one-time race: because
+// the result was cached in a top-level const, it never got a second chance
+// to run once the raster *did* load — the wrong network was permanent for
+// the rest of the session.
+let roadsCache: Road[] | null = null;
+function roads(): Road[] {
+  roadsCache ??= buildRoads();
+  return roadsCache;
+}
 
-const ROAD_BUCKETS = ((): Int32Array[] => {
+let roadBucketsCache: Int32Array[] | null = null;
+function roadBuckets(): Int32Array[] {
+  if (roadBucketsCache) return roadBucketsCache;
+  const list = roads();
   const lists: number[][] = Array.from(
     { length: URBAN_BUCKET_LAT * URBAN_BUCKET_LON },
     () => [],
@@ -3831,13 +3854,14 @@ const ROAD_BUCKETS = ((): Int32Array[] => {
       const lon = -180 + (ix + 0.5) * (360 / URBAN_BUCKET_LON);
       dir.copy(latLonToDir(lat, lon));
       const bucket = lists[iy * URBAN_BUCKET_LON + ix];
-      for (let i = 0; i < ROADS.length; i++) {
-        if (roadDistance(dir, ROADS[i]) < ROADS[i].radius + cellSlack) bucket.push(i);
+      for (let i = 0; i < list.length; i++) {
+        if (roadDistance(dir, list[i]) < list[i].radius + cellSlack) bucket.push(i);
       }
     }
   }
-  return lists.map((l) => Int32Array.from(l));
-})();
+  roadBucketsCache = lists.map((l) => Int32Array.from(l));
+  return roadBucketsCache;
+}
 
 /** Angular distance from `dir` to a road's centre line — as urbanDistance. */
 function roadDistance(dir: THREE.Vector3, r: Road): number {
@@ -3865,11 +3889,12 @@ function roadDistance(dir: THREE.Vector3, r: Road): number {
  * same thing from two expressions is how they come to disagree.
  */
 export function roadAt(dir: THREE.Vector3): number {
-  const bucket = ROAD_BUCKETS[bucketIndex(dir)];
+  const bucket = roadBuckets()[bucketIndex(dir)];
   if (bucket.length === 0) return 0;
+  const list = roads();
   let best = 0;
   for (let i = 0; i < bucket.length; i++) {
-    const r = ROADS[bucket[i]];
+    const r = list[bucket[i]];
     const d = roadDistance(dir, r);
     if (d >= r.radius) continue;
     // A soft shoulder rather than a hard edge: at two texels wide a road
@@ -4146,7 +4171,7 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
   // legible sign of habitation there is at this scale. Much dimmer than a
   // city — a highway is not a conurbation — and broken along its length, so
   // it reads as strung-out lamps rather than as a drawn line.
-  for (const r of ROADS) {
+  for (const r of roads()) {
     const span = Math.acos(THREE.MathUtils.clamp(r.cosSpan, -1, 1));
     const steps = Math.max(2, Math.ceil(span / 0.006));
     for (let i = 0; i <= steps; i++) {
