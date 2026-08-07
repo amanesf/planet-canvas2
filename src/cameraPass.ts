@@ -51,10 +51,24 @@ export const CameraPassShader = {
     uBloomRadius: { value: 0.008 },
     /** thin veiling haze mixed over the whole frame, like dust in the air */
     uHaze: { value: 0.035 },
-    /** how bright the diamond-dust sparkle specks are */
-    uSparkleStrength: { value: 0.95 },
+    /**
+     * How bright the diamond-dust sparkle specks are. Pulled back from 0.95
+     * (an earlier "make it more noticeable" pass) now that the temporal
+     * pattern itself is doing most of the work of reading as pretty rather
+     * than distracting — a bright, busy grid of blinking dots was the
+     * complaint, not a dim one.
+     */
+    uSparkleStrength: { value: 0.75 },
     /** sparkle grid cell size, in pixels */
     uSparkleScale: { value: 7.0 },
+    /**
+     * A small colour-grade pass on request ("aim for a high-quality anime
+     * look overall") — punchier saturation and a gentle S-curve, the two
+     * cheapest levers that actually move a render toward that look without
+     * touching any one system's own colours. 1.0/0.0 would be a no-op.
+     */
+    uSaturation: { value: 1.16 },
+    uContrast: { value: 0.1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -83,6 +97,8 @@ export const CameraPassShader = {
     uniform float uHaze;
     uniform float uSparkleStrength;
     uniform float uSparkleScale;
+    uniform float uSaturation;
+    uniform float uContrast;
     varying vec2 vUv;
 
     // RINGS is set per quality tier: two rings read as a round aperture at
@@ -188,38 +204,51 @@ export const CameraPassShader = {
       return sum / float(TAPS);
     }
 
-    // A diamond-dust glitter: fine, twinkling specks scattered across the
-    // whole frame, each flickering at its own rate rather than all pulsing
-    // in lockstep. Screen-space and grid-based — a scattered spatial hash
-    // per cell, the same technique the grain noise below already uses —
-    // rather than real particles, because the request was for an effect
-    // over the whole picture (the room and the glass case as much as the
-    // globe), not a feature of any one object in the scene.
+    // A diamond-dust glitter: fine specks that catch the light at random
+    // moments and random positions, scattered across the whole frame.
+    // Screen-space and grid-based — a scattered spatial hash per cell, the
+    // same technique the grain noise below already uses — rather than real
+    // particles, because the request was for an effect over the whole
+    // picture (the room and the glass case as much as the globe), not a
+    // feature of any one object in the scene.
+    //
+    // The previous version hashed only the cell, not time, so the same
+    // ~9% of the screen blinked on a perfectly periodic sine loop forever
+    // — a static, mechanical grid of dots rather than glitter, and exactly
+    // what read as distracting rather than pretty. Time is quantized into
+    // short cycles here, and which cells get a flash *this* cycle is
+    // rehashed every cycle — so the sparkling positions themselves drift
+    // and reshuffle instead of being fixed points that never move — and
+    // each flash is a single short, randomly-timed pulse rather than a
+    // continuous oscillation, so it reads as an occasional catch of light
+    // instead of a blink you can predict.
     vec3 sparkleField(vec2 uv) {
       vec2 pixel = uv * uResolution;
       vec2 cell = floor(pixel / uSparkleScale);
       vec2 local = fract(pixel / uSparkleScale) - 0.5;
-      float h = fract(sin(dot(cell, vec2(41.3, 289.1))) * 43758.5453);
-      // Raised from 0.05: on request, more visible glitter. Still sparse
-      // (glitter is not fog) — just under one cell in six instead of one
-      // in twenty.
-      if (h > 0.09) return vec3(0.0);
+
+      const float cycleRate = 0.6; // cycles per second
+      float cycle = floor(uTime * cycleRate);
+      vec2 key = cell + vec2(cycle * 13.7, cycle * 71.3);
+      float h = fract(sin(dot(key, vec2(41.3, 289.1))) * 43758.5453);
+      // Sparse per cycle — most cells get no flash at all this round.
+      if (h > 0.035) return vec3(0.0);
+
       vec2 jitter = vec2(fract(h * 97.13), fract(h * 53.71)) - 0.5;
       float d = length(local - jitter * 0.6);
-      // Widened from 0.16: a slightly bigger core so a speck still reads
-      // as a speck rather than a single sub-pixel dot once the twinkle
-      // curve below is spending more of its cycle lit.
       float core = smoothstep(0.2, 0.0, d);
-      // each speck twinkles at its own frequency and phase, drawn from the
-      // same hash that placed it, so the field never pulses as one unit
-      float freq = 1.5 + fract(h * 613.7) * 5.0;
-      float phase = fract(h * 271.9) * 6.28318530718;
-      // Softened from pow 9 (a spike that was lit for only a sliver of
-      // its own cycle) to pow 5 — still a twinkle, not a steady glow, but
-      // one that spends more of its time above half brightness instead of
-      // flashing and vanishing.
-      float twinkle = pow(max(0.0, sin(uTime * freq + phase)), 5.0);
-      return vec3(0.85, 0.92, 1.0) * core * twinkle;
+
+      // A one-shot pulse timed to a random moment within this cycle
+      // (startT), not a repeating wave — it rises, holds briefly, and
+      // fades, once, then stays dark until (maybe) picked again next cycle.
+      float cycleLen = 1.0 / cycleRate;
+      float tInCycle = mod(uTime, cycleLen);
+      float startT = fract(h * 613.7) * cycleLen * 0.7;
+      float pulseLen = 0.12 + fract(h * 271.9) * 0.14;
+      float p = (tInCycle - startT) / pulseLen;
+      float pulse = smoothstep(0.0, 0.3, p) * smoothstep(1.0, 0.6, p);
+
+      return vec3(0.85, 0.92, 1.0) * core * pulse;
     }
 
     void main() {
@@ -254,6 +283,15 @@ export const CameraPassShader = {
       // the vignette itself: real glitter in the air keeps catching the
       // light out to the edge of frame, it does not dim with the lens.
       colour += sparkleField(vUv) * uSparkleStrength;
+
+      // Colour grade: saturation lift, then a gentle S-curve. Both applied
+      // after every other term above (haze, sparkle, bloom) so the grade
+      // is over the whole finished picture, the way it would sit on a real
+      // photograph rather than being baked into any one element's own
+      // colours.
+      float luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
+      colour = mix(vec3(luma), colour, uSaturation);
+      colour = mix(colour, smoothstep(0.0, 1.0, colour), uContrast);
 
       // Sensor grain, animated so it does not sit on the image like a
       // texture. Kept below the level where it is consciously visible: the

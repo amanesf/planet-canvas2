@@ -1,6 +1,5 @@
 import './style.css';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -15,6 +14,7 @@ import {
   loadClimateData,
   loadRealElevationData,
   rippleSphere,
+  sampledHeight,
   seaLevelRadius,
 } from './terrain';
 import { buildSpecies } from './species';
@@ -38,11 +38,57 @@ import {
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-  <div class="title">天青の晶玉</div>
-  <div class="ui">
-    <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
+  <div class="title-bar">
+    <div class="title">天青の晶玉</div>
+    <button id="story-button" class="story-button" title="ストーリーを見る" aria-label="ストーリーを見る">STORY</button>
   </div>
+
+  <div class="cyber-panel" id="cyber-panel">
+    <div class="dial-cluster">
+      <div class="dial-label">E - W</div>
+      <div class="yaw-dial" id="yaw-dial" role="slider" aria-label="東西に回転" tabindex="0">
+        <div class="yaw-dial-ring"></div>
+        <div class="yaw-dial-tick" id="yaw-dial-tick"></div>
+        <div class="yaw-dial-core"></div>
+      </div>
+    </div>
+    <div class="dial-cluster">
+      <div class="dial-label">N - S</div>
+      <div class="pitch-dial" id="pitch-dial" role="slider" aria-label="南北に回転" tabindex="0">
+        <div class="pitch-track"></div>
+        <div class="pitch-handle" id="pitch-handle"></div>
+      </div>
+    </div>
+    <button id="flag-button" class="cyber-button" title="中心に旗を立てる" aria-label="中心に旗を立てる">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M5 3v18M5 4h13l-3 4 3 4H5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    </button>
+    <button id="spin-toggle" class="cyber-button" title="自転を止める" aria-label="自転を止める">
+      <svg viewBox="0 0 24 24" width="18" height="18" id="spin-toggle-icon"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>
+    </button>
+  </div>
+
   <div class="loading" id="loading" role="status">組み立て中…</div>
+
+  <div class="story-overlay" id="story-overlay" hidden>
+    <div class="story-panel">
+      <button id="story-close" class="story-close" aria-label="閉じる">✕</button>
+      <div class="story-cover"></div>
+      <h1 class="story-title">天青の晶玉</h1>
+      <p class="story-lead">この「天青の晶玉」は、単なるアンティークのジオラマではなく、別次元に封印された惑星へと繋がるポータルデバイスです。</p>
+      <section class="story-section">
+        <h2>360度の視界</h2>
+        <p>デバイスの球体を360度ぐるりと回転させることで、緑豊かな大陸や局地的な嵐など、星の全容を立体的に把握し、ダイブするための転送座標を特定することができます。</p>
+      </section>
+      <section class="story-section">
+        <h2>未知へのダイブ</h2>
+        <p>ハルカがこのデバイスを起動し、ホログラムとして浮かび上がる「晶玉」の内部空間へと直接転送されることで、本格的な探索が幕を開けます。</p>
+      </section>
+      <section class="story-section">
+        <h2>箱庭と現実のリンク</h2>
+        <p>デバイス上で緑が濃く光るエリアや、厚い雲に覆われた謎の地域など、ジオラマ上で確認できた地形が、そのまま広大な冒険のステージとして立ちはだかります。</p>
+      </section>
+    </div>
+  </div>
 `;
 
 // One configuration, not a ladder of them.
@@ -292,6 +338,7 @@ function cameraStartPosition() {
 }
 const startPos = cameraStartPosition();
 camera.position.set(startPos.x, startPos.y, startPos.z);
+camera.lookAt(0, TARGET_Y, 0);
 
 // Getting a context is not a given. A browser will only hand out a limited
 // number of live WebGL contexts across all tabs — a dozen or so — and once
@@ -470,31 +517,13 @@ renderer.domElement.addEventListener(
   false,
 );
 
-// ---------- controls: pinch / wheel zoom, drag to look around ----------
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enablePan = false;
-controls.enableZoom = true;
-controls.enableRotate = true;
-let viewportScale = cameraDistanceForViewport() / BASE_CAMERA_DISTANCE;
-controls.minDistance = 5 * viewportScale;
-// Pulled in from 14. The far limit is not about the subject getting small,
-// it is about the room running out: the backdrop photograph is a plane 34
-// units wide at z = -13 (setDressing.ts), and past roughly 12.5 units of
-// camera distance a 16:9 frame is wider than that plane at its depth, so
-// its left and right edges come into shot with page background either side
-// of them. That was already true of the old 14 — it just took a deliberate
-// zoom out to reach, whereas the default view now starts at 9.6 rather
-// than 7 and has less of that margin to spend.
-controls.maxDistance = 12.5 * viewportScale;
-// keep the user inside "looking down at a diorama" territory — never let
-// them drop to a flat eye-level view (which reads as "planet in space"
-// again) or flip to looking sharply up from underneath the stand
-controls.minPolarAngle = Math.PI * 0.24;
-controls.maxPolarAngle = Math.PI * 0.5;
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.target.set(0, TARGET_Y, 0);
+// ---------- controls ----------
+//
+// Pinch-zoom and drag-to-orbit are gone, on request — replaced by the
+// cyber control panel below, which turns the globe itself (two rotation
+// dials) rather than moving the camera around it. The camera is now
+// fully static except for the same viewport-responsive repositioning it
+// always had on resize (see the resize handler).
 
 // ---------- lighting ----------
 
@@ -872,16 +901,188 @@ standGroup.add(glowDot);
 // (the globe's shadow on the stand is a real cast shadow now — the blob
 // decal that used to stand in for it would only double up on top of it)
 
-// ---------- rotate / stop toggle ----------
+// ---------- cyber control panel: spin toggle, rotation dials, flag ----------
+//
+// Pinch-zoom and drag-to-orbit are gone (see the controls note above);
+// these four controls are the entire interaction surface now, and all of
+// them turn the *globe*, not the camera — the camera stays exactly where
+// cameraStartPosition() put it.
 
 let spinning = true;
-const toggleButton = document.querySelector<HTMLButtonElement>('#mode-toggle')!;
-toggleButton.addEventListener('click', () => {
+const spinToggle = document.querySelector<HTMLButtonElement>('#spin-toggle')!;
+spinToggle.addEventListener('click', () => {
   spinning = !spinning;
-  toggleButton.textContent = spinning ? '⏸' : '▶';
-  const label = spinning ? '回転を止める' : '回転を再開する';
-  toggleButton.title = label;
-  toggleButton.setAttribute('aria-label', label);
+  spinToggle.classList.toggle('is-off', !spinning);
+  const label = spinning ? '自転を止める' : '自転を再開する';
+  spinToggle.title = label;
+  spinToggle.setAttribute('aria-label', label);
+});
+
+// The day spin and the user's own east-west turn are two separate
+// accumulators added together each frame, rather than the dial writing
+// straight into globeGroup.rotation.y — that would make "spin off, drag
+// the dial" and "spin on" fight over the same number every frame. Keeping
+// them apart means turning the dial while the planet is still spinning
+// simply offsets where in its day the globe currently reads, and toggling
+// spin off leaves the dial's own offset exactly where the user left it.
+let autoSpinY = 0;
+let userYaw = 0;
+// Clamped for the same reason the old OrbitControls had a min/maxPolarAngle:
+// past a certain tilt the globe is being looked at from over its own pole,
+// which reads as "object floating in space" rather than "diorama on a
+// bench" — the framing this whole project is built around.
+const PITCH_LIMIT = Math.PI * 0.42;
+let userPitch = 0;
+
+// East-west dial: a round knob dragged in a circle. Only the *change* in
+// angle between pointer-move events is read, not the pointer's absolute
+// angle — so grabbing the dial anywhere on its rim and turning it feels
+// like turning a real knob instead of snapping the globe to point at
+// wherever the cursor first landed.
+const yawDial = document.querySelector<HTMLDivElement>('#yaw-dial')!;
+const yawDialTick = document.querySelector<HTMLDivElement>('#yaw-dial-tick')!;
+let yawDialAngle = 0; // cosmetic only — which way the tick currently points
+{
+  let dragging = false;
+  let lastAngle = 0;
+  const angleAt = (ev: PointerEvent) => {
+    const rect = yawDial.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    return Math.atan2(ev.clientY - cy, ev.clientX - cx);
+  };
+  yawDial.addEventListener('pointerdown', (ev) => {
+    dragging = true;
+    yawDial.setPointerCapture(ev.pointerId);
+    lastAngle = angleAt(ev);
+  });
+  yawDial.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const angle = angleAt(ev);
+    let delta = angle - lastAngle;
+    // wrap the shortest way round rather than snapping when crossing ±π
+    if (delta > Math.PI) delta -= Math.PI * 2;
+    if (delta < -Math.PI) delta += Math.PI * 2;
+    userYaw += delta;
+    yawDialAngle += delta;
+    yawDialTick.style.transform = `rotate(${yawDialAngle}rad)`;
+    lastAngle = angle;
+  });
+  const stop = (ev: PointerEvent) => {
+    dragging = false;
+    if (yawDial.hasPointerCapture(ev.pointerId)) yawDial.releasePointerCapture(ev.pointerId);
+  };
+  yawDial.addEventListener('pointerup', stop);
+  yawDial.addEventListener('pointercancel', stop);
+  // keyboard: left/right nudge, for anyone not on a touch/mouse pointer
+  yawDial.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    ev.preventDefault();
+    const step = (ev.key === 'ArrowLeft' ? -1 : 1) * 0.12;
+    userYaw += step;
+    yawDialAngle += step;
+    yawDialTick.style.transform = `rotate(${yawDialAngle}rad)`;
+  });
+}
+
+// North-south dial: a vertical track, the puck's position along it *is*
+// the pitch (absolute, not delta-accumulated like the yaw knob) — a
+// bounded tilt reads more naturally as a slider than as a knob you could
+// spin forever.
+const pitchDial = document.querySelector<HTMLDivElement>('#pitch-dial')!;
+const pitchHandle = document.querySelector<HTMLDivElement>('#pitch-handle')!;
+function setPitchHandle(): void {
+  const t = 0.5 - userPitch / (PITCH_LIMIT * 2); // top = looking from the north
+  pitchHandle.style.top = `${8 + t * 84}%`;
+}
+setPitchHandle();
+{
+  let dragging = false;
+  const applyAt = (ev: PointerEvent) => {
+    const rect = pitchDial.getBoundingClientRect();
+    const t = THREE.MathUtils.clamp((ev.clientY - rect.top) / rect.height, 0, 1);
+    userPitch = (0.5 - t) * (PITCH_LIMIT * 2);
+    setPitchHandle();
+  };
+  pitchDial.addEventListener('pointerdown', (ev) => {
+    dragging = true;
+    pitchDial.setPointerCapture(ev.pointerId);
+    applyAt(ev);
+  });
+  pitchDial.addEventListener('pointermove', (ev) => {
+    if (dragging) applyAt(ev);
+  });
+  const stop = (ev: PointerEvent) => {
+    dragging = false;
+    if (pitchDial.hasPointerCapture(ev.pointerId)) pitchDial.releasePointerCapture(ev.pointerId);
+  };
+  pitchDial.addEventListener('pointerup', stop);
+  pitchDial.addEventListener('pointercancel', stop);
+  pitchDial.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
+    ev.preventDefault();
+    const step = (ev.key === 'ArrowUp' ? 1 : -1) * 0.08;
+    userPitch = THREE.MathUtils.clamp(userPitch + step, -PITCH_LIMIT, PITCH_LIMIT);
+    setPitchHandle();
+  });
+}
+
+// ---------- flag: plant a marker at the point currently facing the camera ----------
+//
+// "Facing the camera" is read off the *sphere*, not off any one layer of
+// paint: the direction from the globe's centre to the camera, carried back
+// into the globe's own object space (undoing whatever the two dials and
+// the day spin currently have it rotated to), is exactly the point the
+// viewer is looking square at — because the camera always looks at the
+// globe's centre (see TARGET_Y/camera.lookAt above), that direction and
+// the view direction coincide at the surface.
+const flagGroup = new THREE.Group();
+flagGroup.visible = false;
+{
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.006, 0.006, 0.16, 8),
+    new THREE.MeshStandardMaterial({ color: 0xd6dde3, metalness: 0.6, roughness: 0.35 }),
+  );
+  pole.position.y = 0.08;
+  flagGroup.add(pole);
+  const cloth = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.09, 0.055),
+    new THREE.MeshBasicMaterial({ color: 0x5be4ff, side: THREE.DoubleSide }),
+  );
+  cloth.position.set(0.045, 0.135, 0);
+  flagGroup.add(cloth);
+}
+globeGroup.add(flagGroup);
+
+const flagButton = document.querySelector<HTMLButtonElement>('#flag-button')!;
+const flagWorldDir = new THREE.Vector3();
+const flagLocalDir = new THREE.Vector3();
+const flagGlobeQuat = new THREE.Quaternion();
+flagButton.addEventListener('click', () => {
+  flagWorldDir.copy(camera.position).sub(globeGroup.getWorldPosition(new THREE.Vector3())).normalize();
+  globeGroup.getWorldQuaternion(flagGlobeQuat);
+  flagLocalDir.copy(flagWorldDir).applyQuaternion(flagGlobeQuat.invert()).normalize();
+  const surface = RADIUS + sampledHeight(flagLocalDir).display * BUMP_HEIGHT;
+  flagGroup.position.copy(flagLocalDir).multiplyScalar(surface);
+  // the pole geometry stands along local +Y, so aligning +Y with the
+  // surface normal is what makes it stand upright out of the ground
+  flagGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), flagLocalDir);
+  flagGroup.visible = true;
+});
+
+// ---------- story screen ----------
+
+const storyOverlay = document.querySelector<HTMLDivElement>('#story-overlay')!;
+const storyButton = document.querySelector<HTMLButtonElement>('#story-button')!;
+const storyClose = document.querySelector<HTMLButtonElement>('#story-close')!;
+storyButton.addEventListener('click', () => {
+  storyOverlay.hidden = false;
+});
+storyClose.addEventListener('click', () => {
+  storyOverlay.hidden = true;
+});
+storyOverlay.addEventListener('click', (ev) => {
+  if (ev.target === storyOverlay) storyOverlay.hidden = true;
 });
 
 // ---------- animation loop ----------
@@ -917,14 +1118,16 @@ function animate() {
     // the same clock the rest of the frame already reads, so the spin
     // rate now means what its constant says regardless of frame rate.
     const delta = Math.max(0, t - lastT);
-    globeGroup.rotation.y += 0.0025 * 60 * delta;
+    autoSpinY += 0.0025 * 60 * delta;
   }
   lastT = t;
 
-  // A display globe sits still on its pins; the bob that used to be here
-  // was the levitation idea, and it survived the sphere being mounted only
-  // as a slow wobble that read as the whole model being loose. The lean is
-  // the obliquity now, and the rod through the poles is drawn along it.
+  // Day spin and the user's own east-west dial add together (see the
+  // cyber-panel note above); north-south is the pitch dial directly, and
+  // the axial tilt is a flat 0 now that nothing is mounted on a rod to
+  // read a lean against.
+  globeGroup.rotation.y = autoSpinY + userYaw;
+  globeGroup.rotation.x = userPitch;
   globeGroup.rotation.z = AXIAL_TILT;
 
   // The globe's own per-frame work is registered once it exists. It cannot
@@ -935,16 +1138,15 @@ function animate() {
   globeTick?.(t);
 
 
-  // keep the focal plane pinned to the front face of the globe as the
-  // viewer orbits or zooms, the way a photographer refocuses on the
-  // subject rather than on a fixed distance
+  // keep the focal plane pinned to the front face of the globe — the
+  // camera is static now, but the globe itself still turns under the
+  // dials/spin, so this still has work to do
   cameraPass.uniforms.uTime.value = t;
   cameraPass.uniforms.uFocusDistance.value = Math.max(
     camera.position.distanceTo(globeGroup.position) - RADIUS * 0.72,
     0.5,
   );
 
-  controls.update();
   composer.render();
   requestAnimationFrame(animate);
 }
@@ -1149,16 +1351,16 @@ globeMaterial.onBeforeCompile = (shader) => {
         // not a revived atmosphere shell (gap-analysis §9 rules that back
         // out explicitly), just this object's own surface catching a rim
         // the way the resin ocean and every painted edge here already do.
-        // Exponent lowered (3.0 -> 2.2) and both gains below raised: at the
-        // old settings this "is there an atmosphere?" rim was a sliver only
-        // a handful of pixels wide and weak enough that ACES at this
-        // scene's exposure (1.9) all but flattened it away, so the honest
-        // answer to "atmosphere ある？みえない" was that the code drew one
-        // but it did not survive the pipeline. Still no shell mesh — that
-        // stays ruled out (gap-analysis §9) — just a wider, brighter
-        // version of the same silhouette-only trick.
-        float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 2.2);
-        totalEmissiveRadiance += vec3(0.20, 0.30, 0.46) * rimFresnel * night * 0.26;
+        // Pushed a lot further on request: "brighten/light up the rim, the
+        // way Earth actually reads from space." Exponent dropped again
+        // (2.2 -> 1.5) so the band is wide enough to read as a halo hugging
+        // the silhouette rather than a thin pencil line, and both gains
+        // roughly doubled. Still no shell mesh — gap-analysis §9's ban on
+        // reviving one stands — this is the same silhouette-only Fresnel
+        // trick, just turned up until it actually looks like the reference
+        // "glowing blue limb" instead of a whisper ACES quietly ate.
+        float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 1.5);
+        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * rimFresnel * night * 0.55;
 
         // A thin atmosphere, on request. Still not a revived shell mesh —
         // same constraint as the night rim just above, same technique (add
@@ -1166,10 +1368,8 @@ globeMaterial.onBeforeCompile = (shader) => {
         // no new draw call) — just also gated to the *daylit* fraction
         // (1.0 - night) instead of only the night one, and given the
         // brighter, whiter sky-blue a sunlit limb actually has rather than
-        // the night rim's cooler, dimmer tone. Kept well under the dusk
-        // bands' strength, same as the night rim, so it stays a thin
-        // haze at the edge rather than a halo around the whole ball.
-        totalEmissiveRadiance += vec3(0.55, 0.72, 1.0) * rimFresnel * (1.0 - night) * 0.24;
+        // the night rim's cooler, dimmer tone.
+        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * rimFresnel * (1.0 - night) * 0.6;
 
         // The far side's own colour, not just what lights it. Cutting the
         // ambient/fill/rim rig (see the note by their definitions) only goes
@@ -1789,6 +1989,16 @@ oceanMaterial.onBeforeCompile = (shader) => {
         totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.5, 0.2) * warmBand * 0.5;
         totalEmissiveRadiance +=
           mix(vec3(0.26), diffuseColor.rgb, 0.5) * vec3(0.26, 0.46, 0.98) * coolBand * 0.85;
+
+        // Same silhouette rim the globe material carries (main.ts's other
+        // onBeforeCompile), added here too rather than left to the land
+        // alone: the ocean shell is the outer surface at a good third of
+        // the limb on any given view (open water is most of the planet),
+        // so a glow that only ever appeared over land read as a broken
+        // ring — bright over continents, gapped over the Pacific.
+        float oceanRim = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 1.5);
+        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * oceanRim * night * 0.55;
+        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * oceanRim * (1.0 - night) * 0.6;
       }`,
     );
   oceanWaveUniforms = shader.uniforms as unknown as { uTime: { value: number } };
@@ -1929,17 +2139,11 @@ window.addEventListener('resize', () => {
   sceneDepth.needsUpdate = true;
   cameraPass.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
-  // rescale the orbit distance (and its clamps) for the new aspect ratio,
-  // preserving how zoomed-in the user currently is
-  const newScale = cameraDistanceForViewport() / BASE_CAMERA_DISTANCE;
-  const zoomRatio = newScale / viewportScale;
-  const offset = camera.position.clone().sub(controls.target);
-  offset.setLength(offset.length() * zoomRatio);
-  camera.position.copy(controls.target).add(offset);
-  controls.minDistance = 5 * newScale;
-  controls.maxDistance = 12.5 * newScale;
-  viewportScale = newScale;
-  controls.update();
+  // No orbit distance to preserve any more — just recompute the same
+  // viewport-responsive framing cameraStartPosition() used at load.
+  const pos = cameraStartPosition();
+  camera.position.set(pos.x, pos.y, pos.z);
+  camera.lookAt(0, TARGET_Y, 0);
 });
 
 globeTick = (t) => {

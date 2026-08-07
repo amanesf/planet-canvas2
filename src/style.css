@@ -57,61 +57,20 @@ canvas {
    of on top of it, and where it does not stack with the shader's own
    falloff to darken the corners twice.) */
 
-.ui {
-  position: absolute;
-  right: calc(18px + env(safe-area-inset-right, 0px));
-  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  pointer-events: none;
-}
+/* ---------------------------------------------------------------------
+   Title bar: the globe's name, plus the story button beside it
+   --------------------------------------------------------------------- */
 
-/* A visible on-screen control breaks the "real object" illusion more
-   than almost anything else on screen, so it stays small, corner-tucked,
-   and mostly-transparent until touched — present when needed, otherwise
-   nearly invisible rather than a labeled bar across the bottom. */
-.mode-button {
-  pointer-events: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 999px;
-  border: none;
-  background: rgba(255, 255, 255, 0.32);
-  backdrop-filter: blur(4px);
-  box-shadow: 0 2px 10px rgba(120, 90, 60, 0.1);
-  color: #6b4a36;
-  font-size: 14px;
-  opacity: 0.4;
-  cursor: pointer;
-  transition: opacity 0.2s ease, transform 0.15s ease, background 0.2s ease;
-}
-
-.mode-button:hover,
-.mode-button:focus-visible {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.8);
-  transform: translateY(-1px);
-}
-
-.mode-button:active {
-  transform: translateY(0);
-}
-
-@media (hover: none) {
-  /* touch devices can't "hover" to reveal it — keep it faintly visible */
-  .mode-button {
-    opacity: 0.55;
-  }
-}
-
-.title {
+.title-bar {
   position: absolute;
   top: calc(20px + env(safe-area-inset-top, 0px));
   left: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.title {
   color: #cbab7e;
   font-size: 13px;
   letter-spacing: 0.08em;
@@ -119,11 +78,310 @@ canvas {
   pointer-events: none;
 }
 
-@media (max-width: 480px) {
-  .mode-button {
-    padding: 11px 20px;
-    font-size: 14px;
+.story-button {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(91, 228, 255, 0.45);
+  border-radius: 999px;
+  background: rgba(10, 16, 22, 0.45);
+  backdrop-filter: blur(4px);
+  color: #8fefff;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  padding: 5px 12px;
+  cursor: pointer;
+  opacity: 0.75;
+  box-shadow: 0 0 8px rgba(57, 200, 255, 0.15);
+  transition: opacity 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.story-button::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #5be4ff;
+  box-shadow: 0 0 4px 1px rgba(91, 228, 255, 0.8);
+}
+
+.story-button:hover,
+.story-button:focus-visible {
+  opacity: 1;
+  box-shadow: 0 0 14px rgba(57, 200, 255, 0.4);
+  transform: translateY(-1px);
+}
+
+@media (hover: none) {
+  .story-button {
+    opacity: 0.85;
   }
+}
+
+/* ---------------------------------------------------------------------
+   The cyber control panel: two rotation dials, plant-flag, spin toggle
+   --------------------------------------------------------------------- */
+
+.cyber-panel {
+  position: absolute;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  padding: 10px 18px;
+  border-radius: 20px;
+  background: rgba(8, 12, 18, 0.5);
+  border: 1px solid rgba(91, 228, 255, 0.22);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 18px rgba(57, 200, 255, 0.08);
+}
+
+.dial-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.dial-label {
+  color: #8fefff;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  opacity: 0.65;
+}
+
+/* East-west: a round rotary dial, dragged around its own centre */
+.yaw-dial {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.yaw-dial-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 30%, rgba(60, 75, 90, 0.9), rgba(10, 14, 20, 0.95) 70%);
+  border: 1px solid rgba(91, 228, 255, 0.35);
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.6), 0 0 10px rgba(57, 200, 255, 0.12);
+}
+
+.yaw-dial-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #5be4ff;
+  box-shadow: 0 0 6px 2px rgba(91, 228, 255, 0.7);
+  transform: translate(-50%, -50%);
+}
+
+/* the one part that actually rotates, showing the dial's current turn */
+.yaw-dial-tick {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 20px;
+  margin-left: -1px;
+  margin-top: -24px;
+  border-radius: 2px;
+  background: linear-gradient(#8fefff, rgba(143, 239, 255, 0));
+  transform-origin: 50% 24px;
+}
+
+.yaw-dial:active {
+  cursor: grabbing;
+}
+
+/* North-south: a vertical track with a puck, its position is the pitch */
+.pitch-dial {
+  position: relative;
+  width: 30px;
+  height: 52px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.pitch-track {
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  bottom: 2px;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 3px;
+  background: rgba(10, 14, 20, 0.95);
+  border: 1px solid rgba(91, 228, 255, 0.3);
+  box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.6);
+}
+
+.pitch-handle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 12px;
+  margin-left: -11px;
+  margin-top: -6px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #35414d, #10151b);
+  border: 1px solid rgba(91, 228, 255, 0.55);
+  box-shadow: 0 0 8px rgba(57, 200, 255, 0.35);
+}
+
+.pitch-dial:active {
+  cursor: grabbing;
+}
+
+.cyber-button {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  border: 1px solid rgba(91, 228, 255, 0.35);
+  background: rgba(10, 16, 22, 0.6);
+  color: #8fefff;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(57, 200, 255, 0.12);
+  transition: box-shadow 0.2s ease, transform 0.15s ease, background 0.2s ease;
+}
+
+.cyber-button:hover,
+.cyber-button:focus-visible {
+  box-shadow: 0 0 16px rgba(57, 200, 255, 0.4);
+  transform: translateY(-1px);
+  background: rgba(20, 30, 40, 0.75);
+}
+
+.cyber-button:active {
+  transform: translateY(0);
+}
+
+.cyber-button.is-off {
+  color: #6b7680;
+  border-color: rgba(140, 150, 160, 0.3);
+  box-shadow: none;
+}
+
+@media (max-width: 480px) {
+  .cyber-panel {
+    gap: 12px;
+    padding: 8px 12px;
+  }
+  .yaw-dial {
+    width: 46px;
+    height: 46px;
+  }
+  .pitch-dial {
+    height: 46px;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Story screen
+   --------------------------------------------------------------------- */
+
+.story-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  overflow-y: auto;
+  background: rgba(4, 6, 10, 0.86);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: story-fade-in 0.25s ease;
+}
+
+.story-overlay[hidden] {
+  display: none;
+}
+
+@keyframes story-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.story-panel {
+  position: relative;
+  width: min(640px, 100%);
+  margin: 0 auto;
+  padding-bottom: 64px;
+  color: #dfeaf2;
+}
+
+.story-close {
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  right: 16px;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(91, 228, 255, 0.4);
+  background: rgba(6, 10, 15, 0.65);
+  color: #8fefff;
+  font-size: 14px;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.story-cover {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background:
+    linear-gradient(180deg, rgba(4, 6, 10, 0) 55%, rgba(4, 6, 10, 0.95) 100%),
+    url('/story-cover.jpg') center 24% / cover no-repeat,
+    radial-gradient(circle at 30% 45%, #123246 0%, #0a1620 55%, #06090d 100%);
+}
+
+.story-title {
+  margin: -34px 24px 0;
+  position: relative;
+  font-size: 1.6rem;
+  letter-spacing: 0.08em;
+  color: #cfe9f5;
+  text-shadow: 0 0 18px rgba(57, 200, 255, 0.5);
+}
+
+.story-lead {
+  margin: 12px 24px 28px;
+  font-size: 0.95rem;
+  line-height: 1.9;
+  color: #b9cbd6;
+}
+
+.story-section {
+  margin: 0 24px 26px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(91, 228, 255, 0.18);
+}
+
+.story-section h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  letter-spacing: 0.1em;
+  color: #8fefff;
+}
+
+.story-section p {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.85;
+  color: #b9cbd6;
 }
 
 /* Shown while the model is being built. The build yields between steps (see
