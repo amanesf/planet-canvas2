@@ -2118,12 +2118,24 @@ export function buildSpecies(
     // ridges apart without ever rejecting the next segment of the ridge
     // being walked.
     //
-    // It must stay below `STEP * minimum scale` (0.032 * 0.86 * 0.85 =
-    // 0.0234) or a ridge blocks its own next segment on the hash and every
-    // ridge comes out one segment long. That invariant is not obvious from
-    // either number on its own, which is exactly why it is written down
-    // here — and the overlap above tightened it, so it is checked again.
-    const RIDGE_PITCH = 0.021;
+    // The invariant that used to sit here — pitch below `STEP * min scale`,
+    // or a ridge blocks its own next station on the hash — was solved the
+    // wrong way round. It capped the pitch at 0.021 rad, which on a globe of
+    // radius 2 is 0.042 world units between crest lines, against a
+    // cross-section 0.05 wide: **the ridges overlapped**, fused sideways,
+    // and the erg came out as a few broad snakes instead of a corrugation.
+    // A dune field is as much the sand between the crests as the crests.
+    //
+    // The invariant is gone rather than obeyed: stations are added to the
+    // hash *after* a ridge is finished, not as it is walked, so a ridge can
+    // no longer block itself and the pitch is free to be whatever the
+    // spacing wants. Ridges still cannot land on each other, because a seed
+    // is rejected within a pitch of any finished ridge, and they run
+    // parallel anyway — they all read the same bearing field.
+    //
+    // 0.023 rad is 0.046 world units, a clear lane of open sand between
+    // crests that are 0.036 across.
+    const RIDGE_PITCH = 0.023;
     const ridgeHash = new SpatialHash(RIDGE_PITCH);
     const ridges: { path: THREE.Vector3[]; scale: number }[] = [];
 
@@ -2167,7 +2179,13 @@ export function buildSpecies(
       for (const sense of [1, -1]) {
         const walk = seed.clone();
         const run = sense > 0 ? forward : back;
-        for (let step = 0; step < 90; step++) {
+        // Capped, and this is the "the dunes look like snakes" fix. One
+        // segment is 0.0275 rad, and a radian is about 204 px at the shipped
+        // camera, so a segment is 5.6 px — at 90 steps a single ridge ran
+        // right across the erg and read as one long worm lying on the sand.
+        // Three each way is about 34 px end to end: a stroke, one of many,
+        // which is what a dune field is made of.
+        for (let step = 0; step < 4; step++) {
           const bearing = duneBearing(walk);
           const { east, north } = localFrameOf(walk);
           walk
@@ -2175,14 +2193,13 @@ export function buildSpecies(
             .addScaledVector(north, Math.sin(bearing) * STEP * scale * sense)
             .normalize();
           if (!ergHere(walk)) break;
-          if (ridgeHash.hasNeighborWithin(walk, RIDGE_PITCH * RIDGE_PITCH)) break;
-          const point = walk.clone();
-          ridgeHash.add(point);
-          run.push(point);
+          run.push(walk.clone());
         }
       }
-      ridgeHash.add(seed.clone());
       const coarse = [...back.reverse(), seed.clone(), ...forward];
+      // The finished ridge goes into the hash in one piece, so the next
+      // seed keeps its distance from all of it.
+      coarse.forEach((point) => ridgeHash.add(point.clone()));
       if (coarse.length < 2) continue;
       // Subdivided for the sweep. The walk's step is set by the hash — it
       // has to stay above RIDGE_PITCH or a ridge blocks its own next
@@ -2202,6 +2219,9 @@ export function buildSpecies(
       // stub the fade is the whole shape. Twelve stations is four walk
       // steps, about 0.1 rad. Below that the erg simply has no dune here,
       // which is also true of a real one — sand needs a run to build in.
+      // Four walk steps, subdivided three times, is twelve stations — about
+      // six times the crest's own width. Below that the end fade is most of
+      // the shape and a stub is an almond again.
       if (path.length >= 12) ridges.push({ path, scale });
     }
 
@@ -2233,7 +2253,15 @@ export function buildSpecies(
         [0.46, 0.34],
         [0.55, 0],
       ];
-      const HALF_WIDTH = 0.03;
+      // 0.018, not 0.03. The width was setting everything else: the crests
+      // are 0.05 world units across at 0.03, so the lateral pitch could not
+      // go below that without the ridges fusing, and a pitch that wide caps
+      // how many ridges an erg can hold. It also made the shortest allowed
+      // ridge only about three times longer than it was wide — a lozenge,
+      // which is the almond wearing another hat. Narrower crests take a
+      // tighter pitch, so the field is denser *and* each ridge is six to
+      // twelve times its own width, which is what a linear dune looks like.
+      const HALF_WIDTH = 0.018;
       const HEIGHT = 0.017;
 
       const positions: number[] = [];
