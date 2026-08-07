@@ -693,7 +693,15 @@ export function buildEruptions(
   // builds real geometry for, done cheaply here with points because a
   // point-sprite plume cannot afford per-lump meshes.
   const CLUMPS_PER_VOLCANO = 6;
-  const clumpSpread = 0.36;
+  // Pulled in from 0.36, alongside the clump centres below moving in from
+  // 0.28-0.78 to 0.2-0.5: a wide scatter was most of what read as a big
+  // grey spread rather than a column — every clump reached far enough
+  // toward the rim that the six of them tiled the whole disc back into one
+  // shape again, just with lumpy edges. Keeping both tighter leaves the
+  // cross-section a narrower core, which is what the elongation below
+  // (`aJitter` doubling as a stretch axis, see the vertex shader) needs
+  // to actually read as a rising stream instead of a fattened smudge.
+  const clumpSpread = 0.22;
 
   let p = 0;
   VOLCANOES.forEach((v, vi) => {
@@ -702,7 +710,7 @@ export function buildEruptions(
       // Kept off the very centre and short of the rim: a clump centred at
       // the column's axis would just recreate the uniform disc at a smaller
       // radius, and one right at the edge would clip against the mask below.
-      const r = 0.28 + rand() * 0.5;
+      const r = 0.2 + rand() * 0.3;
       return { x: Math.cos(a) * r, y: Math.sin(a) * r };
     });
     for (let i = 0; i < PARTICLES_PER_VOLCANO; i++, p++) {
@@ -716,7 +724,14 @@ export function buildEruptions(
       owner[p * 4 + vi] = 1;
       phases[p] = rand();
       speeds[p] = 0.16 + rand() * 0.14;
-      sizes[p] = 4.0 + rand() * 7.0;
+      // Cut from 4.0 + rand()*7.0, but only partway: on request, the whole
+      // column shrinks — see the spread cut in the vertex shader below,
+      // which this pairs with — but the sprites still have to overlap
+      // enough to cover their own gaps, or the column stops looking like
+      // smoke and starts looking like a faint scatter of grey dots (see the
+      // note by gl_PointSize for the same trade-off measured too far the
+      // other way).
+      sizes[p] = 3.2 + rand() * 4.6;
       // where in the column this particle sits, so the plume has width and
       // billows to one side rather than rising as a needle
       const clump = clumps[i % CLUMPS_PER_VOLCANO];
@@ -804,8 +819,17 @@ export function buildEruptions(
         // Rise fast, then slow and spread: the column loses its momentum
         // and the ash flattens out against the top of the troposphere,
         // which is what gives a real eruption its anvil.
-        float rise = (1.0 - pow(1.0 - life, 2.2)) * 0.42 * power;
-        float spread = (0.012 + pow(life, 1.8) * 0.11) * power;
+        //
+        // Both cut hard on request, alongside the smaller sprites and
+        // tighter clumps above: even the first cut here (0.012 base spread
+        // -> 0.007, 0.42 max rise unchanged) still read from above — which
+        // is mostly how this globe is seen — as a round grey dome sitting
+        // on the vent, because a column's own *height* barely shows in a
+        // near-overhead view. Cutting the footprint (both of these) rather
+        // than only the height is what actually shrinks the dome as seen
+        // from where it is actually seen.
+        float rise = (1.0 - pow(1.0 - life, 2.2)) * 0.30 * power;
+        float spread = (0.005 + pow(life, 1.8) * 0.035) * power;
 
         // Downwind drift, with shear.
         //
@@ -822,29 +846,37 @@ export function buildEruptions(
         // what turns a straight lean into the hockey-stick profile a real
         // ash column has.
         float wind = dot(aOwner, uWind);
-        float heightFrac = rise / max(0.42 * power, 1e-4);
-        float drift = wind * heightFrac * heightFrac * 0.30 * power;
+        float heightFrac = rise / max(0.30 * power, 1e-4);
+        // Raised from 0.30 alongside the wider along/across split below:
+        // a near-overhead view is exactly the angle a lean reads best in
+        // (a column's own height foreshortens away, but its drift off to
+        // one side does not), so this is the term actually carrying "flows
+        // from the vent" now that the dome itself is smaller.
+        float drift = wind * heightFrac * heightFrac * 0.42 * power;
 
         // The spread goes with the wind too: a plume in still air puffs out
         // as a circle, one in a wind is drawn out into a streak that is far
         // longer downwind than it is wide. Without this the anvil stayed a
-        // round blob that had merely been moved sideways.
-        float along = spread * (1.0 + abs(wind) * 1.9);
-        float across = spread * (1.0 - abs(wind) * 0.35);
+        // round blob that had merely been moved sideways. Both terms
+        // widened (1.9 -> 2.6, 0.35 -> 0.55) so that streak is unmistakable
+        // rather than a slightly-oval dome.
+        float along = spread * (1.0 + abs(wind) * 2.6);
+        float across = spread * (1.0 - abs(wind) * 0.55);
 
         vec3 lateral = east * (aJitter.x * along + drift) + other * (aJitter.y * across);
         vec3 pos = normalize(aOrigin + lateral) * (uRadius + rise + 0.004);
 
         vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
         gl_Position = projectionMatrix * mvPosition;
-        // ash particles grow as the cloud dissipates. Capped back from
-        // 0.5 + life*1.6: at the old rate every sprite ballooned enough that
-        // by mid-life its soft edge had swallowed the gaps between clumps,
-        // and a few hundred overlapping soft circles read as one smooth
-        // "poof" rather than a textured mass. Growing less erases that gap
-        // more slowly, so the clump structure from aJitter above survives
-        // further into the column's life.
-        gl_PointSize = aSize * (0.5 + life * 1.25) * power * uPixelRatio * (60.0 / -mvPosition.z);
+
+        // ash particles grow as the cloud dissipates. Trimmed on request
+        // alongside the tighter spread above, but kept well short of the
+        // cut that made the very first pass at this nearly disappear: this
+        // system reads as solid smoke through the *overlap* of a few
+        // hundred sprites, not through any one sprite's own opacity, so a
+        // sprite shrunk too far stops contributing enough coverage for the
+        // column to still look like a body of smoke rather than a haze.
+        gl_PointSize = aSize * (0.5 + life * 1.0) * power * uPixelRatio * (60.0 / -mvPosition.z);
         vAlpha = power * (1.0 - smoothstep(0.45, 1.0, life)) * smoothstep(0.0, 0.05, life);
       }
     `,
@@ -853,18 +885,22 @@ export function buildEruptions(
       varying float vAlpha;
       void main() {
         vec2 d = gl_PointCoord - vec2(0.5);
-        // A tighter core than before (was 0.15..0.5): the wide, gentle
-        // falloff was most of what made overlapping sprites melt into fog
-        // instead of reading as separate billows. A harder edge lets the
-        // clumps built into aJitter actually show as clumps.
-        float mask = 1.0 - smoothstep(0.26, 0.5, length(d));
+        // A tight core: the wide, gentle falloff the very first version of
+        // this had was most of what made overlapping sprites melt into one
+        // grey fog instead of reading as a body of smoke with an edge.
+        float mask = 1.0 - smoothstep(0.24, 0.46, length(d));
         if (vAlpha <= 0.002 || mask <= 0.002) discard;
         // incandescent at the vent, cooling to grey ash within the first
         // fraction of the climb
         vec3 hot = vec3(1.0, 0.55, 0.17);
         vec3 ash = vec3(0.34, 0.31, 0.30);
         vec3 color = mix(hot, ash, smoothstep(0.0, 0.16, vLife));
-        gl_FragColor = vec4(color, vAlpha * mask * 0.75);
+        // Raised from 0.75, alongside the trim above: the streak/flow shape
+        // this is meant to read as needs its sprites to actually cover the
+        // pixels they sit on rather than half-showing the ocean through
+        // them — a plume that is mostly see-through does not look "too
+        // big", it looks like it is not there at all, which is worse.
+        gl_FragColor = vec4(color, vAlpha * mask * 0.9);
       }
     `,
   });
