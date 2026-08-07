@@ -6,6 +6,7 @@ import {
   VOLCANOES,
   aridityAt,
   climateClassAt,
+  climateFactsAt,
   precipitationAtSeason,
   sampledHeight,
 } from './terrain';
@@ -397,6 +398,241 @@ function buildDustStorms(
   return { points, tick };
 }
 
+// ---------------------------------------------------------------------
+// Wildfires (G52) — a third population, same reason the dust joined
+// eruptions above rather than starting a new module: a wildfire's plume is
+// again a column of particulate lifted off the ground, leaned by the wind
+// and dissipating downwind. What differs from the dust wall is where it is
+// allowed to start (fire needs fuel, not just dryness) and what it looks
+// like once it is up (dark smoke with an ember glow at the seat, not a tan
+// haze).
+// ---------------------------------------------------------------------
+// Siting again comes from fields the globe already has. `climateFactsAt`'s
+// group is the one used everywhere else in this project to say what grows
+// somewhere (species.ts keys the same field off the same call) — 'Cs'
+// (Mediterranean: California, the Mediterranean basin, central Chile, the
+// Cape, southwest Australia) and 'Aw' (savanna: the dry-season grass and
+// brush fires that are the most common fire on Earth by area) are the two
+// groups real wildfire climatology actually points at, so this reads the
+// existing climate field rather than adding a new "is this flammable"
+// layer that could drift from what species.ts already planted there.
+
+const FIRE_SITES = 22;
+const PARTICLES_PER_FIRE = 80;
+
+interface FireSite {
+  centre: THREE.Vector3;
+  wind: number;
+  schedule: Schedule;
+}
+
+/**
+ * Seasonal wildfires over real fire-climate ground. Shares buildDustStorms'
+ * shape almost exactly (site rejection sampling, a schedule read against
+ * the live season, the same wind profile) — see that function's doc for
+ * the reasoning behind each piece; only what's specific to fire is called
+ * out here.
+ */
+function buildWildfires(
+  radius: number,
+  bumpHeight: number,
+  pixelRatio: number,
+  windAt: (lat: number) => number,
+): { points: THREE.Points; tick: (t: number) => void } {
+  const rand = mulberry32(50505);
+  const probe = new THREE.Vector3();
+  const sites: FireSite[] = [];
+
+  const peakWind = Math.max(1e-6, Math.abs(windAt(Math.PI / 4)));
+  const MIN_SEPARATION = Math.cos(0.15);
+  for (let attempt = 0; attempt < 24000 && sites.length < FIRE_SITES; attempt++) {
+    const sinLat = rand() * 2 - 1;
+    const c = Math.sqrt(Math.max(0, 1 - sinLat * sinLat));
+    const lon = rand() * Math.PI * 2;
+    probe.set(c * Math.cos(lon), sinLat, c * Math.sin(lon));
+
+    if (sampledHeight(probe).raw < SEA_LEVEL) continue;
+    const group = climateFactsAt(probe).group;
+    if (group !== 'Cs' && group !== 'Aw') continue;
+    if (sites.some((s) => s.centre.dot(probe) > MIN_SEPARATION)) continue;
+
+    const lat = Math.asin(THREE.MathUtils.clamp(probe.y, -1, 1));
+    sites.push({
+      centre: probe.clone(),
+      wind: windAt(lat) / peakWind,
+      // A season apiece, roughly — fire seasons are shorter and rarer per
+      // site than the dust storms' twice-a-year cadence, and burn longer
+      // once alight.
+      schedule: { gap: 20, spread: 22, duration: 14, nextAt: rand() * 45, startedAt: -1e9 },
+    });
+  }
+
+  const count = sites.length * PARTICLES_PER_FIRE;
+  const positions = new Float32Array(count * 3);
+  const origins = new Float32Array(count * 3);
+  const ground = new Float32Array(count);
+  const power = new Float32Array(count);
+  const wind = new Float32Array(count);
+  const phases = new Float32Array(count);
+  const speeds = new Float32Array(count);
+  const sizes = new Float32Array(count);
+  const jitter = new Float32Array(count * 2);
+
+  let p = 0;
+  sites.forEach((site) => {
+    const lift = sampledHeight(site.centre).display * bumpHeight;
+    for (let i = 0; i < PARTICLES_PER_FIRE; i++, p++) {
+      positions[p * 3] = site.centre.x * (radius + lift);
+      positions[p * 3 + 1] = site.centre.y * (radius + lift);
+      positions[p * 3 + 2] = site.centre.z * (radius + lift);
+      origins[p * 3] = site.centre.x;
+      origins[p * 3 + 1] = site.centre.y;
+      origins[p * 3 + 2] = site.centre.z;
+      ground[p] = lift;
+      wind[p] = site.wind;
+      phases[p] = rand();
+      // Between the dust wall's slow hang and the ash column's fast jet —
+      // a fire plume rises on its own convection, faster than dust lifted
+      // by a gust front, but it is not a volcanic blast.
+      speeds[p] = 0.13 + rand() * 0.12;
+      sizes[p] = 3.2 + rand() * 5.2;
+      const a = rand() * Math.PI * 2;
+      const r = Math.sqrt(rand());
+      jitter[p * 2] = Math.cos(a) * r;
+      jitter[p * 2 + 1] = Math.sin(a) * r;
+    }
+  });
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('aOrigin', new THREE.BufferAttribute(origins, 3));
+  geometry.setAttribute('aGround', new THREE.BufferAttribute(ground, 1));
+  const powerAttribute = new THREE.BufferAttribute(power, 1);
+  powerAttribute.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute('aPower', powerAttribute);
+  geometry.setAttribute('aWind', new THREE.BufferAttribute(wind, 1));
+  geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+  geometry.setAttribute('aSpeed', new THREE.BufferAttribute(speeds, 1));
+  geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+  geometry.setAttribute('aJitter', new THREE.BufferAttribute(jitter, 2));
+
+  const uniforms = {
+    uTime: { value: 0 },
+    uRadius: { value: radius },
+    uPixelRatio: { value: pixelRatio },
+  };
+
+  const material = new THREE.ShaderMaterial({
+    uniforms,
+    transparent: true,
+    depthWrite: false,
+    vertexShader: `
+      attribute vec3 aOrigin;
+      attribute float aGround;
+      attribute float aPower;
+      attribute float aWind;
+      attribute float aPhase;
+      attribute float aSpeed;
+      attribute float aSize;
+      attribute vec2 aJitter;
+      uniform float uTime;
+      uniform float uRadius;
+      uniform float uPixelRatio;
+      varying float vLife;
+      varying float vAlpha;
+
+      void main() {
+        float power = aPower;
+        float life = fract(aPhase + uTime * aSpeed);
+        vLife = life;
+
+        vec3 up = normalize(aOrigin);
+        vec3 side = normalize(cross(up, vec3(0.0, 1.0, 0.0)) + vec3(1e-4, 0.0, 0.0));
+        vec3 other = cross(up, side);
+        vec3 east = -side;
+
+        // A convection column: rises further and faster than the dust
+        // wall (which is lifted by a passing gust front, not by its own
+        // heat) but well short of the ash column's forced blast.
+        float rise = (1.0 - pow(1.0 - life, 1.8)) * 0.22 * power;
+        float spread = (0.010 + pow(life, 1.5) * 0.075) * power;
+
+        float wind = aWind;
+        float heightFrac = rise / max(0.22 * power, 1e-4);
+        float drift = wind * heightFrac * heightFrac * 0.24 * power;
+
+        float along = spread * (1.0 + abs(wind) * 1.7);
+        float across = spread * (1.0 - abs(wind) * 0.35);
+
+        vec3 lateral = east * (aJitter.x * along + drift) + other * (aJitter.y * across);
+        vec3 pos = normalize(aOrigin + lateral) * (uRadius + aGround + rise + 0.003);
+
+        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        gl_PointSize = aSize * (0.55 + life * 1.6) * power * uPixelRatio * (60.0 / -mvPosition.z);
+        vAlpha = power * (1.0 - smoothstep(0.4, 1.0, life)) * smoothstep(0.0, 0.06, life);
+      }
+    `,
+    fragmentShader: `
+      varying float vLife;
+      varying float vAlpha;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        float mask = 1.0 - smoothstep(0.14, 0.5, length(d));
+        if (vAlpha <= 0.002 || mask <= 0.002) discard;
+        // An ember glow at the seat of the fire (the same "hot near the
+        // vent" idea the ash column uses), cooling fast to dark, dirty
+        // smoke — sooty rather than the ash plume's clean grey, since this
+        // is burning vegetation, not pulverised rock.
+        vec3 ember = vec3(1.0, 0.42, 0.08);
+        vec3 smoke = vec3(0.20, 0.18, 0.17);
+        vec3 color = mix(ember, smoke, smoothstep(0.0, 0.1, vLife));
+        gl_FragColor = vec4(color, vAlpha * mask * 0.72);
+      }
+    `,
+  });
+
+  const points = new THREE.Points(geometry, material);
+  points.frustumCulled = false;
+
+  const tick = (t: number) => {
+    const northernSummer = northernSummerAt(t);
+    let changed = false;
+    for (let i = 0; i < sites.length; i++) {
+      const site = sites[i];
+      const s = site.schedule;
+      if (t >= s.nextAt) {
+        const rainNow = precipitationAtSeason(site.centre, northernSummer);
+        const dryness = 1 - THREE.MathUtils.smoothstep(rainNow, 0.12, 0.38);
+        // Fire season is the local dry season's hot half, the same
+        // reasoning buildDustStorms uses for the hyper-arid cores — a
+        // Mediterranean summer or a savanna's dry season is when the fuel
+        // that grew in the wet season has actually cured.
+        const localSummer = site.centre.y >= 0 ? northernSummer : -northernSummer;
+        const warm = 0.3 + 0.7 * (0.5 + 0.5 * localSummer);
+        if (rand() < dryness * warm) {
+          s.startedAt = t;
+        }
+        s.nextAt = t + s.duration + s.gap + rand() * s.spread;
+      }
+      const age = (t - s.startedAt) / s.duration;
+      // Catches fast, burns, then a long smouldering tail as it dies down —
+      // slower to fade than the dust wall settling, faster than an ash
+      // cloud dispersing.
+      const value = age < 0 || age > 1 ? 0 : Math.min(1, age * 5.5) * Math.pow(1 - age, 0.8);
+      const base = i * PARTICLES_PER_FIRE;
+      if (power[base] !== value) {
+        power.fill(value, base, base + PARTICLES_PER_FIRE);
+        changed = true;
+      }
+    }
+    if (changed) powerAttribute.needsUpdate = true;
+    uniforms.uTime.value = t;
+  };
+
+  return { points, tick };
+}
+
 export function buildEruptions(
   radius: number,
   bumpHeight: number,
@@ -663,8 +899,15 @@ export function buildEruptions(
   const dust = buildDustStorms(radius, bumpHeight, pixelRatio, windAt ?? zonalWind);
   group.add(dust.points);
 
+  // Wildfires (G52): a fourth thing sharing this file's particle machinery
+  // and its clock, for the same reason the dust does — one draw call, one
+  // schedule mechanism, no second copy of the wind profile.
+  const wildfires = buildWildfires(radius, bumpHeight, pixelRatio, windAt ?? zonalWind);
+  group.add(wildfires.points);
+
   const tick = (t: number) => {
     dust.tick(t);
+    wildfires.tick(t);
     for (let i = 0; i < schedules.length; i++) {
       const s = schedules[i];
       if (t >= s.nextAt) {
