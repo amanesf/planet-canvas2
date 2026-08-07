@@ -51,6 +51,10 @@ export const CameraPassShader = {
     uBloomRadius: { value: 0.008 },
     /** thin veiling haze mixed over the whole frame, like dust in the air */
     uHaze: { value: 0.035 },
+    /** how bright the diamond-dust sparkle specks are */
+    uSparkleStrength: { value: 0.55 },
+    /** sparkle grid cell size, in pixels */
+    uSparkleScale: { value: 7.0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -77,6 +81,8 @@ export const CameraPassShader = {
     uniform float uBloomStrength;
     uniform float uBloomRadius;
     uniform float uHaze;
+    uniform float uSparkleStrength;
+    uniform float uSparkleScale;
     varying vec2 vUv;
 
     // RINGS is set per quality tier: two rings read as a round aperture at
@@ -182,6 +188,31 @@ export const CameraPassShader = {
       return sum / float(TAPS);
     }
 
+    // A diamond-dust glitter: fine, twinkling specks scattered across the
+    // whole frame, each flickering at its own rate rather than all pulsing
+    // in lockstep. Screen-space and grid-based — a scattered spatial hash
+    // per cell, the same technique the grain noise below already uses —
+    // rather than real particles, because the request was for an effect
+    // over the whole picture (the room and the glass case as much as the
+    // globe), not a feature of any one object in the scene.
+    vec3 sparkleField(vec2 uv) {
+      vec2 pixel = uv * uResolution;
+      vec2 cell = floor(pixel / uSparkleScale);
+      vec2 local = fract(pixel / uSparkleScale) - 0.5;
+      float h = fract(sin(dot(cell, vec2(41.3, 289.1))) * 43758.5453);
+      // sparse: only a small fraction of cells carry a speck at all
+      if (h > 0.05) return vec3(0.0);
+      vec2 jitter = vec2(fract(h * 97.13), fract(h * 53.71)) - 0.5;
+      float d = length(local - jitter * 0.6);
+      float core = smoothstep(0.16, 0.0, d);
+      // each speck twinkles at its own frequency and phase, drawn from the
+      // same hash that placed it, so the field never pulses as one unit
+      float freq = 1.5 + fract(h * 613.7) * 5.0;
+      float phase = fract(h * 271.9) * 6.28318530718;
+      float twinkle = pow(max(0.0, sin(uTime * freq + phase)), 9.0);
+      return vec3(0.85, 0.92, 1.0) * core * twinkle;
+    }
+
     void main() {
       vec2 centred = (vUv - vec2(0.5)) * vec2(uResolution.x / uResolution.y, 1.0);
       float edge = clamp(dot(centred, centred) * 2.2, 0.0, 1.0);
@@ -207,6 +238,13 @@ export const CameraPassShader = {
       // cleanliness a raw render has by default. Small on purpose: this is
       // meant to be felt rather than seen.
       colour = mix(colour, vec3(0.5, 0.44, 0.36), uHaze);
+
+      // Diamond dust, on request — additive and placed after the haze/
+      // vignette so the specks read as points of light catching the eye
+      // rather than as part of the scene's own shading, and not scaled by
+      // the vignette itself: real glitter in the air keeps catching the
+      // light out to the edge of frame, it does not dim with the lens.
+      colour += sparkleField(vUv) * uSparkleStrength;
 
       // Sensor grain, animated so it does not sit on the image like a
       // texture. Kept below the level where it is consciously visible: the

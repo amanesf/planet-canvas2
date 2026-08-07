@@ -38,7 +38,7 @@ import {
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-  <div class="title">箱庭プラネット — mockup</div>
+  <div class="title">天青の晶玉</div>
   <div class="ui">
     <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
   </div>
@@ -742,9 +742,9 @@ function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
   // glyph three times, offset, is enough to fake that at this size and is
   // the difference between a sticker and a machined plate.
   ctx.fillStyle = 'rgba(255, 236, 190, 0.5)';
-  ctx.fillText('箱庭プラネット', width / 2, height / 2 + 4);
+  ctx.fillText('天青の晶玉', width / 2, height / 2 + 4);
   ctx.fillStyle = 'rgba(28, 16, 4, 0.95)';
-  ctx.fillText('箱庭プラネット', width / 2, height / 2 + 1);
+  ctx.fillText('天青の晶玉', width / 2, height / 2 + 1);
   const texture = new THREE.CanvasTexture(canvas);
   return texture;
 }
