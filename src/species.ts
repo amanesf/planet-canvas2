@@ -1080,6 +1080,41 @@ function canopyClimate(
 // for why one coherent displacement reads better than independent
 // per-vertex jitter at this poly count), so hundreds of forest clumps
 // still cost only a few instanced draw calls.
+/**
+ * A stand of spruce, for the boreal belt.
+ *
+ * The canopy layer used one shape for the whole planet and made conifers by
+ * scaling that clump to 0.78 wide and 1.35 tall. The note where that is done
+ * calls the proportion "entirely" the difference between a taiga and a
+ * jungle, and it is — *in side view*. A globe is looked at from above, where
+ * a stretch along the surface normal is the one axis you cannot see, so
+ * Siberia and northern Canada came out as the same round broadleaf clumps as
+ * the tropics, only slightly narrower.
+ *
+ * What separates them in plan view is the grain: a spruce crown is a few
+ * metres across against fifteen or twenty for an oak, so a taiga is a much
+ * *finer* texture, and the crowns are pointed rather than domed so their
+ * shading is a small bright tip falling off to a dark skirt instead of an
+ * even dome. A cone with the same noise on it gets both, and at the limb —
+ * where the surface is seen edge-on — it finally reads as spires.
+ */
+function buildConiferBlob(rand: () => number, detail: number): THREE.BufferGeometry {
+  // 0.10 tall, not the 0.16 this started at. A broadleaf clump stands about
+  // 0.039 above the ground, so 0.16 made the boreal belt three times the
+  // height of everything else and the globe's limb grew a wall of spikes
+  // standing out sideways — the failure the savanna note in this file
+  // records for tall cones seen at a grazing angle. Twice a broadleaf is
+  // enough to say spruce and keeps the silhouette calm.
+  const g = new THREE.ConeGeometry(0.05, 0.1, detail >= 2 ? 9 : 7, 3);
+  g.translate(0, 0.028, 0);
+  // Much gentler than the broadleaf clump's 0.42. A cone displaced hard
+  // stops being a cone, and the silhouette is the whole point here.
+  displaceWithNoise(g, 0.16, 2.6, rand() * 500);
+  displaceWithNoise(g, 0.08, 7, rand() * 500 + 300);
+  g.computeVertexNormals();
+  return g;
+}
+
 function buildCanopyBlob(rand: () => number, detail: number): THREE.BufferGeometry {
   const g = new THREE.IcosahedronGeometry(0.05, detail);
   displaceWithNoise(g, detail >= 2 ? 0.42 : 0.3, 2.4, rand() * 500);
@@ -1842,8 +1877,19 @@ export function buildSpecies(
   // they can be seen.
   const CANOPY_FINE_SCALE = 1.1;
   const canopyVariantCount = 3;
-  const coarseVariants = Array.from({ length: canopyVariantCount }, () => buildCanopyBlob(rand, 1));
-  const fineVariants = Array.from({ length: 2 }, () => buildCanopyBlob(rand, 2));
+  // Two broadleaf clumps and one spruce, rather than three of the same
+  // thing, and likewise one of the two fine variants. Reallocating instead
+  // of appending is what keeps this at the draw-call count it already had:
+  // the boreal belt gets a shape of its own for free, and the broadleaf
+  // side gives up one of its three interchangeable blobs to pay for it.
+  const CONIFER_COARSE = canopyVariantCount - 1;
+  const CONIFER_FINE = 1;
+  const coarseVariants = Array.from({ length: canopyVariantCount }, (_, i) =>
+    i === CONIFER_COARSE ? buildConiferBlob(rand, 1) : buildCanopyBlob(rand, 1),
+  );
+  const fineVariants = Array.from({ length: 2 }, (_, i) =>
+    i === CONIFER_FINE ? buildConiferBlob(rand, 2) : buildCanopyBlob(rand, 2),
+  );
   const canopyMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.92,
@@ -1894,8 +1940,16 @@ export function buildSpecies(
     // run away.
     const scale = 0.42 + r0 * r0 * r0 * 1.3;
     const instance = { point, scale };
-    if (scale >= CANOPY_FINE_SCALE) fineBuckets[i % 2].push(instance);
-    else coarseBuckets[i % canopyVariantCount].push(instance);
+    // Bucketed by what the stand *is*, not round-robin: the variant is the
+    // shape now, so a spruce dropped into a broadleaf bucket would be drawn
+    // as a broadleaf.
+    if (scale >= CANOPY_FINE_SCALE) {
+      fineBuckets[point.coniferous ? CONIFER_FINE : 1 - CONIFER_FINE].push(instance);
+    } else if (point.coniferous) {
+      coarseBuckets[CONIFER_COARSE].push(instance);
+    } else {
+      coarseBuckets[i % CONIFER_COARSE].push(instance);
+    }
   });
 
   const canopyColor = new THREE.Color();
@@ -1916,7 +1970,12 @@ export function buildSpecies(
         // clumps are displaced spheres, and stretching one hard turns its
         // displacement into spikes, so the boreal belt came out as a field
         // of golden thorns rather than as spruce.
-        if (point.coniferous) dummy.scale.set(scale * 0.78, scale * 1.35, scale * 0.78);
+        // The geometry is a cone now, so the proportion no longer has to be
+        // faked by scaling. What the scale still carries is the *grain*: a
+        // spruce crown is a few metres across against fifteen or twenty for
+        // an oak, and crown size is the cue that survives being looked at
+        // from directly above. 0.62 wide against the broadleaf's 1.0.
+        if (point.coniferous) dummy.scale.set(scale * 0.62, scale * 0.95, scale * 0.62);
         else dummy.scale.setScalar(scale);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
