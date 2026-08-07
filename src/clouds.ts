@@ -1056,10 +1056,15 @@ function buildCloudShadowTexture(
  * @param season the globe's own season clock, −1 northern midwinter ..
  *   +1 northern midsummer — shared by reference, exactly as the falling
  *   snow takes it, so the sky cannot drift out of step with the paint.
+ * @param sunDirection world-space direction to the key light, read live
+ *   each frame for G41's rainbow (a sunlit shaft gets one, a shaft rained
+ *   on under an overcast sky does not) — same optional-parameter shape as
+ *   traffic.ts's running lights, which need the identical day/night test.
  */
 export function buildClouds(
   radius: number,
   season: { uSeasonTilt: { value: number } },
+  sunDirection?: THREE.Vector3,
 ): CloudSystem {
   const group = new THREE.Group();
   const rand = mulberry32(4242);
@@ -1372,10 +1377,21 @@ export function buildClouds(
   }
 
   const rainStrength = new Float32Array(rainAnchors.length);
+  // G41: 0 in shadow, 1 in direct sun — a rainbow needs both the rain and
+  // the sun at once, so this is what gates the tint in the fragment shader
+  // below. Updated every frame in tick() the same way traffic.ts's running
+  // lights are (a live dot product against the world-space sun direction),
+  // not baked, because a cell drifts across the whole day/night cycle over
+  // its lifetime.
+  const rainSunlit = new Float32Array(rainAnchors.length);
   const rainGeometry = new THREE.CylinderGeometry(0.42, 1, 1, 6, 1, true);
   rainGeometry.setAttribute(
     'aStrength',
     new THREE.InstancedBufferAttribute(rainStrength, 1),
+  );
+  rainGeometry.setAttribute(
+    'aSunlit',
+    new THREE.InstancedBufferAttribute(rainSunlit, 1),
   );
   const rainMaterial = new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 } },
@@ -1387,12 +1403,15 @@ export function buildClouds(
     side: THREE.DoubleSide,
     vertexShader: `
       attribute float aStrength;
+      attribute float aSunlit;
       uniform float uTime;
       varying float vStrength;
+      varying float vSunlit;
       varying vec2 vFall;
       varying float vY;
       void main() {
         vStrength = aStrength;
+        vSunlit = aSunlit;
         // uv.y runs 0 at the bottom of the cone to 1 at the top; uv.x goes
         // round it. The fall is a scroll in y, so the fibres read as
         // moving water rather than as a static cone — kept separate from
@@ -1405,6 +1424,7 @@ export function buildClouds(
     `,
     fragmentShader: `
       varying float vStrength;
+      varying float vSunlit;
       varying vec2 vFall;
       varying float vY;
       void main() {
@@ -1420,7 +1440,21 @@ export function buildClouds(
         // at the ground in a hard line reads as a rod holding the cloud
         // up, which is the one thing a globe on a stand cannot afford.
         float fade = smoothstep(0.04, 0.45, vY);
-        gl_FragColor = vec4(vec3(0.62, 0.66, 0.72), vStrength * streak * 0.3 * fade);
+        vec3 rainColor = vec3(0.62, 0.66, 0.72);
+        // G41: a rainbow, simplified rather than chasing the real 42-
+        // degree antisolar geometry — on a shaft this small that cone
+        // would almost never land in the camera's current view, which is
+        // exactly the "shipped an effect nobody ever sees" failure
+        // gap-analysis §2-21 hit chasing real lightning bolts at this
+        // scale. Instead: any sunlit shaft gets a faint spectrum band
+        // low in the veil, which is where backlit rain actually shows
+        // color from outside — a stylised but always-visible stand-in
+        // for the real optics, the same trade this file already makes
+        // for the shaft itself (a cone standing in for individual drops).
+        float bowBand = smoothstep(0.1, 0.24, vY) * (1.0 - smoothstep(0.3, 0.5, vY)) * vSunlit;
+        vec3 spectrum = 0.5 + 0.5 * cos(6.2831 * (vFall.x * 2.0 + vec3(0.0, 0.33, 0.67)));
+        rainColor = mix(rainColor, spectrum, bowBand * 0.55);
+        gl_FragColor = vec4(rainColor, vStrength * streak * 0.3 * fade);
       }
     `,
   });
@@ -1552,6 +1586,13 @@ export function buildClouds(
     });
   };
 
+  // G41: same construction as traffic.ts's running lights — this group's
+  // own world quaternion, fetched once a frame, turns a cell's object-
+  // space direction into the world-space one the (world-space) sun
+  // direction can be dotted against.
+  const cloudsQuat = new THREE.Quaternion();
+  const rainWorldPos = new THREE.Vector3();
+
   const tick = (t: number) => {
     advect(t);
 
@@ -1571,6 +1612,7 @@ export function buildClouds(
     // truer picture and the visible one.
     if (rainAnchors.length > 0) {
       rainMaterial.uniforms.uTime.value = t;
+      if (sunDirection) group.getWorldQuaternion(cloudsQuat);
       rainAnchors.forEach((n, i) => {
         const wet = precipitationAtSeason(n.live, season.uSeasonTilt.value);
         // Rain needs a cloud *and* a reason. `liveScale` already carries
@@ -1579,6 +1621,11 @@ export function buildClouds(
         // because its cotton has gone, not because of a second rule.
         const strength = THREE.MathUtils.smoothstep(wet, 0.3, 0.72) * Math.min(1, n.liveScale);
         rainStrength[i] = strength;
+        if (sunDirection) {
+          rainWorldPos.copy(n.live).applyQuaternion(cloudsQuat);
+          const sun = rainWorldPos.dot(sunDirection);
+          rainSunlit[i] = THREE.MathUtils.clamp((sun - 0.05) / 0.2, 0, 1);
+        }
         if (strength <= 0.002) {
           instanceMatrix.makeScale(0, 0, 0);
           rainMesh.setMatrixAt(i, instanceMatrix);
@@ -1620,6 +1667,7 @@ export function buildClouds(
       });
       rainMesh.instanceMatrix.needsUpdate = true;
       rainGeometry.getAttribute('aStrength').needsUpdate = true;
+      if (sunDirection) rainGeometry.getAttribute('aSunlit').needsUpdate = true;
     }
 
     liveMeshes.forEach(({ mesh, list, sizeScale }) => {
