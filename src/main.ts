@@ -25,6 +25,7 @@ import { buildFog } from './fog';
 import { buildSnowfall } from './snowfall';
 import { buildEruptions } from './eruptions';
 import { buildLandmarks, LANDMARK_INDEX } from './landmarks';
+import { buildIcebergs } from './icebergs';
 import { buildAircraft, buildSatellites, buildShips } from './traffic';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
@@ -1853,6 +1854,12 @@ globeGroup.add(eruptions.group);
 // is exactly what a souvenir globe does.
 await yieldToBrowser('名所');
 globeGroup.add(buildLandmarks(RADIUS, BUMP_HEIGHT));
+
+// G30 continuation: icebergs at the real calving grounds — geometry, not a
+// shader term, because a berg stands alone against open water rather than
+// tiling across the ice shell the way the pack itself does (§2-49).
+await yieldToBrowser('氷山');
+globeGroup.add(buildIcebergs(RADIUS, BUMP_HEIGHT));
 
 // Traffic: shipping on the sea and airliners over it, both parented to the
 // globe because both travel *with* the planet.
