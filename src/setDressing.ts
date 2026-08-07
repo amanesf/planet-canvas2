@@ -88,7 +88,13 @@ export const GLOBE_CENTRE_Y = 0.86;
  * a rotation about +Z now leans the north pole toward +X. The northern
  * hemisphere stays the one tipped into the lamp, just on the other side.
  */
-export const AXIAL_TILT = -(23.4 * Math.PI) / 180;
+// Was -(23.4°) — a real axial tilt, meant to be read against the brass
+// rod through the poles. On request the globe now stands upright with no
+// rod at all (see the mount removal in main.ts), so a lean with nothing to
+// visually justify it would just read as the model sitting crooked on its
+// cyber base. 0 until this project mounts the globe on something that
+// makes a tilt make sense again.
+export const AXIAL_TILT = 0;
 
 // ---------------------------------------------------------------------
 // The shadow the globe throws on the desk

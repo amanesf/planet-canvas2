@@ -52,7 +52,7 @@ export const CameraPassShader = {
     /** thin veiling haze mixed over the whole frame, like dust in the air */
     uHaze: { value: 0.035 },
     /** how bright the diamond-dust sparkle specks are */
-    uSparkleStrength: { value: 0.55 },
+    uSparkleStrength: { value: 0.95 },
     /** sparkle grid cell size, in pixels */
     uSparkleScale: { value: 7.0 },
   },
@@ -200,16 +200,25 @@ export const CameraPassShader = {
       vec2 cell = floor(pixel / uSparkleScale);
       vec2 local = fract(pixel / uSparkleScale) - 0.5;
       float h = fract(sin(dot(cell, vec2(41.3, 289.1))) * 43758.5453);
-      // sparse: only a small fraction of cells carry a speck at all
-      if (h > 0.05) return vec3(0.0);
+      // Raised from 0.05: on request, more visible glitter. Still sparse
+      // (glitter is not fog) — just under one cell in six instead of one
+      // in twenty.
+      if (h > 0.09) return vec3(0.0);
       vec2 jitter = vec2(fract(h * 97.13), fract(h * 53.71)) - 0.5;
       float d = length(local - jitter * 0.6);
-      float core = smoothstep(0.16, 0.0, d);
+      // Widened from 0.16: a slightly bigger core so a speck still reads
+      // as a speck rather than a single sub-pixel dot once the twinkle
+      // curve below is spending more of its cycle lit.
+      float core = smoothstep(0.2, 0.0, d);
       // each speck twinkles at its own frequency and phase, drawn from the
       // same hash that placed it, so the field never pulses as one unit
       float freq = 1.5 + fract(h * 613.7) * 5.0;
       float phase = fract(h * 271.9) * 6.28318530718;
-      float twinkle = pow(max(0.0, sin(uTime * freq + phase)), 9.0);
+      // Softened from pow 9 (a spike that was lit for only a sliver of
+      // its own cycle) to pow 5 — still a twinkle, not a steady glow, but
+      // one that spends more of its time above half brightness instead of
+      // flashing and vanishing.
+      float twinkle = pow(max(0.0, sin(uTime * freq + phase)), 5.0);
       return vec3(0.85, 0.92, 1.0) * core * twinkle;
     }
 

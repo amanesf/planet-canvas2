@@ -633,39 +633,33 @@ scene.add(globeGroup);
 const standGroup = new THREE.Group();
 scene.add(standGroup);
 
-// Simple procedural wood grain: a warm base tone with streaky darker
-// fibers running around the cylinder, plus a glossy clearcoat for the
-// "varnished tabletop display stand" read rather than flat painted wood.
-function buildWoodTexture(width = 512, height = 512): THREE.CanvasTexture {
+// A maglev-style "cyber" saucer, on request, replacing the turned-wood
+// museum pedestal. Faint brushed striping rather than flat black — a bare
+// flat colour under one warm key light reads as a silhouette with no
+// material at all, the same lesson the wood grain existed to teach, just
+// aimed at a dark gadget shell instead of a light one.
+function buildSaucerTexture(width = 512, height = 512): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
 
-  // dark walnut/espresso, not a light honey oak — a real display pedestal
-  // for something like this is a rich, near-black-brown stained hardwood
   const base = ctx.createLinearGradient(0, 0, width, 0);
-  base.addColorStop(0, '#4a2c19');
-  base.addColorStop(0.5, '#6b4023');
-  base.addColorStop(1, '#4a2c19');
+  base.addColorStop(0, '#0c0f14');
+  base.addColorStop(0.5, '#171c24');
+  base.addColorStop(1, '#0c0f14');
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, width, height);
 
-  for (let i = 0; i < 70; i++) {
-    const y = Math.random() * height;
-    // the grain was mixed so dark against so dark a base that it never
-    // resolved at all — the pedestal read as a flat brown gradient
-    ctx.strokeStyle = `rgba(30, 15, 7, ${0.16 + Math.random() * 0.26})`;
-    ctx.lineWidth = 1 + Math.random() * 3.5;
+  // fine brushed-metal streaking, vertical (around the cylinder), rather
+  // than the wood texture's long wandering fibres
+  for (let i = 0; i < 140; i++) {
+    const x = Math.random() * width;
+    ctx.strokeStyle = `rgba(120, 150, 180, ${0.03 + Math.random() * 0.06})`;
+    ctx.lineWidth = 1 + Math.random();
     ctx.beginPath();
-    let x = 0;
-    let yy = y;
-    ctx.moveTo(x, yy);
-    while (x < width) {
-      x += 16 + Math.random() * 26;
-      yy += (Math.random() - 0.5) * 16;
-      ctx.lineTo(x, yy);
-    }
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x + (Math.random() - 0.5) * 8, height);
     ctx.stroke();
   }
 
@@ -678,12 +672,13 @@ function buildWoodTexture(width = 512, height = 512): THREE.CanvasTexture {
 }
 
 const baseMaterial = new THREE.MeshPhysicalMaterial({
-  map: buildWoodTexture(),
-  roughness: 0.5,
-  metalness: 0.04,
-  clearcoat: 0.55,
-  clearcoatRoughness: 0.22,
-  envMapIntensity: 0.35,
+  map: buildSaucerTexture(),
+  color: 0x2a323d,
+  roughness: 0.32,
+  metalness: 0.55,
+  clearcoat: 0.7,
+  clearcoatRoughness: 0.18,
+  envMapIntensity: 0.5,
 });
 
 // Turned wood has no sharp arris on it: every edge is eased, and that
@@ -724,10 +719,15 @@ function addTurnedTier(
   });
 }
 
+// Same footprint and same tier heights as the wood pedestal this replaced
+// (§2-18's camera framing was measured against exactly this profile, right
+// down to the 0.385-unit gap to the globe's south pole) — only the taper on
+// the upper tier is gentler, which is what turns a turned "neck" into a
+// flat saucer lid.
 addTurnedTier(1.85, 1.65, 0.35, -1.9);
-addTurnedTier(1.65, 1.3, 0.25, -1.65);
+addTurnedTier(1.65, 1.45, 0.25, -1.65);
 
-// small brass nameplate on the front of the pedestal
+// small nameplate on the front of the saucer
 function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -749,16 +749,16 @@ function buildPlaqueTexture(width = 512, height = 160): THREE.CanvasTexture {
   return texture;
 }
 
-// Polished metal is almost pure reflection, so in a dim room a fully
-// metallic surface renders nearly black — which is what turned the
-// nameplate into a dull brown slab. Backing off the metalness lets some
-// diffuse brass colour through, and a strong environment term gives it the
-// warm sheen the reference's fittings have.
+// Brushed chrome rather than brass, to go with the saucer: a modern
+// console reads its badge in cool metal, not warm engraved trophy-plate
+// metal. Metalness held down a little short of 1, same reason the old
+// plaque did — pure metal in this dim a room renders as near-black, and
+// some diffuse response is what keeps the plate legible at all.
 const plaqueMaterial = new THREE.MeshStandardMaterial({
-  color: 0xd8ab5c,
-  metalness: 0.55,
-  roughness: 0.28,
-  envMapIntensity: 1.8,
+  color: 0xc4ccd6,
+  metalness: 0.75,
+  roughness: 0.24,
+  envMapIntensity: 1.4,
 });
 standBrass.push(new THREE.BoxGeometry(1.15, 0.32, 0.03).translate(0, -1.86, 1.78));
 
@@ -770,145 +770,95 @@ const plaqueText = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.29), plaqueTex
 plaqueText.position.set(0, -1.86, 1.797);
 standGroup.add(plaqueText);
 
-// The four screws holding the plate on. Tiny — a couple of pixels each at
-// this framing — and exactly the sort of thing that separates a fitting
-// from a decal: a real plate is fixed to the wood by something.
-const screwGeometry = new THREE.CylinderGeometry(0.018, 0.018, 0.012, 10);
-screwGeometry.rotateX(Math.PI / 2);
-[
-  [-0.5, -1.955],
-  [0.5, -1.955],
-  [-0.5, -1.765],
-  [0.5, -1.765],
-].forEach(([x, y]) => {
-  standBrass.push(screwGeometry.clone().translate(x, y, 1.797));
-});
-screwGeometry.dispose();
-
-// a thin brass trim ring right at the seam between the two wood tiers —
-// the "museum trophy base" detail that reads as a real display stand
-// rather than a plain stacked block of wood
-standBrass.push(
-  new THREE.CylinderGeometry(1.655, 1.655, 0.045, 48, 1, true).translate(0, -1.75, 0),
+// ---------------------------------------------------------------------
+// The glow ring: this saucer's one deliberately non-physical light source
+// ---------------------------------------------------------------------
+// Sitting right at the seam between the two tiers, where the brass trim
+// ring used to be — same reasoning, different century: a plain stacked
+// block of dark plastic needs *something* marking the joint or it reads as
+// two separate cylinders shoved together, and here that something is the
+// maglev base's own light instead of a metal trim.
+//
+// Two meshes, not one. The bright core is what a strip of LEDs actually
+// is: a saturated, nearly self-coloured band. But this scene has no bloom
+// pass (shadowMap and any heavier post-processing stayed off after the
+// mobile-crash scare — see the shadowMap note elsewhere in this file), so
+// a light source with a hard-edged falloff and nothing else reads as a
+// painted stripe, not a glow. A second, larger, much dimmer additive ring
+// just outside it fakes the bloom a real emitter would throw on the metal
+// around it — cheap (one more merged draw call, no render target) and it
+// is the difference between "a cyan line" and "a light".
+const RING_Y = -1.75;
+const RING_RADIUS = 1.655;
+const glowCore = new THREE.Mesh(
+  new THREE.TorusGeometry(RING_RADIUS, 0.028, 12, 96),
+  new THREE.MeshBasicMaterial({ color: 0x5be4ff }),
 );
+glowCore.rotation.x = Math.PI / 2;
+glowCore.position.y = RING_Y;
+standGroup.add(glowCore);
+
+const glowHalo = new THREE.Mesh(
+  new THREE.TorusGeometry(RING_RADIUS, 0.1, 12, 96),
+  new THREE.MeshBasicMaterial({
+    color: 0x39c8ff,
+    transparent: true,
+    opacity: 0.35,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  }),
+);
+glowHalo.rotation.x = Math.PI / 2;
+glowHalo.position.y = RING_Y;
+standGroup.add(glowHalo);
+
+// A faint upward wash on the underside of the globe and the saucer's own
+// top face — a real maglev unit's ring lights the air and the object
+// hovering in it, not just itself. One more additive disc, flush with the
+// lid, costs nothing extra to justify (no shadow, no physical light) since
+// it is standing in for bounce light this scene's single dim key does not
+// actually compute.
+const glowWash = new THREE.Mesh(
+  new THREE.CircleGeometry(1.5, 48),
+  new THREE.MeshBasicMaterial({
+    color: 0x2fb8ff,
+    transparent: true,
+    opacity: 0.06,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }),
+);
+glowWash.rotation.x = -Math.PI / 2;
+glowWash.position.y = -1.635;
+standGroup.add(glowWash);
+
+// A small emissive status dot, dead centre of the lid — the one glowing
+// "power on" detail every product shot like the reference has.
+const glowDot = new THREE.Mesh(
+  new THREE.CircleGeometry(0.05, 24),
+  new THREE.MeshBasicMaterial({ color: 0x8fefff }),
+);
+glowDot.rotation.x = -Math.PI / 2;
+glowDot.position.y = -1.634;
+standGroup.add(glowDot);
 
 // ---------------------------------------------------------------------
-// The mount: an axis through the poles, and a meridian arc to carry it
+// No mount. On request: no rod through the poles, no meridian arc — the
+// globe floats over the saucer with nothing visibly holding it up at all,
+// which is the whole point of a maglev display and the reason the axial
+// tilt above went to 0 as well (a rod gave the tilt something to be read
+// against; without one a lean just looks like the globe sitting crooked).
+// The 0.385-unit gap to the saucer's lid (same number the old rod's
+// GLOBE_CENTRE_Y produced, see setDressing.ts) now reads as levitation
+// instead of an axle, with the glow ring built above doing the work of
+// explaining *why* it floats.
 // ---------------------------------------------------------------------
-// The turned wooden neck and the brass collar that used to stand here are
-// gone. They existed to cradle a sphere that sat *in* them, and the sphere
-// no longer sits on anything — it is held on a rod, 3cm clear of the wood,
-// the way a globe is.
-//
-// A meridian ring was tried once before and removed, and the reason it was
-// removed is worth restating because this is not a quiet reversal of it.
-// That ring had a radius barely over the sphere's own, sat in the plane
-// facing the camera, and so projected to a circle riding the silhouette:
-// brass tracing the limb the whole way round, and a planet that read as
-// something mounted behind a hoop. Three things are different here, and
-// all three were measured before any of it was built:
-//
-//   - The radius is 2.66 against a sphere of 2. Every point of the arc
-//     projects at least 2.542 units from the disc's centre, so it never
-//     crosses the silhouette at all — it stands 76px off the limb rather
-//     than riding it.
-//   - It is half a ring, not a whole one. It runs from the south pin,
-//     round the left, to the north pin, and stops. Nothing encircles.
-//   - The radius is set by the weather, not by the sphere. The opaque
-//     cloud cores reach 2.540 and their halos 2.615 (measured over every
-//     vertex of all 15 cloud layers, at three points in the drift); this
-//     planet has a troposphere and a globe's ring has to clear it. That is
-//     why the brass stands so much further out than a real globe's does,
-//     and it is the whole reason the old objection does not apply.
-//
-// The half-ring is also what makes it fit. A full ring of this radius has
-// its topmost point 2.66 above the centre, which at this camera lands
-// 20.76 degrees off the axis against a 20 degree half-frame — cropped. An
-// arc that stops at the north pin tops out at the pin itself, 19.15
-// degrees, because the pin is 23.4 degrees round from the top. The
-// composition §2-18 measured out did not have to move.
-const MOUNT_RADIUS = 2.66;
-const mountBrass: THREE.BufferGeometry[] = [];
-{
-  // Where the pins are: the poles, out at the ring rather than at the
-  // sphere's surface. The arc's own frame is the world XY plane, which is
-  // also the plane the tilt turns in, so the whole mount is flat and the
-  // rod's ends meet the brass exactly.
-  const northAngle = Math.PI / 2 + AXIAL_TILT; // 113.4 degrees from +X
 
-  // The rod. Two-thirds of a unit of it shows at each pole (76px), which
-  // is the length that made this worth doing at all: at a real globe's
-  // proportions the pin would be a few pixels of brass poking out of the
-  // ice and would have read as a blemish rather than as an axis. The
-  // radius, though, is honest — 0.042 units is 5mm on a 46cm globe, and
-  // it comes out 9.6px across without any exaggeration.
-  const rod = new THREE.CylinderGeometry(0.042, 0.042, MOUNT_RADIUS * 2, 14);
-  rod.rotateZ(AXIAL_TILT);
-  rod.translate(0, GLOBE_CENTRE_Y, 0);
-  mountBrass.push(rod);
-
-  // The arc, from the north pin round the left and down into the wood.
-  //
-  // It stops 6.3 degrees past the south pin rather than at it, so the end
-  // of the brass is buried in the tier below instead of meeting its top
-  // face in a visible seam. Measured: at 250 degrees the arc is at
-  // x = -0.910, y = -1.640, and the wood there is 1.461 in radius.
-  const arcStart = northAngle;
-  const arcSweep = (250 * Math.PI) / 180 - northAngle;
-  const arc = new THREE.TorusGeometry(MOUNT_RADIUS, 0.055, 8, 96, arcSweep);
-  // A meridian ring is a flat band, not a wire. Left as a round tube it
-  // reads as coat-hanger; flattened across the ring's own plane it catches
-  // the key light on a broad face the way rolled brass does. 0.11 units
-  // wide radially (12.6px) by 0.040 thick (4.6px).
-  arc.scale(1, 1, 0.36);
-  arc.rotateZ(arcStart);
-  arc.translate(0, GLOBE_CENTRE_Y, 0);
-  mountBrass.push(arc);
-
-  // Two fittings on the top face of the wood, where the brass goes in.
-  // Without them the rod and the arc simply intersect the tier and stop,
-  // and a rod that ends inside a surface reads as a modelling mistake
-  // rather than as a joint. These are the escutcheons a real stand has.
-  //
-  // Both positions are the measured crossings of y = -1.525, the top of
-  // the upper tier: the rod at x = 1.032 and the arc at x = -1.178.
-  ([
-    [1.032, 0.115],
-    [-1.178, 0.1],
-  ] as [number, number][]).forEach(([x, r]) => {
-    mountBrass.push(
-      new THREE.CylinderGeometry(r, r * 1.25, 0.05, 20).translate(x, -1.515, 0),
-    );
-  });
-}
-
-// The mount does not share the nameplate's brass, and the first build of
-// it did. That material is tuned for a small flat plate seen almost
-// face-on — metalness held down to 0.55 and the environment pushed up to
-// 1.8 so a plaque that would otherwise render as a dull brown slab keeps
-// some warmth. Put that on a long curved band and every part of it samples
-// the environment from a different angle, so all of it lights up at once:
-// the arc came out a flat bright orange, the most saturated object in a
-// frame that is otherwise deep walnut and lamplight, and read as plastic.
-//
-// Brass in a dim room is mostly dark with one bright streak where it turns
-// to face the lamp, and that is a *curved* metal's behaviour, not a flat
-// one's — so the fix is the opposite of the plaque's: let it be properly
-// metallic and let the room be as dark as it actually is. The streak the
-// arc gets along its length is worth more than an even glow, because it is
-// the thing that says the brass is round.
-const mountMaterial = new THREE.MeshStandardMaterial({
-  color: 0x9d7c43,
-  metalness: 0.8,
-  roughness: 0.34,
-  envMapIntensity: 0.6,
-});
-
-// three meshes for the whole stand, instead of one per turned part
+// two meshes for the whole stand, instead of one per turned part
 [
   [standWood, baseMaterial],
   [standBrass, plaqueMaterial],
-  [mountBrass, mountMaterial],
 ].forEach(([parts, material]) => {
   const list = parts as THREE.BufferGeometry[];
   if (list.length === 0) return;

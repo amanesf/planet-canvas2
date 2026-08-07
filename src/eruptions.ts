@@ -240,7 +240,11 @@ function buildDustStorms(
       // sprites are wide enough to blur that back into a round blob — the
       // first render came out 60x35 px when the geometry underneath it was
       // more like 60x15.
-      sizes[p] = 2.6 + rand() * 3.4;
+      // Scaled by 0.45, same reasoning as the ash column's sprite cut: the
+      // world-space footprint below drops to 1/5, and cutting sprite size
+      // by the same amount would just pack the old sprites five times
+      // tighter rather than actually shrinking the wall.
+      sizes[p] = (2.6 + rand() * 3.4) * 0.45;
       const a = rand() * Math.PI * 2;
       // sqrt for a disc, then flattened on the across-wind axis in the
       // shader — a haboob is a front, not a puff
@@ -308,14 +312,16 @@ function buildDustStorms(
         // Low and quick, where the ash is tall and slow. Dust is lifted by
         // the gust front rather than thrown by a vent, so it reaches its
         // ceiling almost at once and then just spreads along it.
-        float rise = (1.0 - pow(1.0 - life, 1.5)) * 0.10 * power;
-        float spread = (0.010 + pow(life, 1.2) * 0.055) * power;
+        // Cut to 1/5 scale on request, same as the ash column.
+        float rise = (1.0 - pow(1.0 - life, 1.5)) * 0.02 * power;
+        float spread = (0.002 + pow(life, 1.2) * 0.011) * power;
 
         // The whole wall travels downwind — this scales with age, not with
         // height. That is the difference from the ash column, where drift
         // scales with height because shear bends a standing column; a
         // haboob is not standing anywhere, it is the front itself moving.
-        float drift = aWind * life * 0.155 * power;
+        // Also cut by 1/5 (0.155 -> 0.031) to match.
+        float drift = aWind * life * 0.031 * power;
 
         float along = spread * (1.0 + abs(aWind) * 1.8);
         float across = spread * (1.0 - abs(aWind) * 0.35);
@@ -731,7 +737,13 @@ export function buildEruptions(
       // smoke and starts looking like a faint scatter of grey dots (see the
       // note by gl_PointSize for the same trade-off measured too far the
       // other way).
-      sizes[p] = 3.2 + rand() * 4.6;
+      // Scaled by 0.45 alongside the 1/5 cut to the column's world-space
+      // footprint below (rise/spread/drift): shrinking the footprint alone
+      // would have packed the same size sprites five times tighter, which
+      // reads as a denser small blob rather than a smaller plume. Cutting
+      // sprite size less than the footprint (0.45 vs 0.2) keeps individual
+      // puffs visible instead of the column collapsing into one dot.
+      sizes[p] = (3.2 + rand() * 4.6) * 0.45;
       // where in the column this particle sits, so the plume has width and
       // billows to one side rather than rising as a needle
       const clump = clumps[i % CLUMPS_PER_VOLCANO];
@@ -837,8 +849,11 @@ export function buildEruptions(
         // (below) turns that dome into something that reads as a small
         // cloud being blown off the summit, which is both more legible at
         // this scale and closer to what the user actually asked for.
-        float rise = (1.0 - pow(1.0 - life, 2.2)) * 0.12 * power;
-        float spread = (0.005 + pow(life, 1.8) * 0.026) * power;
+        // Cut to 1/5 scale on request (0.12 -> 0.024, 0.005/0.026 ->
+        // 0.001/0.0052): the whole plume as a feature on the globe, not
+        // just its sprites or its lean.
+        float rise = (1.0 - pow(1.0 - life, 2.2)) * 0.024 * power;
+        float spread = (0.001 + pow(life, 1.8) * 0.0052) * power;
 
         // Downwind drift, with shear.
         //
@@ -855,14 +870,14 @@ export function buildEruptions(
         // what turns a straight lean into the hockey-stick profile a real
         // ash column has.
         float wind = dot(aOwner, uWind);
-        float heightFrac = rise / max(0.12 * power, 1e-4);
-        // The drift constant is what carries "flows from the vent" now
-        // that the dome itself is smaller and lower — raised again
-        // (0.42 -> 0.85) so a puff this low still reads as being *carried*
-        // sideways by the wind rather than just puffing up in place, which
-        // is the "does not flow" half of the complaint this shape change
-        // is answering.
-        float drift = wind * heightFrac * heightFrac * 0.85 * power;
+        float heightFrac = rise / max(0.024 * power, 1e-4);
+        // heightFrac is a 0..1 ratio, so this constant is itself a
+        // world-space distance and gets the same 1/5 cut as rise/spread
+        // (0.85 -> 0.17) — otherwise a five-times-smaller column would
+        // have kept leaning just as far as the old full-size one and come
+        // out looking like a wind-blown streak longer than the plume
+        // itself is tall.
+        float drift = wind * heightFrac * heightFrac * 0.17 * power;
 
         // The spread goes with the wind too: a plume in still air puffs out
         // as a circle, one in a wind is drawn out into a streak that is far
