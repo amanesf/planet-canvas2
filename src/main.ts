@@ -1054,10 +1054,24 @@ await yieldToBrowser('地形');
 const TEX_W = SETTINGS.textureWidth;
 const TEX_H = TEX_W / 2;
 await yieldToBrowser('地形');
-const terrainTexture = buildTerrainTexture(TEX_W, TEX_H);
+// G32: a quarter-resolution pass first, so the globe itself has a face
+// within a second or two of the workshop appearing, instead of staying
+// bare geometry for however long the full 2048-wide bake takes. This is
+// the "structural" candidate docs/gap-analysis §2-42/§2-44 left open —
+// the earlier work there (skipping zero-coefficient noise, the sRGB LUT)
+// cut the cost of one bake; this changes *when* a bake's result is first
+// shown, which is what the original complaint (a long silent wait, not a
+// long total time) was actually about. Total CPU work goes up a little —
+// a quarter-res bake costs roughly a sixteenth of the full one, on top
+// of the full bake that still has to run — but nothing downstream reads
+// these pixels: species placement, roads, rivers and every other system
+// read terrain.ts's own fields (heightAt, ergAt, ...) directly, never the
+// rasterised texture, so baking it twice at two resolutions doesn't
+// duplicate or risk drifting anything else.
+const terrainTexture = buildTerrainTexture(TEX_W / 4, TEX_H / 4);
 await yieldToBrowser('起伏');
 
-const terrainBumpTexture = buildBumpTexture(TEX_W, TEX_H);
+const terrainBumpTexture = buildBumpTexture(TEX_W / 4, TEX_H / 4);
 await yieldToBrowser('海');
 
 // Season phase, shared by every material below whose live color needs to
@@ -1284,6 +1298,24 @@ const globeMesh = new THREE.Mesh(geometry, globeMaterial);
 globeMesh.castShadow = true;
 globeMesh.receiveShadow = true;
 globeGroup.add(globeMesh);
+
+// G32: the refine pass. The globe above is already on screen — rendering
+// started before this file even began building textures (see
+// startRendering() near the top) — carrying the quarter-res preview, so
+// this is the point where the extra cost of having baked twice actually
+// buys something: everything after this line runs against an already-
+// present, already-spinning globe instead of a blank one. Swap the
+// Texture objects themselves rather than mutating .image, since the
+// preview and the full bake are different-sized canvases; needsUpdate
+// tells the material to rebind rather than trust its compiled state.
+await yieldToBrowser('地形（精細化）');
+const fullTerrainTexture = buildTerrainTexture(TEX_W, TEX_H);
+const fullBumpTexture = buildBumpTexture(TEX_W, TEX_H);
+globeMaterial.map = fullTerrainTexture;
+globeMaterial.bumpMap = fullBumpTexture;
+globeMaterial.needsUpdate = true;
+terrainTexture.dispose();
+terrainBumpTexture.dispose();
 
 // glossy resin-like ocean shell sitting right at sea level, covering the
 // flattened seabed below. Mostly opaque with a hard glassy clearcoat reads
