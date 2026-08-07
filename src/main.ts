@@ -1751,7 +1751,7 @@ globeGroup.add(buildLandmarks(RADIUS, BUMP_HEIGHT));
 // Traffic: shipping on the sea and airliners over it, both parented to the
 // globe because both travel *with* the planet.
 await yieldToBrowser('航路');
-const ships = buildShips(RADIUS, BUMP_HEIGHT);
+const ships = buildShips(RADIUS, BUMP_HEIGHT, dayNightUniforms.uSunDir.value);
 globeGroup.add(ships.group);
 const aircraft = buildAircraft(RADIUS);
 globeGroup.add(aircraft.group);

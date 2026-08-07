@@ -402,7 +402,7 @@ export const PORTS: [string, number, number][] = [
   ['ラゴス', 6.44, 3.4],
 ];
 
-function buildShipMesh(): THREE.Group {
+function buildShipMesh(): { ship: THREE.Group; runningLights: THREE.MeshStandardMaterial } {
   const ship = new THREE.Group();
 
   const hullMaterial = new THREE.MeshStandardMaterial({
@@ -420,9 +420,15 @@ function buildShipMesh(): THREE.Group {
   bow.position.z = 0.033;
   ship.add(bow);
 
+  // Emissive from the start, at zero — not added only at night, because a
+  // MeshStandardMaterial's emissive term is one more instruction whether it
+  // is lit or not, and adding it later would mean tracking down every ship
+  // built before the change. It costs nothing to carry at 0 by day.
   const deckMaterial = new THREE.MeshStandardMaterial({
     color: '#e8e4dc',
     roughness: 0.5,
+    emissive: '#ffcf95',
+    emissiveIntensity: 0,
   });
   const house = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.012, 0.016), deckMaterial);
   house.position.set(0, 0.01, -0.014);
@@ -434,10 +440,15 @@ function buildShipMesh(): THREE.Group {
   containers.position.set(0, 0.009, 0.008);
   ship.add(containers);
 
-  return ship;
+  return { ship, runningLights: deckMaterial };
 }
 
-export function buildShips(radius: number, bumpHeight: number): Traffic {
+export function buildShips(
+  radius: number,
+  bumpHeight: number,
+  /** The fixed key light's direction, if the caller wants the fleet to know about night. */
+  sunDirection?: THREE.Vector3,
+): Traffic {
   const group = new THREE.Group();
   const rand = mulberry32(5150);
   const seaRadius = seaLevelRadius(radius, bumpHeight);
@@ -446,6 +457,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
 
   interface Route {
     object: THREE.Group;
+    runningLights: THREE.MeshStandardMaterial;
     u: THREE.Vector3;
     v: THREE.Vector3;
     /** angle at which the sailed leg begins, measured from the first port */
@@ -540,7 +552,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
     used[c.b]++;
     const { u, v, start, span } = c;
 
-    const object = buildShipMesh();
+    const { ship: object, runningLights } = buildShipMesh();
     object.scale.setScalar(SURFACE_TRAFFIC_SCALE);
     group.add(object);
 
@@ -576,6 +588,7 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
 
     routes.push({
       object,
+      runningLights,
       u,
       v,
       start,
@@ -592,7 +605,10 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
   const pos = new THREE.Vector3();
   const ahead = new THREE.Vector3();
 
+  const fleetQuat = new THREE.Quaternion();
+  const worldPos = new THREE.Vector3();
   const tick = (t: number) => {
+    if (sunDirection) group.getWorldQuaternion(fleetQuat);
     routes.forEach((route) => {
       // Ping-pong rather than wrap: a ship reaching the far end of its
       // crossing turns round and sails back, which is both what a real
@@ -608,6 +624,20 @@ export function buildShips(radius: number, bumpHeight: number): Traffic {
       // sitting *in* the resin, not on top of it
       route.object.position.copy(pos).multiplyScalar(seaRadius + 0.006);
       orient(route.object, pos, ahead.sub(pos));
+
+      // Running lights: dark by day, and the one thing on this hull that
+      // is not the sun's to light once the terminator crosses it — the
+      // same reasoning and the same soft-edged terminator width as the
+      // volcano vents (eruptions.ts's nightAtVent), read off the ship's own
+      // *current* position rather than baked, since a route runs pole to
+      // pole across the whole day/night cycle over its ninety-plus-second
+      // crossing.
+      if (sunDirection) {
+        worldPos.copy(pos).applyQuaternion(fleetQuat);
+        const sun = worldPos.dot(sunDirection);
+        const night = THREE.MathUtils.clamp((0.16 - sun) / 0.28, 0, 1);
+        route.runningLights.emissiveIntensity = night * 1.1;
+      }
 
       for (let i = 0; i < route.wakeAlpha.length; i++) {
         const back = progress - direction * (i / (route.wakeAlpha.length - 1)) * 0.09;
