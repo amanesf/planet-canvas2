@@ -3857,14 +3857,60 @@ export function resolvedMajorCities(): [number, number, number][] {
   return resolvedCitiesCache;
 }
 
-const cityPatch = (lat: number, lon: number, size: number): UrbanFeature => ({
-  a: latLonToDir(lat, lon),
-  b: null,
-  n: null,
-  cosSpan: 1,
-  radius: cityPatchRadius(size),
-  peak: 0.55 + size * 0.45,
-});
+// G48: "cities along rivers" — the half of the ask §2-45 left undone
+// because riverAt/riverCorridorAt are a scalar water-presence field with
+// no direction in them. Rather than adding a second river representation
+// that tracks the flow network analytically (and could drift from what
+// the rasterised line actually looks like painted), the tangent is read
+// straight off riverAt itself: sample it in a compass rose around the
+// point and find which axis has the most river on both sides of it. A
+// river is a line, so the axis is only meaningful mod 180 degrees — no
+// need to distinguish upstream from downstream, only the direction it
+// runs.
+const RIVER_TANGENT_REACH = 0.01;
+function riverTangentAt(dir: THREE.Vector3): THREE.Vector3 | null {
+  if (riverAt(dir) < 0.25) return null;
+  const { east, north } = tangentFrame(dir);
+  let bestAngle = 0;
+  let bestScore = -1;
+  const probe1 = new THREE.Vector3();
+  const probe2 = new THREE.Vector3();
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI;
+    const dx = Math.cos(a) * RIVER_TANGENT_REACH;
+    const dy = Math.sin(a) * RIVER_TANGENT_REACH;
+    probe1.copy(dir).addScaledVector(east, dx).addScaledVector(north, dy).normalize();
+    probe2.copy(dir).addScaledVector(east, -dx).addScaledVector(north, -dy).normalize();
+    const score = riverAt(probe1) + riverAt(probe2);
+    if (score > bestScore) {
+      bestScore = score;
+      bestAngle = a;
+    }
+  }
+  return east.clone().multiplyScalar(Math.cos(bestAngle)).addScaledVector(north, Math.sin(bestAngle));
+}
+
+const cityPatch = (lat: number, lon: number, size: number): UrbanFeature => {
+  const dir = latLonToDir(lat, lon);
+  const radius = cityPatchRadius(size);
+  const peak = 0.55 + size * 0.45;
+  const tangent = riverTangentAt(dir);
+  if (tangent) {
+    // Reuses the corridor shape UrbanFeature already has for conurbations
+    // (§2-45's "one table, one shape, urbanDistance already knows how to
+    // read it") instead of inventing a second, anisotropic footprint —
+    // a short two-point segment along the river, gently elongated rather
+    // than a dramatic stretch, so a river city still reads as one town.
+    const half = radius * 0.55;
+    const a = dir.clone().addScaledVector(tangent, half).normalize();
+    const b = dir.clone().addScaledVector(tangent, -half).normalize();
+    const n = new THREE.Vector3().crossVectors(a, b);
+    if (n.lengthSq() > 1e-10) {
+      return { a, b, n: n.normalize(), cosSpan: a.dot(b), radius: radius * 0.85, peak };
+    }
+  }
+  return { a: dir, b: null, n: null, cosSpan: 1, radius, peak };
+};
 
 let urbanFeaturesCache: UrbanFeature[] | null = null;
 
