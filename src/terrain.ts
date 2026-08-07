@@ -721,9 +721,15 @@ export function heightAt(dir: THREE.Vector3): number {
   // Inside a designated mountain belt, that ruggedness kicks in earlier
   // and hits harder — even modest foothills there already look torn up,
   // not like an ordinary hill that just happens to be taller.
-  const rugged = fbm3(dir.x * 6.5 + 4.1, dir.y * 6.5 + 4.1, dir.z * 6.5 + 4.1, 4);
   const beltBoost = orogenyBeltAt(dir);
   const ruggedAmount = smoothstep(macro, SEA_LEVEL + 0.04 - beltBoost * 0.05, SEA_LEVEL + 0.22 - beltBoost * 0.12);
+  // smoothstep clamps to exactly 0 below its lower edge, so ruggedAmount is
+  // 0 (not just small) over every ocean texel and most low-lying land — the
+  // majority of calls. Skipping the noise there rather than computing and
+  // discarding it is free: the result is identical bit-for-bit, since a
+  // multiply by an exact 0 doesn't care what rugged would have been.
+  const rugged =
+    ruggedAmount > 0 ? fbm3(dir.x * 6.5 + 4.1, dir.y * 6.5 + 4.1, dir.z * 6.5 + 4.1, 4) : 0;
 
   let n = macro + rugged * 0.2 * ruggedAmount * (1 + beltBoost * 0.9);
 
@@ -751,8 +757,11 @@ export function heightAt(dir: THREE.Vector3): number {
   // the planet. Now the relief fades out as the ground it is texturing runs
   // out of headroom, which also happens to be correct: the Amazon and the
   // Congo really are flat.
-  const midRelief = fbm3(dir.x * 3.4 + 17.7, dir.y * 3.4 + 17.7, dir.z * 3.4 + 17.7, 3);
   const landMask = smoothstep(macro, SEA_LEVEL, SEA_LEVEL + 0.1);
+  // Same trick as ruggedAmount above: landMask is exactly 0 over open ocean
+  // (most of the sphere), so skip the noise call there.
+  const midRelief =
+    landMask > 0 ? fbm3(dir.x * 3.4 + 17.7, dir.y * 3.4 + 17.7, dir.z * 3.4 + 17.7, 3) : 0;
   n += midRelief * 0.145 * landMask;
 
   // Polar ice continents: guarantee a broad ice-sheet landmass right at
@@ -1286,8 +1295,14 @@ function sampleField(grid: Float32Array, dir: THREE.Vector3): number {
  * dune scatter, so the pale sand and the ridges standing on it are one
  * feature described once rather than two that can drift apart.
  */
-export function ergAt(dir: THREE.Vector3): number {
+function rawErgAt(dir: THREE.Vector3): number {
   return (fbm3(dir.x * 2.1 + 913, dir.y * 2.1 + 913, dir.z * 2.1 + 913, 2) + 1) * 0.5;
+}
+
+let ergGrid: Float32Array | null = null;
+export function ergAt(dir: THREE.Vector3): number {
+  ergGrid ??= bakeField(FIELD_W, FIELD_H, rawErgAt);
+  return sampleField(ergGrid, dir);
 }
 
 let aridityGrid: Float32Array | null = null;
