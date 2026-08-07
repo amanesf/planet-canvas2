@@ -3546,6 +3546,106 @@ interface UrbanFeature {
 // (the snow line and the snow flecks).
 export const cityPatchRadius = (size: number): number => 0.022 + size * 0.034;
 
+// G48: MAJOR_CITIES is real-world lat/lon, and §2-11 measured 26 of the 186
+// centres landing on water in the (downsampled) elevation raster — a
+// coastal city is exactly where a 4096-wide raster is least reliable.
+// landmarks.ts already nudges its buildings off water with its own
+// nudgeToLand, independently of this file's paint. That is precisely the
+// "two systems computing the same fact separately" shape the comment above
+// warns about (size already learned that lesson; position had not): a city
+// whose raw coordinate is offshore gets its grey patch, its night glow and
+// its buildings each doing their own best-effort correction, free to land
+// in different places along the same coastline. Nudging once, here, and
+// handing the result to both consumers keeps them in the same spot by
+// construction — the same fix the size fields already got.
+//
+// Deliberately not done at module-load time: `MAJOR_CITIES.map(...)` at the
+// top level would run during import, before main.ts's `await
+// loadRealElevationData` resolves, so heightAt would see no raster at all
+// (realElevationAt returns a flat SEA_LEVEL) and every "nudge" would be
+// judged against a world with no coastline. Memoized on first real call
+// instead, by which point the raster is loaded.
+function tangentFrame(dir: THREE.Vector3): { east: THREE.Vector3; north: THREE.Vector3 } {
+  const east = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), dir);
+  if (east.lengthSq() < 1e-8) east.set(1, 0, 0);
+  east.normalize();
+  const north = new THREE.Vector3().crossVectors(dir, east).normalize();
+  return { east, north };
+}
+
+// An 8-point ring rather than the centre alone, for the same reason
+// landmarks.ts tests a footprint and not a point: a centre just past the
+// threshold can still have most of its patch in the water.
+//
+// Radii match landmarks.ts's placeCityBlocks exactly (`full * scale * 0.6`,
+// full = cityPatchRadius(size) * 0.62) rather than a fresh guess — a wider
+// ring here would reject sites landmarks.ts is happy with (a bay city like
+// Osaka legitimately has open water inside cityPatchRadius itself, long
+// before the 0.62 fraction that actually matters), which is exactly what
+// the first version of this function got wrong: it used the raw, unscaled
+// patch radius and ended up moving 100 of 186 cities, several by multiple
+// degrees, because it was asking "is there dry land for a town twice this
+// city's painted size" instead of "is there room for the town".
+function cityFits(lat: number, lon: number, ringRadius: number): boolean {
+  const dir = latLonToDir(lat, lon);
+  if (heightAt(dir) < SEA_LEVEL) return false;
+  const { east, north } = tangentFrame(dir);
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2;
+    const ring = dir
+      .clone()
+      .addScaledVector(east, Math.cos(a) * ringRadius)
+      .addScaledVector(north, Math.sin(a) * ringRadius)
+      .normalize();
+    if (heightAt(ring) < SEA_LEVEL) return false;
+  }
+  return true;
+}
+
+// Spiral outward in whole rings, same shape as landmarks.ts's nudgeToLand:
+// a site that already fits is not moved, and one that doesn't takes the
+// shortest way out. Wide ring first, tight ring as a fallback for a site
+// too small for the full footprint — same two-tier test placeCityBlocks
+// makes at its (now pre-resolved, usually already-fitting) centre.
+function nudgeCityAshore(lat: number, lon: number, size: number): [number, number] {
+  const full = cityPatchRadius(size) * 0.62;
+  const wide = full * 0.6;
+  const tight = full * 0.78 * 0.6;
+  const fits = (la: number, lo: number) => cityFits(la, lo, wide) || cityFits(la, lo, tight);
+  if (fits(lat, lon)) return [lat, lon];
+  const lonScale = 1 / Math.max(0.15, Math.cos((lat * Math.PI) / 180));
+  for (let ring = 0.35; ring <= 7.01; ring += 0.35) {
+    for (let k = 0; k < 32; k++) {
+      const a = (k / 32) * Math.PI * 2;
+      const la = lat + Math.sin(a) * ring;
+      const lo = lon + Math.cos(a) * ring * lonScale;
+      if (Math.abs(la) > 84) continue;
+      if (fits(la, lo)) return [la, lo];
+    }
+  }
+  // Nothing within 7 degrees fits — leave it where it was rather than drop
+  // it; urbanAt already refuses to paint over water, so the worst case is
+  // the patch it painted before this fix existed.
+  return [lat, lon];
+}
+
+let resolvedCitiesCache: [number, number, number][] | null = null;
+
+/**
+ * `MAJOR_CITIES`, with every entry nudged onto land — the one table both
+ * the paint (`cityPatch` below) and landmarks.ts's city blocks build on, so
+ * a harbour city's grey patch, night glow and buildings all sit on the same
+ * stretch of shore instead of three independently-nudged ones.
+ */
+export function resolvedMajorCities(): [number, number, number][] {
+  if (resolvedCitiesCache) return resolvedCitiesCache;
+  resolvedCitiesCache = MAJOR_CITIES.map(([lat, lon, size]) => {
+    const [la, lo] = nudgeCityAshore(lat, lon, size);
+    return [la, lo, size];
+  });
+  return resolvedCitiesCache;
+}
+
 const cityPatch = (lat: number, lon: number, size: number): UrbanFeature => ({
   a: latLonToDir(lat, lon),
   b: null,
@@ -3555,20 +3655,27 @@ const cityPatch = (lat: number, lon: number, size: number): UrbanFeature => ({
   peak: 0.55 + size * 0.45,
 });
 
-const URBAN_FEATURES: UrbanFeature[] = MAJOR_CITIES.map(([lat, lon, size]) =>
-  cityPatch(lat, lon, size),
-);
-for (const [lat1, lon1, lat2, lon2, width, intensity] of CONURBATIONS) {
-  const a = latLonToDir(lat1, lon1);
-  const b = latLonToDir(lat2, lon2);
-  URBAN_FEATURES.push({
-    a,
-    b,
-    n: new THREE.Vector3().crossVectors(a, b).normalize(),
-    cosSpan: a.dot(b),
-    radius: width,
-    peak: intensity,
-  });
+let urbanFeaturesCache: UrbanFeature[] | null = null;
+
+function urbanFeatures(): UrbanFeature[] {
+  if (urbanFeaturesCache) return urbanFeaturesCache;
+  const features: UrbanFeature[] = resolvedMajorCities().map(([lat, lon, size]) =>
+    cityPatch(lat, lon, size),
+  );
+  for (const [lat1, lon1, lat2, lon2, width, intensity] of CONURBATIONS) {
+    const a = latLonToDir(lat1, lon1);
+    const b = latLonToDir(lat2, lon2);
+    features.push({
+      a,
+      b,
+      n: new THREE.Vector3().crossVectors(a, b).normalize(),
+      cosSpan: a.dot(b),
+      radius: width,
+      peak: intensity,
+    });
+  }
+  urbanFeaturesCache = features;
+  return features;
 }
 
 // A flat loop over 28 dot products was free. A flat loop over ~190 features
@@ -3582,6 +3689,7 @@ for (const [lat1, lon1, lat2, lon2, width, intensity] of CONURBATIONS) {
 const URBAN_BUCKET_LAT = 36;
 const URBAN_BUCKET_LON = 72;
 const buildUrbanBuckets = (): Int32Array[] => {
+  const features = urbanFeatures();
   const lists: number[][] = Array.from(
     { length: URBAN_BUCKET_LAT * URBAN_BUCKET_LON },
     () => [],
@@ -3597,16 +3705,19 @@ const buildUrbanBuckets = (): Int32Array[] => {
       const lon = -180 + (ix + 0.5) * (360 / URBAN_BUCKET_LON);
       dir.copy(latLonToDir(lat, lon));
       const bucket = lists[iy * URBAN_BUCKET_LON + ix];
-      for (let i = 0; i < URBAN_FEATURES.length; i++) {
-        const f = URBAN_FEATURES[i];
-        if (urbanDistance(dir, f) < f.radius + cellSlack) bucket.push(i);
+      for (let i = 0; i < features.length; i++) {
+        if (urbanDistance(dir, features[i]) < features[i].radius + cellSlack) bucket.push(i);
       }
     }
   }
   return lists.map((l) => Int32Array.from(l));
 };
 
-const URBAN_BUCKETS = buildUrbanBuckets();
+let urbanBucketsCache: Int32Array[] | null = null;
+function urbanBuckets(): Int32Array[] {
+  urbanBucketsCache ??= buildUrbanBuckets();
+  return urbanBucketsCache;
+}
 
 // ---------------------------------------------------------------------
 // Roads (G46)
@@ -3813,7 +3924,7 @@ function bucketIndex(dir: THREE.Vector3): number {
 }
 
 function urbanBucketFor(dir: THREE.Vector3): Int32Array {
-  return URBAN_BUCKETS[bucketIndex(dir)];
+  return urbanBuckets()[bucketIndex(dir)];
 }
 
 /**
@@ -3835,9 +3946,10 @@ function urbanBucketFor(dir: THREE.Vector3): Int32Array {
 export function urbanAt(dir: THREE.Vector3): number {
   const bucket = urbanBucketFor(dir);
   if (bucket.length === 0) return 0;
+  const features = urbanFeatures();
   let best = 0;
   for (let i = 0; i < bucket.length; i++) {
-    const f = URBAN_FEATURES[bucket[i]];
+    const f = features[bucket[i]];
     const dist = urbanDistance(dir, f);
     if (dist >= f.radius) continue;
     // Dense core, ragged suburbs: the falloff is steep near the middle and
@@ -3878,7 +3990,7 @@ function drawGlow(
 }
 
 // How thickly the country around a point is settled, at the scale of a
-// region rather than of a town: the same URBAN_FEATURES table the paint and
+// region rather than of a town: the same urbanFeatures() table the paint and
 // the vegetation cull already read, blurred out to a few hundred kilometres.
 //
 // This is what tells the scatter that the Ganges plain, the North China
@@ -3908,7 +4020,7 @@ function settlementHaloAt(dir: THREE.Vector3): number {
     // than one isolated large one, which is the actual difference between
     // Europe and, say, Buenos Aires.
     let miss = 1;
-    for (const f of URBAN_FEATURES) {
+    for (const f of urbanFeatures()) {
       const dist = urbanDistance(d, f);
       const reach = SETTLEMENT_REACH + f.radius * 2;
       if (dist > reach * 2.2) continue;
@@ -3982,7 +4094,7 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
     drawGlow(ctx, u * width, v * height, 0.9 + rand() * 2.0, 0.05 + score * 0.17);
   }
 
-  // Both consumers read the same table. The paint samples URBAN_FEATURES as
+  // Both consumers read the same table. The paint samples urbanFeatures() as
   // a field; this pass walks the same features and lays glows along them, so
   // a city that is grey at noon is lit at midnight and a corridor cannot
   // exist in one and not the other.
@@ -4002,7 +4114,7 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
   };
 
   const step = new THREE.Vector3();
-  for (const f of URBAN_FEATURES) {
+  for (const f of urbanFeatures()) {
     if (!f.b) {
       lit(f.a, (f.peak - 0.55) / 0.45, 1);
       continue;

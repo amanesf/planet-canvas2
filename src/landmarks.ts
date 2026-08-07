@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  MAJOR_CITIES,
   SEA_LEVEL,
   cityPatchRadius,
   latLonToDir,
+  resolvedMajorCities,
   sampledHeight,
 } from './terrain';
 import { mulberry32 } from './spatialHash';
@@ -1067,16 +1067,18 @@ interface CityStats {
 }
 
 /**
- * Blocks for every city in MAJOR_CITIES.
+ * Blocks for every city in `resolvedMajorCities()`.
  *
  * Water is tested twice, and it has to be. §2-11 measured 26 of the 186
  * centres landing on water in the elevation raster, and §2-28 found 2 of
  * 12 airports doing the same: a coastal city downsampled to a 4096-wide
- * raster is as likely as not to come out in the sea. So the centre is
- * nudged ashore first, and then every individual block is tested again on
- * its own footprint — a centre that passes can still scatter half its
- * blocks into the bay, which is exactly what a harbour city looks like
- * from above.
+ * raster is as likely as not to come out in the sea. `resolvedMajorCities`
+ * (G48) already nudges the centre ashore — the same table `urbanAt`'s paint
+ * and the night lights build on, so the blocks land on the same stretch of
+ * shore as the grey patch and the glow rather than a separately-nudged one
+ * — and every individual block is tested again here on its own footprint,
+ * because a centre that passes can still scatter half its blocks into the
+ * bay, which is exactly what a harbour city looks like from above.
  */
 function placeCityBlocks(
   radius: number,
@@ -1086,7 +1088,7 @@ function placeCityBlocks(
   const stats: CityStats = { cities: 0, blocks: 0, nudged: 0, dropped: 0, onWater: 0, empty: 0, cramped: 0 };
   const basis = new THREE.Matrix4();
 
-  MAJOR_CITIES.forEach(([lat0, lon0, size], index) => {
+  resolvedMajorCities().forEach(([lat0, lon0, size], index) => {
     const rand = mulberry32(CITY_BLOCK_SEED + index * 7919);
 
     // The painted patch, in radians, straight out of terrain.ts's
