@@ -1632,10 +1632,32 @@ oceanMaterial.onBeforeCompile = (shader) => {
         vec3 shaped =
           vec3(1.0, 0.94, 0.84) * (lamp.y * 0.40 + lamp.x * 0.34 + lamp.z * 0.14) * sheen
           + vec3(0.92, 0.78, 0.58) * (card.y * 0.030 + card.z * 0.018) * sheen;
+
+        // G16: sun glint. The lamp reflection above is built from
+        // geometryNormal — the smooth macro swell — which is exactly what
+        // makes it read as one coherent softbox. Real glitter on choppy
+        // water is the opposite: hundreds of wave facets each catching the
+        // light at a slightly different tilt, breaking one highlight into a
+        // scattered field of sparkle. normal at this point already
+        // carries the bump map's per-texel wave tilt (normal_fragment_maps
+        // runs before this chunk) — reused here rather than adding a
+        // second noise source, the same rule this project keeps following.
+        // A narrow lobe is what turns that per-texel tilt into visible
+        // sparkle: wide enough to miss it, this would just be a slightly
+        // softer version of the same blob.
+        vec3 glintNormal = transformDirectionByInverseViewMatrix(normal, viewMatrix);
+        vec3 glintMirror = reflect(-worldView, glintNormal);
+        vec3 glintLamp = sourceLobe(
+          glintMirror, uLampAxis, uLampRight, uLampUp, vec2(0.05, 0.03), 0.01, 0.05);
+        // Confined to the lamp's own spill (lamp.z) so the sparkle reads as
+        // texture *inside* that reflection, not noise scattered over the
+        // whole sea.
+        vec3 glint = vec3(1.0, 0.97, 0.9) * glintLamp.y * lamp.z * 2.2;
+
         #ifdef USE_CLEARCOAT
-          clearcoatSpecularDirect += shaped;
+          clearcoatSpecularDirect += shaped + glint;
         #else
-          reflectedLight.directSpecular += shaped;
+          reflectedLight.directSpecular += shaped + glint;
         #endif
       }`,
     )
