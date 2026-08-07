@@ -126,7 +126,22 @@ function coverageFor(precipitation: number, y: number): number {
 export type CloudType = 'cumulus' | 'stratus' | 'cirrus' | 'storm' | 'typhoon';
 
 interface CloudTypeParams {
-  /** min/max arc length in radians */
+  /**
+   * 'band': a chain of nodules walked along a great-circle arc (real
+   * stratus sheets and cirrus streaks are genuinely elongated by the wind
+   * that combed them, so a line-like footprint is *correct* for these
+   * two). 'cluster': nodules scattered in a 2D disc around a centre
+   * instead — real cumulus and cumulonimbus are separate individual
+   * cells, not one continuous streak, and building every type as a band
+   * (as this used to) is what made the whole sky read as "clouds always
+   * form in a line" regardless of type. See buildCloudCluster.
+   */
+  layout: 'band' | 'cluster';
+  /**
+   * 'band': min/max arc length in radians. 'cluster': min/max footprint
+   * radius in radians — a different quantity, reusing the field because
+   * both are "how far this system's own geometry reaches."
+   */
   arc: [number, number];
   hoverBase: number;
   hoverBulk: number;
@@ -177,8 +192,15 @@ interface CloudTypeParams {
 }
 
 const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
+  // Real fair-weather cumulus is a handful of separate, roughly round
+  // puffs, not one drawn-out streak — 'cluster' (see CloudTypeParams.layout)
+  // and a footprint radius an order of magnitude smaller than the old
+  // 0.3-0.64 rad *arc length* this used to have, which alone was up to a
+  // third of the visible globe's diameter and is exactly what "oddly huge
+  // clouds" was describing.
   cumulus: {
-    arc: [0.3, 0.64],
+    layout: 'cluster',
+    arc: [0.05, 0.095],
     hoverBase: 0.16,
     hoverBulk: 0.11,
     sizeBase: 0.036,
@@ -197,8 +219,14 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
   // A flat, low, wide overcast sheet — few tall lumps, lots of shallow
   // wide ones packed close together so the gaps between nodules close up
   // into one hazy layer instead of reading as a string of puffs.
+  // Kept as a band — a real overcast sheet genuinely is elongated along
+  // the front that made it — but the old 0.55-0.95 rad arc length was
+  // enormous (a single sheet could span half the visible globe). Shortened
+  // so a stratus deck reads as one patch of overcast among others, not the
+  // one shape the whole sky is made of.
   stratus: {
-    arc: [0.55, 0.95],
+    layout: 'band',
+    arc: [0.22, 0.4],
     hoverBase: 0.09,
     hoverBulk: 0.03,
     sizeBase: 0.05,
@@ -220,8 +248,14 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
   // Thin, sparse, high wisps — the opposite instinct from every other
   // type: fewer nodules, not more, each one small and stretched long
   // along the band so it reads as combed rather than piled.
+  // Also a real band — cirrus streaks are wind-drawn ice, the most
+  // legitimately line-shaped cloud in the sky — but 0.75-1.25 rad was
+  // 43-72°, i.e. it alone could stretch most of the way across the visible
+  // disc. Shortened so there can be several separate streaks at different
+  // latitudes instead of one dominating swoop.
   cirrus: {
-    arc: [0.75, 1.25],
+    layout: 'band',
+    arc: [0.32, 0.55],
     hoverBase: 0.34,
     hoverBulk: 0.06,
     sizeBase: 0.018,
@@ -244,6 +278,7 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
   // buildTyphoon) — so `arc` is unused here; the rest of the numbers are
   // what the eyewall's cotton is made of: dense, tall, dark underneath.
   typhoon: {
+    layout: 'band', // unused — see the comment above, placement is bespoke
     arc: [0, 0],
     hoverBase: 0.13,
     hoverBulk: 0.16,
@@ -268,8 +303,12 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
   // Tall and dense with a dark, heavy underside — a cumulonimbus cell,
   // the only type that gets its own material (see buildClouds) so it can
   // flicker with lightning independently of the calm weather around it.
+  // A thunderhead is a discrete cell, not a streak — 'cluster', and a much
+  // smaller footprint than the old 0.22-0.4 rad arc length, so it reads as
+  // one compact tall tower rather than a smeared line of storm cells.
   storm: {
-    arc: [0.22, 0.4],
+    layout: 'cluster',
+    arc: [0.045, 0.075],
     hoverBase: 0.14,
     hoverBulk: 0.2,
     sizeBase: 0.05,
@@ -619,6 +658,118 @@ function buildCloudBand(
         band,
       }));
     }
+  }
+}
+
+/**
+ * One cloud: a handful of puffs scattered in a disc around a centre point,
+ * instead of walked along a great-circle arc like buildCloudBand.
+ *
+ * This exists because making *every* cloud type a band was the real bug
+ * behind "clouds always form in a line" — latitude diversity (see the
+ * seed quota in buildClouds) fixes where systems appear, but every system
+ * was still individually shaped like a stretched-out streak, cumulus and
+ * thunderheads included, which is not what those look like in life. A
+ * cumulus field is a scatter of separate rounded puffs; a cumulonimbus is
+ * one compact tall cell. Both want a *disc* footprint, not a *line* one.
+ *
+ * Reuses the same statistics buildCloudBand uses for texture — ranked
+ * masses with shoulders, plus a fringe of small unscaled tufts — just
+ * arranged radially around a centre instead of along a spine, so the two
+ * layouts still read as the same material.
+ */
+function buildCloudCluster(
+  center: THREE.Vector3,
+  band: number,
+  params: CloudTypeParams,
+  rand: () => number,
+  out: Nodule[],
+): void {
+  const east = new THREE.Vector3();
+  const north = new THREE.Vector3();
+  if (!tangentFrame(center, east, north)) {
+    // Pole fallback: tangentFrame only fails within ~0.01 rad of the axis,
+    // far closer than any weather-zone quota ever samples, but a cluster
+    // still needs *some* orthonormal basis to scatter puffs in.
+    const arbitrary = Math.abs(center.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    east.crossVectors(arbitrary, center).normalize();
+    north.crossVectors(center, east).normalize();
+  }
+
+  const radius = params.arc[0] + rand() * (params.arc[1] - params.arc[0]);
+  const puffCount = params.clusterBase + 2 + Math.floor(rand() * 3);
+
+  // Puff centres, area-uniform (sqrt) but biased inward (extra pow) so the
+  // scatter still reads as one cluster with satellites rather than an even
+  // sprinkle — the disc equivalent of buildCloudBand's rank-by-position.
+  const puffs: { x: number; y: number }[] = [];
+  for (let i = 0; i < puffCount; i++) {
+    const a = rand() * Math.PI * 2;
+    const r = Math.pow(rand(), 0.6) * radius;
+    puffs.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
+  }
+  // Guarantee a core mass at the true centre rather than leaving it to
+  // chance — without this a cluster could roll every puff out toward its
+  // rim and end up a hollow ring instead of a mass with satellites.
+  puffs[0].x *= 0.25;
+  puffs[0].y *= 0.25;
+  puffs.sort((a, b) => a.x * a.x + a.y * a.y - (b.x * b.x + b.y * b.y));
+
+  const point = new THREE.Vector3();
+  puffs.forEach((puff, pi) => {
+    const dist = Math.sqrt(puff.x * puff.x + puff.y * puff.y) / Math.max(radius, 1e-4);
+    const rankSize = Math.pow(0.75, pi);
+    const bulk = 1 - dist * 0.6; // masses taper outward, same shape as a band's sin(t*PI) peak
+
+    point.copy(center).addScaledVector(east, puff.x).addScaledVector(north, puff.y).normalize();
+
+    // One or two lumps per puff for internal texture, same as a band step.
+    const massesHere = 1 + Math.floor(rand() * 2);
+    for (let m = 0; m < massesHere; m++) {
+      const grain = 0.85 + rand() * rand() * 1.5;
+      // Less elongation ceiling than a band gets: cumulus and thunderheads
+      // stay rounder lumps, they are not fibres pulled out by shear.
+      const long = 1 + Math.pow(rand(), 1.5) * (params.drawOut * 0.75 - 1);
+      const dir = point
+        .clone()
+        .addScaledVector(east, (rand() - 0.5) * 0.012)
+        .addScaledVector(north, (rand() - 0.5) * 0.012)
+        .normalize();
+      out.push(makeNodule(dir, {
+        hover: params.hoverBase + bulk * params.hoverBulk + rand() * 0.022,
+        size: (params.sizeBase + bulk * params.sizeBulk) * rankSize * grain * (0.75 + rand() * 0.4),
+        // No spine to comb along, so bearing is free — a puffy lump does
+        // not need to agree with its neighbours about which way it leans.
+        bearing: rand() * Math.PI * 2,
+        sx: long,
+        sy: 0.92 + rand() * 0.34,
+        sz: drawnOut(long) * (0.9 + rand() * 0.26),
+        band,
+      }));
+    }
+  });
+
+  // A light fringe of tufts just outside the puffs, same role as a band's:
+  // stops the cluster's edge from being a hard cutoff.
+  const tufts = Math.floor(params.tuft * 1.2 + rand());
+  for (let c = 0; c < tufts; c++) {
+    const a = rand() * Math.PI * 2;
+    const r = radius * (1.05 + rand() * 0.55);
+    const dir = center
+      .clone()
+      .addScaledVector(east, Math.cos(a) * r)
+      .addScaledVector(north, Math.sin(a) * r)
+      .normalize();
+    const long = 1.2 + rand() * Math.max(0.1, params.drawOut * 0.7 - 1.2);
+    out.push(makeNodule(dir, {
+      hover: params.hoverBase + rand() * 0.03,
+      size: (params.sizeBase + params.sizeBulk * 0.25) * (0.3 + rand() * rand() * 0.5),
+      bearing: rand() * Math.PI * 2,
+      sx: long,
+      sy: 0.85 + rand() * 0.25,
+      sz: drawnOut(long) * (0.82 + rand() * 0.26),
+      band,
+    }));
   }
 }
 
@@ -1190,14 +1341,27 @@ export function buildClouds(
   // kept (so a bone-dry stretch of storm track can still come up emptier
   // than a wet one), but a dry zone can no longer be crowded out of
   // existing at all by a wetter one elsewhere on the planet.
+  // Raised again now that most types are small clusters rather than huge
+  // bands (see CloudTypeParams.layout below): the old counts were sized
+  // for a sky made of a handful of enormous systems, and produced a
+  // visibly sparse, empty-looking sky once cumulus/storm shrank to their
+  // real proportions. More, smaller systems is the actual fix for "clouds
+  // form in one line" reading as one shape everywhere — a scattered field
+  // needs enough members to look like a field.
   const LATITUDE_ZONES: { loDeg: number; hiDeg: number; slots: number }[] = [
-    { loDeg: 0, hiDeg: 12, slots: 1 }, // ITCZ core
-    { loDeg: 12, hiDeg: 30, slots: 2 }, // tropics / subtropical fringe
-    { loDeg: 30, hiDeg: 55, slots: 2 }, // mid-latitude storm track
+    { loDeg: 0, hiDeg: 12, slots: 3 }, // ITCZ core
+    { loDeg: 12, hiDeg: 30, slots: 3 }, // tropics / subtropical fringe
+    { loDeg: 30, hiDeg: 55, slots: 3 }, // mid-latitude storm track
     { loDeg: 55, hiDeg: 78, slots: 2 }, // sub-polar
     { loDeg: 78, hiDeg: 90, slots: 1 }, // polar cap
   ];
-  const MIN_SEPARATION_DOT = 0.68; // ~47°, unchanged from before
+  // Tightened from 0.68 (~47°): that spacing was sized to keep the old
+  // huge bands (up to 72° of arc) from overlapping, but it also capped how
+  // many systems could ever fit on the planet at once — at 47° apart, a
+  // single latitude circle can hold at most seven or eight. Now that most
+  // types are compact clusters and the remaining bands are a third their
+  // old length, systems can sit closer without touching.
+  const MIN_SEPARATION_DOT = 0.9; // ~26°
 
   for (const zone of LATITUDE_ZONES) {
     for (const hemi of [1, -1]) {
@@ -1251,7 +1415,12 @@ export function buildClouds(
   const bandType: CloudType[] = [];
   seeds.forEach((seed, band) => {
     bandType.push(seed.type);
-    buildCloudBand(seed.dir, band, CLOUD_TYPE_PARAMS[seed.type], rand, nodules);
+    const params = CLOUD_TYPE_PARAMS[seed.type];
+    if (params.layout === 'cluster') {
+      buildCloudCluster(seed.dir, band, params, rand, nodules);
+    } else {
+      buildCloudBand(seed.dir, band, params, rand, nodules);
+    }
   });
 
   // One cyclone, not two. A pair (one per hemisphere) meant that at almost
