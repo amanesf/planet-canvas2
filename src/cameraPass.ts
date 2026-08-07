@@ -46,9 +46,14 @@ export const CameraPassShader = {
     /** radial colour fringing at the frame edge, in UV units */
     uAberration: { value: 0.0016 },
     /** how much of the bright-area glow bleeds back into the frame */
-    uBloomStrength: { value: 0.12 },
+    // Raised from 0.12 on request, as the "beautiful anime filter" this
+    // scene actually wanted instead of cel-shading's flat bands — a
+    // richer bloom off the sunlit cloud tops, the lamp, the cyber ring
+    // and the sparkle is what an anime key visual's glow is actually made
+    // of.
+    uBloomStrength: { value: 0.32 },
     /** glow sample radius, in UV units */
-    uBloomRadius: { value: 0.008 },
+    uBloomRadius: { value: 0.011 },
     /** thin veiling haze mixed over the whole frame, like dust in the air */
     uHaze: { value: 0.035 },
     /**
@@ -62,13 +67,17 @@ export const CameraPassShader = {
     /** sparkle grid cell size, in pixels */
     uSparkleScale: { value: 7.0 },
     /**
-     * A small colour-grade pass on request ("aim for a high-quality anime
-     * look overall") — punchier saturation and a gentle S-curve, the two
+     * A colour-grade pass on request ("aim for a high-quality anime look
+     * overall") — punchier saturation and a gentle S-curve, the two
      * cheapest levers that actually move a render toward that look without
      * touching any one system's own colours. 1.0/0.0 would be a no-op.
+     * Raised again (1.16 -> 1.3, 0.1 -> 0.15) once cel-shading (tried and
+     * dropped — see the note by the colour grade below) turned out not to
+     * be what "beautiful" meant here; this and the bloom above are now
+     * carrying the whole ask on their own.
      */
-    uSaturation: { value: 1.16 },
-    uContrast: { value: 0.1 },
+    uSaturation: { value: 1.3 },
+    uContrast: { value: 0.15 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -292,6 +301,13 @@ export const CameraPassShader = {
       float luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
       colour = mix(vec3(luma), colour, uSaturation);
       colour = mix(colour, smoothstep(0.0, 1.0, colour), uContrast);
+
+      // Cel shading was tried here (quantizing the finished frame's
+      // luminance into bands) and dropped on request — even faded out
+      // over defocus, banding a lens-blurred bokeh background never reads
+      // as "anime," it reads as compression noise. "アニメ調の美しい
+      // フィルタ" turned out to mean glow and colour, not flat tones: see
+      // uBloomStrength/uSaturation above, both raised for this instead.
 
       // Sensor grain, animated so it does not sit on the image like a
       // texture. Kept below the level where it is consciously visible: the

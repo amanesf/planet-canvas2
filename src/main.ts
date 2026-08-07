@@ -635,26 +635,33 @@ scene.add(buildWorkshop());
 
 const globeGroup = new THREE.Group();
 globeGroup.position.set(0, GLOBE_SEAT_Y, 0);
-// Tilt first, then spin — which is not what three does by default, and the
-// difference is the whole difference between a planet and a wobbling top.
+// This group's rotation carries the day spin (y, inner) and the user's own
+// north-south dial (x, outer) — the axial tilt (z) that used to live here
+// is permanently 0 now that the rod through the poles is gone (see the
+// cyber-panel commit). Which of x/y is "inner" vs "outer" in the Euler
+// composition is not a style choice, the same way it was not one when this
+// used to be about a rod tracking the pole: whichever term is *outer* is a
+// rotation around a truly fixed world axis regardless of what the inner
+// term does, and whichever is *inner* gets carried around by the outer
+// term instead.
 //
-// This group carries two rotations: z is the axial tilt, y is the day's
-// spin. Under the default XYZ order three composes them as Rx·Ry·Rz, so
-// the z tilt is applied *innermost* and the y spin then turns the already
-// tilted globe about the world's vertical. The pole does not stay put: it
-// walks round a cone. Measured at the current 23.4 degrees, a quarter turn
-// takes the north pole 32.6 degrees away from where the brass rod is, and
-// half a turn takes it 46.8 — the axis would visibly climb out of its own
-// mounting and back in again, once per day.
-//
-// It has been wrong the whole time and could not be seen, because the lean
-// was 0.04 radians and a 2.3 degree cone is nothing. Putting a rod through
-// the poles is what made it a real bug: the rod is fixed to the stand, so
-// it cannot follow a pole that moves, and any error shows up immediately as
-// brass that misses the ice. ZYX composes as Rz·Ry·Rx, which spins about
-// the local axis and then tilts the result — pole nailed to the rod at
-// every spin angle, measured 0.0 degrees off at all four quarters.
-globeGroup.rotation.order = 'ZYX';
+// Y (day spin + the east-west dial) is inner, X (the north-south dial) is
+// outer, which is 'XYZ' — the opposite of the 'ZYX' this group used to
+// carry back when Z (the axial tilt) needed to be the inner term so the
+// rod's fixed mount could track a pole that only ever wandered a couple of
+// degrees. Getting this backwards ('ZYX', X inner/Y outer, which is what a
+// first pass at the two dials shipped with) is a real bug, not a cosmetic
+// one: with pitch on the *inner* term, pitching the globe bakes the tilt
+// into the body, and then any further yaw — including the day spin running
+// in the background — carries that tilt around with it, so a pole tipped
+// toward the viewer visibly sweeps into a circle as the planet keeps
+// turning instead of staying tipped toward the viewer the way "回して視点
+// 正面側で" (spin it, but always relative to the front of the viewpoint)
+// asks for. With pitch outer, the identity `Ry(yaw)` leaves the poles (on
+// the Y axis) untouched, and `Rx(pitch)` alone decides where they point,
+// so the north-south dial's effect never depends on how much yaw — dial or
+// day spin — has accumulated.
+globeGroup.rotation.order = 'XYZ';
 scene.add(globeGroup);
 
 // terrain color is painted once onto a texture (crisp, cheap to sample)
@@ -1046,8 +1053,13 @@ const flagWorldDir = new THREE.Vector3();
 const flagLocalDir = new THREE.Vector3();
 const flagGlobeQuat = new THREE.Quaternion();
 const flagGlobeCentre = new THREE.Vector3();
-const flagRay = new THREE.Ray();
-const flagForward = new THREE.Vector3();
+const flagRaycaster = new THREE.Raycaster();
+// Slightly above dead centre in normalised device coordinates (+Y is up in
+// NDC), on request — a flag planted at the exact optical centre of the
+// frame is fine geometrically but sits low relative to how the globe's own
+// mass is framed (see TARGET_Y's own note on why the aim point is already
+// off-centre for composition). 0.18 is a small nudge, not a relocation.
+const FLAG_NDC_BIAS = new THREE.Vector2(0, 0.18);
 const flagHit = new THREE.Vector3();
 flagButton.addEventListener('click', () => {
   // Was `camera.position - globeCentre`, which is the direction from the
@@ -1059,16 +1071,18 @@ flagButton.addEventListener('click', () => {
   // 0). Those are different points, so the old formula planted the flag
   // wherever a line from the globe's centre through the camera happened
   // to land — not the point the viewer is actually looking at, which is
-  // what "正面視点" asked for. The correct point is where the camera's own
-  // forward ray actually meets the sphere.
-  camera.getWorldDirection(flagForward);
+  // what "正面視点" asked for. Using a raycaster through a screen-space
+  // point (here, a touch above dead centre — see FLAG_NDC_BIAS) is both
+  // the fix and the way to bias the pick without hand-rolling the same
+  // camera-ray math a second time.
+  flagRaycaster.setFromCamera(FLAG_NDC_BIAS, camera);
   globeGroup.getWorldPosition(flagGlobeCentre);
-  flagRay.set(camera.position, flagForward);
   const sphere = new THREE.Sphere(flagGlobeCentre, RADIUS);
-  if (!flagRay.intersectSphere(sphere, flagHit)) {
+  if (!flagRaycaster.ray.intersectSphere(sphere, flagHit)) {
     // Should not happen at this camera's framing (the globe fills most of
-    // the frame), but fall back to the old approximation rather than
-    // silently doing nothing if it somehow ever does.
+    // the frame), but fall back to the simple globe-centre-to-camera
+    // approximation rather than silently doing nothing if it somehow ever
+    // does.
     flagHit.copy(camera.position).sub(flagGlobeCentre).setLength(RADIUS).add(flagGlobeCentre);
   }
   flagWorldDir.copy(flagHit).sub(flagGlobeCentre).normalize();
