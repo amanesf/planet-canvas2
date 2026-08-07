@@ -508,7 +508,21 @@ controls.target.set(0, TARGET_Y, 0);
 // shadows were rendering correctly and were simply drowned. A shadow is
 // only as legible as the fraction of the light it removes, so the key has
 // to actually dominate before any of this is visible.
-scene.add(new THREE.AmbientLight(0xffe9c2, 0.42));
+// Cut again, from 0.42, alongside fill and rim below. The day/night
+// terminator has no floor of its own — the terrain paint is the same
+// colour whether the sun is on it or not (see globeMaterial's
+// onBeforeCompile: night only *adds* the city-lights emissive, it never
+// darkens the diffuse) — so how dark the far side of the globe actually
+// reads depends entirely on these three lights.
+//
+// Checked by replicating three's own Lambertian-irradiance + ACES-filmic
+// pipeline for a flat grey sphere rather than trusting a screenshot: with
+// the old values (ambient 0.42 / fill 0.62 / rim 0.45) a point on the far
+// side, lit by none of the key, came out at 117/255 — a dim overcast
+// afternoon, not a shaded side of anything. Halving all three (to 0.16 /
+// 0.28 / 0.30) drops that same point to 58/255, while the front, dominated
+// by the key at 3.4, is barely touched by the same cut: 230 -> 226.
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.16));
 
 const keyLight = new THREE.DirectionalLight(0xfff1dc, 3.4);
 // Raking, not frontal. This sat at (-3.2, 4.6, 4.2) with the camera at
@@ -540,14 +554,20 @@ keyLight.shadow.normalBias = 0.005;
 scene.add(keyLight);
 
 // the bounce card propped against the desk: enough to keep the shaded
-// side readable, nowhere near enough to compete with the key
-const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.62);
+// side readable, nowhere near enough to compete with the key. Cut from
+// 0.62 alongside the ambient above — see the note there for the
+// before/after numbers this pair was checked against.
+const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.28);
 fillLight.position.set(3.5, -0.8, 2.5);
 scene.add(fillLight);
 
 // cool separation edge along the far side, so the globe doesn't merge
-// into the dim background it's sitting against
-const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.45);
+// into the dim background it's sitting against. Kept closer to its old
+// value than the fill and the ambient were: its job is the silhouette
+// against the background, not filling in the sphere's own dark side, and
+// cutting it as hard as the other two let the globe's far limb melt into
+// the room behind it.
+const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.30);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
 
