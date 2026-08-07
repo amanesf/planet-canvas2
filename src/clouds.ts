@@ -953,7 +953,11 @@ export interface CloudSystem {
  * it, and nothing downstream re-derives the encoding by hand.
  */
 export const CLOUD_SHADOW_GLSL = `
-  float cloudShade(vec3 objNormal, float strength) {
+  // Raw coverage, 0..1, at this point right now — same lookup cloudShade
+  // itself uses, pulled out so a caller that wants the coverage number
+  // (G38's fresh snow, below) rather than a pre-shaded multiplier does
+  // not have to hand-transcribe the lat/lon/drift decode a third time.
+  float cloudCoverAt(vec3 objNormal) {
     float lat = asin(clamp(objNormal.y, -1.0, 1.0));
     float v = lat / 3.14159265 + 0.5;
     // green is row-constant: this latitude's drift rate, encoded
@@ -961,8 +965,11 @@ export const CLOUD_SHADOW_GLSL = `
     float lon = atan(objNormal.z, -objNormal.x);
     // a nodule now at this longitude started at lon - omega*t
     float u = (lon - omega * uCloudTime) / 6.28318530718 + 0.5;
-    float cover = texture2D(uCloudShadow, vec2(fract(u), v)).r;
-    return 1.0 - cover * strength;
+    return texture2D(uCloudShadow, vec2(fract(u), v)).r;
+  }
+
+  float cloudShade(vec3 objNormal, float strength) {
+    return 1.0 - cloudCoverAt(objNormal) * strength;
   }
 
   // How wet the ground here is, 0..1.

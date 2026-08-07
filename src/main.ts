@@ -1218,6 +1218,13 @@ globeMaterial.onBeforeCompile = (shader) => {
     .replace(
       '#include <map_fragment>',
       `#include <map_fragment>
+      // G38: how much this point is "cold enough for a passing storm to
+      // lay down snow, even if it is outside where snow survives for
+      // good" — declared out here, rather than inside either block below,
+      // because both the fresh-snow pass and the wet-ground pass need it:
+      // a storm cell cold enough to snow should not also get the "rained
+      // on" mud darkening a warm one does.
+      float freshSnowGate = 0.0;
       {
         float landMask = smoothstep(uSeaRadius - 0.01, uSeaRadius + 0.01, vSeasonRadius);
         float seasonalFactor = uSeasonTilt * vSeasonLat;
@@ -1225,6 +1232,29 @@ globeMaterial.onBeforeCompile = (shader) => {
         float snowLine = mix(0.82, 0.5, winterAmount);
         float seasonalSnow = smoothstep(snowLine, snowLine + 0.14, abs(vSeasonLat)) * winterAmount * landMask;
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.799, 0.855, 0.888), seasonalSnow * 0.8);
+
+        // Fresh snow, riding on top of the settled line rather than
+        // replacing it. seasonalSnow above is the climatological floor —
+        // where winter has settled in for good — but a cloud passing
+        // slightly outside that band can still lay snow down, and it does
+        // not survive there the way the permanent line does.
+        //
+        // rainWet (the wet-ground pass below) is the wrong signal to
+        // reuse here even though it looks tailor-made: its "raining now"
+        // flag is only ever stamped by storm/typhoon bands (clouds.ts's
+        // rainingAtBake), and storm is a type this deck only assigns in
+        // the tropics — it never occurs at a latitude cold enough for
+        // this gate to be nonzero. Reusing it would have shipped a term
+        // that could never actually fire. Coverage — cloudCoverAt, any
+        // band type, the same red channel cloudShade already reads —
+        // does exist this far out, so that is the signal snow rides on:
+        // ground under a cold, sufficiently thick cloud gets fresh white
+        // laid on top. It fades as the deck drifts off again, which is
+        // this project's usual proxy for melt (§2-22's wet ground is the
+        // same idea for rain).
+        freshSnowGate = smoothstep(snowLine - 0.4, snowLine, abs(vSeasonLat)) * winterAmount * landMask;
+        float freshSnow = smoothstep(0.12, 0.4, cloudCoverAt(vObjNormal)) * freshSnowGate;
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.93), freshSnow * 0.55);
       }
       // Cloud shade. Applied to the albedo rather than to the light so it
       // costs nothing extra and darkens the ground the way an overcast
@@ -1241,9 +1271,11 @@ globeMaterial.onBeforeCompile = (shader) => {
         // Land only. The sea does not get wet, and the painted ocean under
         // the glass shell is part of this same map — darkening it here
         // would have put a "rained on" patch on the one surface in the
-        // scene that cannot be.
+        // scene that cannot be. Cold ground is excluded too (1 -
+        // freshSnowGate) — that precipitation already went white above,
+        // not dark.
         float wetLand = smoothstep(uSeaRadius - 0.01, uSeaRadius + 0.01, vSeasonRadius);
-        diffuseColor.rgb *= 1.0 - rainWet(vObjNormal) * wetLand * 0.2;
+        diffuseColor.rgb *= 1.0 - rainWet(vObjNormal) * wetLand * (1.0 - freshSnowGate) * 0.2;
       }`,
     );
 };
