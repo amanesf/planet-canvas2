@@ -1663,7 +1663,19 @@ oceanMaterial.onBeforeCompile = (shader) => {
         // broad, then a tighter core: a wide sheen over the whole night sea
         // with a brighter patch where the moon would stand overhead
         float moon = max(-sun, 0.0);
-        float sheen = moon * 0.10 + pow(moon, 6.0) * 0.16;
+        // G25: this highlight has always stood in for a moon rather than
+        // showing one — there is no open sky in this scene to hang a disc
+        // in, only the fixed study-wall backdrop, and a floating moon
+        // pasted over that photo is exactly the "two photos composited"
+        // failure mode this project has turned down before (see the
+        // rejected support-wire idea in the gap analysis). A moon that
+        // never phases isn't finishing the job, though, so the sheen
+        // itself waxes and wanes: a slow cycle, deliberately not locked to
+        // the day (42s) or the year (60s) so it doesn't read as tied to
+        // either, between a dim near-new sea and the full brightness
+        // tuned below.
+        float moonPhase = 0.55 + 0.45 * cos(uCloudTime * 0.257);
+        float sheen = (moon * 0.10 + pow(moon, 6.0) * 0.16) * moonPhase;
         totalEmissiveRadiance += vec3(0.34, 0.46, 0.72) * sheen * night;
 
         // Same two bands as the globe material, at the same widths, so the
