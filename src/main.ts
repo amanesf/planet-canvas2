@@ -1172,6 +1172,19 @@ globeMaterial.onBeforeCompile = (shader) => {
           mix(vec3(0.34), diffuseColor.rgb, 0.62) * vec3(1.0, 0.44, 0.14) * warmBand * 1.45;
         totalEmissiveRadiance +=
           mix(vec3(0.28), diffuseColor.rgb, 0.5) * vec3(0.26, 0.44, 0.95) * coolBand * 0.95;
+
+        // G54: past the dusk bands, the rest of the night limb was simply
+        // pure black — nothing at the silhouette edge at all. A grazing-
+        // angle (Fresnel) term on the object's own normal and view
+        // direction, gated to the night hemisphere so it never competes
+        // with the sunlit side's own much stronger response, and kept
+        // well under the dusk bands' strength so it reads as a whisper of
+        // cool light tracing the curve of the ball rather than a halo —
+        // not a revived atmosphere shell (gap-analysis §9 rules that back
+        // out explicitly), just this object's own surface catching a rim
+        // the way the resin ocean and every painted edge here already do.
+        float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 3.0);
+        totalEmissiveRadiance += vec3(0.20, 0.30, 0.46) * rimFresnel * night * 0.12;
       }`,
     )
     .replace(
