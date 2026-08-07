@@ -3356,12 +3356,38 @@ export function riverCorridorAt(dir: THREE.Vector3): number {
 // the linear->sRGB decode twice, crushing every mid-tone toward black —
 // that's what turned the sapphire ocean into a near-black mirror. Encode
 // on the way out so the painted color survives the round trip intact.
-const srgbScratch = new THREE.Color();
+
+// §2-42/G32's second candidate: LinearToSRGB was 5.2% of buildTerrainTexture's
+// own time (three Math.pow calls per texel, millions of texels). The
+// transfer curve is the same function on r, g and b independently, so one
+// 1-D table covers all three channels — built by actually calling
+// THREE.Color's own convertLinearToSRGB rather than transcribing the sRGB
+// formula (§6's standing rule: a second copy of a formula is a second copy
+// that can drift). Lazy and memoized like every other bake in this file.
+const SRGB_LUT_SIZE = 4096;
+let srgbLUT: Float32Array | null = null;
+function buildSRGBLUT(): Float32Array {
+  const lut = new Float32Array(SRGB_LUT_SIZE);
+  const probe = new THREE.Color();
+  for (let i = 0; i < SRGB_LUT_SIZE; i++) {
+    const t = i / (SRGB_LUT_SIZE - 1);
+    probe.setRGB(t, t, t, THREE.LinearSRGBColorSpace).convertLinearToSRGB();
+    lut[i] = probe.r;
+  }
+  return lut;
+}
+function srgbEncode(x: number): number {
+  srgbLUT ??= buildSRGBLUT();
+  const f = THREE.MathUtils.clamp(x, 0, 1) * (SRGB_LUT_SIZE - 1);
+  const i0 = Math.floor(f);
+  const i1 = Math.min(SRGB_LUT_SIZE - 1, i0 + 1);
+  return THREE.MathUtils.lerp(srgbLUT[i0], srgbLUT[i1], f - i0);
+}
+
 function writeSRGBPixel(data: Uint8ClampedArray, idx: number, c: THREE.Color): void {
-  srgbScratch.copy(c).convertLinearToSRGB();
-  data[idx] = Math.round(srgbScratch.r * 255);
-  data[idx + 1] = Math.round(srgbScratch.g * 255);
-  data[idx + 2] = Math.round(srgbScratch.b * 255);
+  data[idx] = Math.round(srgbEncode(c.r) * 255);
+  data[idx + 1] = Math.round(srgbEncode(c.g) * 255);
+  data[idx + 2] = Math.round(srgbEncode(c.b) * 255);
   data[idx + 3] = 255;
 }
 
