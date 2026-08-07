@@ -1483,7 +1483,8 @@ export function buildSpecies(
       // The multiplier keeps the planet's total canopy roughly where the
       // census put it — the point is to redistribute the same green into
       // stands with gaps between them, not to have less of it.
-      const density = s.canopy * (1.5 + patch * 1.5) * (0.55 + clearing * 0.75);
+      const treeLine = THREE.MathUtils.smoothstep(s.temperature, 0.045, 0.175);
+      const density = s.canopy * (1.5 + patch * 1.5) * (0.55 + clearing * 0.75) * treeLine;
       // Closed canopy packs tight, open woodland stands apart.
       //
       // Farmland opens it further, and it has to do that *here*, in the
@@ -1506,11 +1507,26 @@ export function buildSpecies(
       // spent between 0.05 and 0.7 where the woodland/grassland margin
       // actually lives.
       const closed = THREE.MathUtils.smoothstep(s.canopy, 0.05, 0.7);
-      const spacing = THREE.MathUtils.lerp(
-        FOREST_SPACING_SPARSE,
-        FOREST_SPACING_DENSE,
-        closed,
-      );
+      // THE TREE LINE, which this globe did not have.
+      //
+      // Forest is allowed down to COLD_TEMPERATURE_LIMIT (0.02) while the
+      // paint turns tundra below TUNDRA_TEMPERATURE (0.14, terrain.ts), so
+      // between those two figures the ground was painted as treeless tundra
+      // with a wood still standing on it, right up to the ice. Köppen does
+      // say ET is nearly bare (KOPPEN_CANOPY 0.05), but this layer is a
+      // Poisson disc and a Poisson disc does not listen to probability: a
+      // canopy of 0.05 still produced a stand at the sparse spacing, which
+      // is thin forest, not tundra.
+      //
+      // A real tree line is not a contour either — the taiga frays into
+      // scattered stunted spruce over a couple of hundred kilometres and
+      // then stops. So this rides the *spacing*, which is the only dial the
+      // disc obeys: at the cold margin the trees stand five times further
+      // apart than open woodland, which is twenty-five times fewer, and by
+      // the time the paint is fully tundra there is nothing left.
+      const spacing =
+        THREE.MathUtils.lerp(FOREST_SPACING_SPARSE, FOREST_SPACING_DENSE, closed) /
+        Math.max(0.2, treeLine);
       if (
         rand() < density &&
         !clearedByCity(urban) &&
