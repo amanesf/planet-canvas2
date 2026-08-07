@@ -231,8 +231,12 @@ const CLOUD_TYPE_PARAMS: Record<CloudType, CloudTypeParams> = {
     hoverBulk: 0.03,
     sizeBase: 0.05,
     sizeBulk: 0.02,
+    // clusterBase trimmed from 2: even after fixing steps to scale with
+    // arc (see the note by `const steps` in buildCloudBand), a sheet still
+    // legitimately carries more nodules per step than a puffy type — this
+    // just keeps that ratio from being as extreme as it measured.
     clusterBulk: 1.1,
-    clusterBase: 2,
+    clusterBase: 1,
     flatten: 0.45,
     haloOpacity: 0.16,
     haloScale: 1.5,
@@ -510,7 +514,20 @@ function buildCloudBand(
   // reference's cloud masses actually sit at, and several times bigger
   // than the popcorn puffs this replaced.
   const arc = params.arc[0] + rand() * (params.arc[1] - params.arc[0]);
-  const steps = 14 + Math.floor(rand() * 10);
+  // Was a flat 14-23 regardless of `arc`. Measured (see the per-band nodule
+  // counts a Node-side harness dumped: `npx tsx` importing buildClouds
+  // directly, no browser needed since none of this touches the DOM) that
+  // this was a real bug, not a rendering nuance: shortening stratus/cirrus's
+  // arc range to stop a single system spanning most of the visible globe
+  // (done in a previous pass) left step *count* untouched, which packed the
+  // same 14-23 steps into a third of the space — density per degree went
+  // up exactly as total footprint went down, so total nodule count barely
+  // moved. Measured result: 5 stratus bands carried 289 of 406 non-typhoon
+  // nodules (71%), while cumulus/storm clusters averaged 6 nodules each.
+  // Scaling steps with arc keeps density roughly constant instead, so a
+  // shorter band actually is a smaller amount of cloud, not just a
+  // smaller-looking one at the same mass.
+  const steps = THREE.MathUtils.clamp(Math.round(arc / 0.028), 6, 26);
   // how far the band wanders off a clean great circle, so it isn't a ruler line
   const wander = (rand() - 0.5) * 0.5;
 
