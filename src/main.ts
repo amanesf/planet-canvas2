@@ -1352,6 +1352,7 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
 });
 oceanMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
+  shader.uniforms.uSeasonTilt = seasonUniforms.uSeasonTilt;
   shader.uniforms.uSunDir = dayNightUniforms.uSunDir;
   shader.uniforms.uCloudShadow = cloudShadowUniforms.uCloudShadow;
   shader.uniforms.uCloudTime = cloudShadowUniforms.uCloudTime;
@@ -1473,7 +1474,7 @@ oceanMaterial.onBeforeCompile = (shader) => {
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
-      '#include <common>\nuniform vec3 uSunDir;\nvarying vec3 vOceanNormal;\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nvarying vec3 vObjNormal;\nuniform vec3 uLampAxis;\nuniform vec3 uLampRight;\nuniform vec3 uLampUp;\nuniform vec3 uCardAxis;\nuniform vec3 uCardRight;\nuniform vec3 uCardUp;' +
+      '#include <common>\nuniform float uSeasonTilt;\nuniform vec3 uSunDir;\nvarying vec3 vOceanNormal;\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nvarying vec3 vObjNormal;\nuniform vec3 uLampAxis;\nuniform vec3 uLampRight;\nuniform vec3 uLampUp;\nuniform vec3 uCardAxis;\nuniform vec3 uCardRight;\nuniform vec3 uCardUp;' +
         CLOUD_SHADOW_GLSL +
         SHAPED_SOURCE_GLSL,
     )
@@ -1544,12 +1545,50 @@ oceanMaterial.onBeforeCompile = (shader) => {
     .replace(
       '#include <map_fragment>',
       `#include <map_fragment>
+      // Sea ice, and the one part of this planet whose *shape* has a season.
+      //
+      // Everything seasonal so far changes a colour in place: the foliage
+      // turns, the snow line slides, the rain belt moves. The pack is the
+      // thing a viewer already knows moves — it is the picture everyone has
+      // of a warming planet — and it is the only place on this globe where
+      // the outline of the water itself changes through the year.
+      //
+      // Same construction as the land's snow line above and deliberately
+      // so: local winter is uSeasonTilt and this fragment's own latitude
+      // carrying opposite signs, and it drives the edge equatorward. The
+      // limits are the real ones in sin(latitude), which is the honest
+      // parameter here because it is also the one the eye reads as area:
+      // 0.93 is about 68 degrees, roughly September's Arctic minimum, and
+      // 0.82 is about 55, roughly March's maximum down the Labrador and
+      // Bering coasts. Antarctica gets the same band for free, half a year
+      // out of step, which is correct.
+      //
+      // Costs nothing: no re-bake, no texture, no draw call, a dozen
+      // instructions on a pass the shell already runs.
+      float iceLat = vObjNormal.y;
+      float iceWinter = clamp(-uSeasonTilt * iceLat, 0.0, 1.0);
+      // A pack edge is not a circle of latitude. Two harmonics in longitude
+      // is enough to say so at this size — it wanders about three degrees,
+      // which is a couple of pixels of raggedness on the limb.
+      float iceLon = atan(vObjNormal.z, vObjNormal.x);
+      float iceWobble = sin(iceLon * 7.0) * 0.012 + sin(iceLon * 13.0 + 1.7) * 0.008;
+      float iceEdge = mix(0.93, 0.82, iceWinter) + iceWobble;
+      float seaIceAmount = smoothstep(iceEdge, iceEdge + 0.05, abs(iceLat));
+
       // The sea takes the shade harder than the land does. Open water has
       // almost no texture of its own to carry the eye, so cloud shadows
       // crossing it end up being most of what says the sea is a surface
       // under a sky rather than a painted blue field — which is where the
       // absence of shadows was doing the most damage.
-      diffuseColor.rgb *= cloudShade(vObjNormal, 0.62);`,
+      diffuseColor.rgb *= cloudShade(vObjNormal, 0.62);
+
+      // Matched to the land's snow so the pack and the shore agree where
+      // they meet, a shade darker because it is ice over water rather than
+      // snow over ground. Opaque, too: the shell's alpha is a depth ramp
+      // and the sea under the pack is deep, so without this the ice would
+      // be a pale film with the abyss showing through it.
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.74, 0.80, 0.85), seaIceAmount * 0.92);
+      diffuseColor.a = max(diffuseColor.a, seaIceAmount * 0.97);`,
     )
     .replace(
       '#include <roughnessmap_fragment>',
@@ -1565,7 +1604,11 @@ oceanMaterial.onBeforeCompile = (shader) => {
       // that darkens soil roughens this instead. Nothing else about the
       // sea changes: it is still the only shiny thing in the scene, just
       // not shiny under a storm.
-      roughnessFactor = mix(roughnessFactor, 0.78, rainWet(vObjNormal) * 0.85);`,
+      roughnessFactor = mix(roughnessFactor, 0.78, rainWet(vObjNormal) * 0.85);
+      // Pack ice is the one part of this sea that is not poured resin. Left
+      // glassy it reads as a white *reflection* sliding over the water
+      // rather than as something floating on it.
+      roughnessFactor = mix(roughnessFactor, 0.88, seaIceAmount);`,
     )
     .replace(
       '#include <lights_physical_fragment>',
@@ -1574,7 +1617,9 @@ oceanMaterial.onBeforeCompile = (shader) => {
       // entirely in this term (clearcoat 0.85 at roughness 0.16), so
       // roughening the base alone would have changed a number without
       // changing the picture.
-      material.clearcoatRoughness = mix(material.clearcoatRoughness, 0.55, rainWet(vObjNormal) * 0.85);`,
+      material.clearcoatRoughness = mix(material.clearcoatRoughness, 0.55, rainWet(vObjNormal) * 0.85);
+      material.clearcoat = mix(material.clearcoat, 0.06, seaIceAmount);
+      material.clearcoatRoughness = mix(material.clearcoatRoughness, 0.7, seaIceAmount);`,
     )
     .replace(
       '#include <emissivemap_fragment>',
