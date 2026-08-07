@@ -69,6 +69,9 @@ const snowColor = new THREE.Color('#e7eef2');
 const riverColor = new THREE.Color('#2f95c2');
 const tundraColor = new THREE.Color('#928d5c');
 const iceColor = new THREE.Color('#dce8ee');
+// G30: the shadowed floor of a crevasse in an ice sheet — cold blue-grey,
+// not black or rock-brown, the way a crack in real glacier ice reads.
+const crevasseColor = new THREE.Color('#5d7888');
 // exposed sedimentary rock strata — badlands/canyon country
 const badlandsColorA = new THREE.Color('#7d6248');
 const badlandsColorB = new THREE.Color('#a8916c');
@@ -81,6 +84,15 @@ const badlandsColorC = new THREE.Color('#68482f');
 const deepOceanColor = new THREE.Color('#0a4a78');
 const midOceanColor = new THREE.Color('#1479ad');
 const shallowOceanColor = new THREE.Color('#2bbccf');
+
+// G18: a current is a temperature signature, not a paint stripe, so both
+// ends stay close to the ordinary sea colors rather than reaching for a
+// saturated accent. A warm current (Kuroshio, the Gulf Stream) runs clearer
+// and bluer than the water around it; a cold one (California, Benguela)
+// runs a shade darker and greener — real satellite color composites read
+// the same way.
+const warmCurrentColor = new THREE.Color('#1d8fc4');
+const coldCurrentColor = new THREE.Color('#0f4a52');
 
 // The seabed, which until now was painted one flat blue on the assumption
 // that nothing would ever see it. In the reference photograph the resin is
@@ -1894,7 +1906,15 @@ function biomeColor(
   // instead of a hard edge stamped across whatever biome it lands on.
   const iceAmount = 1 - smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE + 0.13);
   if (iceAmount > 0.995) {
-    return outColor.copy(iceColor);
+    outColor.copy(iceColor);
+    // G30: an ice sheet is not a flat white plate, it's riven with
+    // crevasses. Read straight off the same low-frequency mottle every
+    // other biome here already uses for its own texture (no new noise
+    // layer) — a thin dark line wherever it crosses close to zero, the
+    // ordinary "cracked" procedural pattern.
+    const crack = 1 - smoothstep(Math.abs(mottle), 0, 0.035);
+    if (crack > 0) outColor.lerp(crevasseColor, crack * 0.55);
+    return outColor;
   }
 
   // 0.4 -> 0.58 was the single worst line in this file for "there is no
@@ -2721,6 +2741,157 @@ function shoreOcclusion(dir: THREE.Vector3, texels: number, scale: number): numb
   return band * (0.05 + cliff * 0.13 + Math.max(along, 0) * 0.08);
 }
 
+// ---------------------------------------------------------------------
+// Ocean currents (G18)
+// ---------------------------------------------------------------------
+// Four of the current system's best-known members, by hand — same reason
+// the lakes and the mountain belts are: there is no raster of ocean
+// currents to derive this from, and a real current is a specific, named
+// thing (the Kuroshio does not wander), not a statistical pattern noise
+// could stand in for.
+interface CurrentSegment {
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  n: THREE.Vector3;
+  cosSpan: number;
+}
+
+interface OceanCurrent {
+  segments: CurrentSegment[];
+  /** half-width in radians */
+  width: number;
+  /** warm currents run clearer/bluer; cold ones run darker/greener */
+  warm: boolean;
+  centre: THREE.Vector3;
+  cosReach: number;
+}
+
+const CURRENT_SPECS: { warm: boolean; width: number; spine: [number, number][] }[] = [
+  // Kuroshio: the western boundary current the gap list names explicitly,
+  // riding Japan's Pacific coast northeast before bending out to sea.
+  {
+    warm: true,
+    width: 0.026,
+    spine: [
+      [22, 122],
+      [26, 127],
+      [30, 132],
+      [33, 138],
+      [35.5, 142],
+      [38, 148],
+      [40.5, 155],
+    ],
+  },
+  // The Gulf Stream: off Florida, up the US east coast, then out across
+  // the North Atlantic — the other current the gap list names.
+  {
+    warm: true,
+    width: 0.028,
+    spine: [
+      [25, -80],
+      [29, -79.5],
+      [33, -77],
+      [36.5, -73],
+      [40, -67],
+      [43.5, -56],
+      [48, -42],
+      [52, -30],
+    ],
+  },
+  // California Current: cold water running south along the US west coast.
+  {
+    warm: false,
+    width: 0.02,
+    spine: [
+      [48, -128],
+      [42, -125.5],
+      [36, -122.5],
+      [30, -118],
+      [24, -112],
+    ],
+  },
+  // Benguela Current: cold water up Africa's southwest coast.
+  {
+    warm: false,
+    width: 0.02,
+    spine: [
+      [-34, 17.5],
+      [-29, 15],
+      [-23, 13],
+      [-17, 11.5],
+    ],
+  },
+];
+
+const CURRENTS: OceanCurrent[] = CURRENT_SPECS.map((spec) => {
+  const points = spec.spine.map(([lat, lon]) => latLonToDir(lat, lon));
+  const segments: CurrentSegment[] = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    segments.push({ a, b, n: new THREE.Vector3().crossVectors(a, b).normalize(), cosSpan: a.dot(b) });
+  }
+  const centre = new THREE.Vector3();
+  for (const p of points) centre.add(p);
+  centre.normalize();
+  let reach = 0;
+  for (const p of points) reach = Math.max(reach, centre.angleTo(p));
+  return { segments, width: spec.width, warm: spec.warm, centre, cosReach: Math.cos(reach + spec.width * 3) };
+});
+
+// Same distance-to-polyline shape as urbanDistance/roadDistance — a
+// current's spine is exactly the same kind of object, a run of great-circle
+// segments, and gets the same treatment.
+function currentDistance(dir: THREE.Vector3, segs: CurrentSegment[]): number {
+  let best = Math.PI;
+  for (const seg of segs) {
+    const along = dir.dot(seg.n);
+    const px = dir.x - seg.n.x * along;
+    const py = dir.y - seg.n.y * along;
+    const pz = dir.z - seg.n.z * along;
+    const len = Math.hypot(px, py, pz);
+    if (len > 1e-9) {
+      const inv = 1 / len;
+      const da = (px * seg.a.x + py * seg.a.y + pz * seg.a.z) * inv;
+      const db = (px * seg.b.x + py * seg.b.y + pz * seg.b.z) * inv;
+      if (da >= seg.cosSpan && db >= seg.cosSpan) {
+        const d = Math.asin(THREE.MathUtils.clamp(Math.abs(along), 0, 1));
+        if (d < best) best = d;
+        continue;
+      }
+    }
+    const d = Math.min(dir.angleTo(seg.a), dir.angleTo(seg.b));
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+interface CurrentSample {
+  strength: number;
+  warm: boolean;
+}
+
+/**
+ * How strongly a named current runs through this point, 0..1, or null well
+ * away from all of them (the common case — checked cheaply first).
+ */
+function currentAt(dir: THREE.Vector3): CurrentSample | null {
+  let best: CurrentSample | null = null;
+  for (const c of CURRENTS) {
+    if (dir.dot(c.centre) < c.cosReach) continue;
+    const dist = currentDistance(dir, c.segments);
+    // A current is a moving ribbon, not a ruled line — the same reason the
+    // coastline and the road network both get a noise-wobbled edge instead
+    // of a clean geometric one.
+    const wobble = fbm3(dir.x * 40 + 7171, dir.y * 40 + 7171, dir.z * 40 + 7171, 2);
+    const localWidth = c.width * (0.55 + 0.6 * Math.abs(wobble));
+    if (dist > localWidth) continue;
+    const strength = 1 - smoothstep(dist, 0, localWidth);
+    if (!best || strength > best.strength) best = { strength, warm: c.warm };
+  }
+  return best;
+}
+
 function oceanColor(dir: THREE.Vector3, height: number, surf: number, occlusion: number): THREE.Color {
   // Turquoise belongs to the last stretch of the shelf, not to most of the
   // sea. Splitting the ramp at 0.6 put the pale colour over everything
@@ -2740,8 +2911,22 @@ function oceanColor(dir: THREE.Vector3, height: number, surf: number, occlusion:
   const swirl = fbm3(dir.x * 4.5 + 611, dir.y * 4.5 + 611, dir.z * 4.5 + 611, 3);
   outColor.offsetHSL(swirl * 0.02, swirl * 0.1, swirl * 0.07);
 
+  // Ocean currents (G18). Subtle on purpose — a current is a temperature
+  // signature seen from orbit, not a stripe painted on the sea — and
+  // capped well under what the swirl above already does, so four hand-
+  // placed ribbons read as texture in the water rather than as a drawn
+  // line across it.
+  const current = currentAt(dir);
+  if (current) {
+    const tint = current.warm ? warmCurrentColor : coldCurrentColor;
+    outColor.lerp(tint, current.strength * (current.warm ? 0.2 : 0.14));
+  }
+
   // polar pack ice — a real ice cap freezes the sea around it too, not
-  // just the land
+  // just the land. (This is the base texture's own, non-seasonal ice
+  // signal; the visible, season-driven pack that actually reaches the
+  // screen is a shader term in main.ts — see its G30 floe comment for
+  // why the texture, not the color, is what a floe pattern belongs in.)
   const temperature = temperatureAt(dir, 0);
   const seaIce = smoothstep(temperature, ICE_TEMPERATURE, ICE_TEMPERATURE - 0.08);
   outColor.lerp(iceColor, seaIce);

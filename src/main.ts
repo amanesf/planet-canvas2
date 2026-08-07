@@ -1594,6 +1594,18 @@ oceanMaterial.onBeforeCompile = (shader) => {
       float iceWobble = sin(iceLon * 7.0) * 0.012 + sin(iceLon * 13.0 + 1.7) * 0.008;
       float iceEdge = mix(0.93, 0.82, iceWinter) + iceWobble;
       float seaIceAmount = smoothstep(iceEdge, iceEdge + 0.05, abs(iceLat));
+      // G30: floes and leads. iceWobble above shapes where the pack
+      // *starts*; this shapes what it looks like once you're in it — real
+      // pack ice is broken into floes with narrow leads of open water
+      // between them, not a solid plate. A second, much faster sin pair
+      // (frequencies unrelated to the edge wobble's 7/13, so the two
+      // patterns don't beat against each other) punches gaps well inside
+      // the ice, tapering to nothing right at the edge so that wobble
+      // stays clean and legible.
+      float floeNoise = sin(iceLon * 41.0 + iceLat * 53.0) + sin(iceLon * 97.0 - iceLat * 31.0 + 2.1);
+      float floeDepth = smoothstep(iceEdge + 0.1, iceEdge + 0.22, abs(iceLat));
+      float leadGap = smoothstep(0.7, 1.35, floeNoise) * floeDepth;
+      seaIceAmount *= 1.0 - leadGap * 0.45;
 
       // The sea takes the shade harder than the land does. Open water has
       // almost no texture of its own to carry the eye, so cloud shadows
