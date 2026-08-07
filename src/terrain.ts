@@ -3995,19 +3995,35 @@ export function urbanAt(dir: THREE.Vector3): number {
 }
 
 
+// G24: real cities do not all run the same lamps — sodium amber is a
+// generation of streetlight, not a law of physics, and a planet lit in one
+// uniform hue reads as a single lighting rig rather than a few hundred
+// electrical grids built decades apart. `warmth` blends between the
+// original amber (1) and a cooler, whiter LED-ish palette (0); each stop's
+// three channels are lerped independently rather than picking one of two
+// fixed strings, so intermediate cities (most of them) land somewhere
+// between the two rather than snapping to one or the other.
+function lerpRGB(warm: [number, number, number], cool: [number, number, number], t: number): string {
+  const r = Math.round(THREE.MathUtils.lerp(cool[0], warm[0], t));
+  const g = Math.round(THREE.MathUtils.lerp(cool[1], warm[1], t));
+  const b = Math.round(THREE.MathUtils.lerp(cool[2], warm[2], t));
+  return `${r}, ${g}, ${b}`;
+}
+
 function drawGlow(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   radius: number,
   alpha: number,
+  warmth = 1,
 ): void {
   const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
-  // sodium-lamp amber in the core falling off through white to nothing —
-  // a flat white dot reads as a star, not as a city
-  g.addColorStop(0, `rgba(255, 244, 214, ${alpha})`);
-  g.addColorStop(0.35, `rgba(255, 206, 128, ${alpha * 0.55})`);
-  g.addColorStop(1, 'rgba(255, 170, 80, 0)');
+  // A flat white dot reads as a star, not as a city, so even the coolest
+  // (warmth=0) end still has a little amber in the core.
+  g.addColorStop(0, `rgba(${lerpRGB([255, 244, 214], [222, 232, 255], warmth)}, ${alpha})`);
+  g.addColorStop(0.35, `rgba(${lerpRGB([255, 206, 128], [178, 202, 255], warmth)}, ${alpha * 0.55})`);
+  g.addColorStop(1, `rgba(${lerpRGB([255, 170, 80], [150, 182, 255], warmth)}, 0)`);
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
@@ -4106,6 +4122,21 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
   const rand = mulberry32(60607);
   const dir = new THREE.Vector3();
 
+  // G24: a low-frequency field (same scale as ergAt's "lowest frequency in
+  // this file", so it reads as a few regions rather than a per-pixel
+  // dazzle) picks warm-amber vs cooler-white lighting by geography — one
+  // country's grid does not usually mix half sodium and half LED. A higher-
+  // frequency field, sampled separately, gives each individual light point
+  // its own brightness rather than a size class all reading identically —
+  // the "faint flicker" this is standing in for, baked spatially rather
+  // than animated (this canvas is built once, not redrawn per frame, the
+  // same reason the corridor/road passes below already fake motion with
+  // noise instead of time).
+  const warmthAt = (d: THREE.Vector3): number =>
+    0.5 + 0.5 * fbm3(d.x * 2.4 + 9001, d.y * 2.4 + 9001, d.z * 2.4 + 9001, 2);
+  const jitterAt = (d: THREE.Vector3): number =>
+    0.82 + 0.36 * (0.5 + 0.5 * fbm3(d.x * 400 + 555, d.y * 400 + 555, d.z * 400 + 555, 2));
+
   const attempts = width * height * 0.12;
   for (let i = 0; i < attempts; i++) {
     // area-preserving: uniform in longitude and in sin(latitude), so the
@@ -4116,7 +4147,7 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
     const h = sampledHeight(dir).raw;
     const score = habitabilityAt(dir, h);
     if (score <= 0 || rand() > score * score) continue;
-    drawGlow(ctx, u * width, v * height, 0.9 + rand() * 2.0, 0.05 + score * 0.17);
+    drawGlow(ctx, u * width, v * height, 0.9 + rand() * 2.0, 0.05 + score * 0.17, warmthAt(dir));
   }
 
   // Both consumers read the same table. The paint samples urbanFeatures() as
@@ -4129,13 +4160,38 @@ export function buildCityLightsTexture(width = 1024, height = 512): THREE.Canvas
     if (phi < 0) phi += Math.PI * 2;
     const x = (phi / (Math.PI * 2)) * width;
     const y = (Math.acos(THREE.MathUtils.clamp(d.y, -1, 1)) / Math.PI) * height;
+    const warmth = warmthAt(d);
+    const flicker = jitterAt(d);
     // The sprawl around the core, then the core itself — both a good deal
     // tighter than they started. A metropolis drawn as a wide soft disc
     // reads as a glowing ball hovering over the country rather than as a
     // city: what makes it a city is that it is *small and very bright*,
     // with a faint halo, not big and bright.
-    drawGlow(ctx, x, y, (2.6 + size * 4.5) * scale, 0.22 * size * gain);
-    drawGlow(ctx, x, y, (0.9 + size * 1.4) * scale, 0.8 * size * gain);
+    drawGlow(ctx, x, y, (2.6 + size * 4.5) * scale, 0.22 * size * gain * flicker, warmth);
+    drawGlow(ctx, x, y, (0.9 + size * 1.4) * scale, 0.8 * size * gain * flicker, warmth);
+
+    // G47: a metropolis is not just a brighter dot than a village, it is a
+    // *denser field* of them — real night imagery shows a mottled grid of
+    // districts, not one smooth blob, and that texture is most of what
+    // separates "a big light" from "a big city" at this resolution. Below
+    // the threshold a town stays the plain two-layer glow above; only
+    // large cities earn the speckle, so hierarchy comes from more than
+    // brightness alone. Offsets are two more spatial fields (position
+    // determines both angle and distance, no extra RNG state to carry) so
+    // the pattern is stable across rebuilds rather than reseeded noise.
+    if (size > 0.4) {
+      const speckles = Math.round(2 + size * 4);
+      for (let k = 0; k < speckles; k++) {
+        const ang =
+          fbm3(d.x * 55 + k * 17.3, d.y * 55 + k * 17.3, d.z * 55 + k * 17.3, 2) * Math.PI * 2;
+        const distT =
+          0.5 + 0.5 * fbm3(d.x * 83 + k * 31.7, d.y * 83 + k * 31.7, d.z * 83 + k * 31.7, 2);
+        const dist = distT * (1.6 + size * 2.2) * scale;
+        const ox = x + Math.cos(ang) * dist;
+        const oy = y + Math.sin(ang) * dist;
+        drawGlow(ctx, ox, oy, (0.45 + size * 0.55) * scale, 0.32 * size * gain * flicker, warmth);
+      }
+    }
   };
 
   const step = new THREE.Vector3();
