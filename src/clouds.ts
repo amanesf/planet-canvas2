@@ -767,6 +767,35 @@ function dirFromLatLon(lat: number, lon: number, out: THREE.Vector3): THREE.Vect
   return out.set(-c * Math.cos(lon), Math.sin(lat), c * Math.sin(lon));
 }
 
+// terrain.ts's latLonToDir takes real degrees with the prime meridian at the
+// texture's horizontal centre: phi = (lonDeg + 180) in radians. This module's
+// own `lon` (used by dirFromLatLon/lonOf above) is exactly that phi — the two
+// conventions agree once the +180 shift is applied, which is what lets a real
+// coordinate (e.g. "140°E, off the Philippines") be dropped straight into the
+// typhoon track math below instead of being reverse-engineered by eye.
+function lonFromRealDeg(lonDeg: number): number {
+  return ((lonDeg + 180) * Math.PI) / 180;
+}
+
+/**
+ * Real genesis point (degrees) + hemisphere for each basin a cyclone is
+ * allowed to spin up in. `typhoonCentre`'s track runs west then recurves
+ * east across roughly lon0-16° to lon0+43° while climbing from ~12° to ~34°
+ * of the given hemisphere's latitude, so each entry was chosen by checking
+ * that whole swept band stays over ocean, not just the genesis point:
+ *  - Western Pacific: Philippine Sea genesis, recurving toward Japan.
+ *  - Atlantic: mid-ocean genesis (the real "Cape Verde" storms' nursery),
+ *    tracking into the Caribbean and recurving up into the open Atlantic.
+ *  - South Pacific: Coral Sea genesis, recurving away from Australia.
+ *  - South Indian Ocean: Mascarene basin genesis east of Madagascar.
+ */
+const TYPHOON_BASINS: { lonDeg: number; hemi: 1 | -1 }[] = [
+  { lonDeg: 132, hemi: 1 },
+  { lonDeg: -52, hemi: 1 },
+  { lonDeg: 168, hemi: -1 },
+  { lonDeg: 63, hemi: -1 },
+];
+
 // ---------------------------------------------------------------------
 // Tropical cyclones
 // ---------------------------------------------------------------------
@@ -1170,12 +1199,24 @@ export function buildClouds(
   // that is always present is scenery rather than an event — which is the
   // opposite of the reason for building it. One, with long quiet gaps
   // between its lives, is a thing you notice when it happens.
-  const typhoons: TyphoonSystem[] = [1].map((hemi, i) => ({
-    band: seeds.length + i,
-    lon0: rand() * Math.PI * 2,
-    hemi,
+  //
+  // `lon0` used to be a free `rand() * TAU`, i.e. genesis anywhere on the
+  // planet — which is how a cyclone ended up parked over Egypt. Real
+  // tropical cyclones only spin up over warm open ocean, and `typhoonCentre`
+  // carries the system west then recurves it east over the back half of its
+  // life (see the -0.95*age + 1.7*age^3 term there), so it is not just the
+  // genesis point that has to be water: the whole swept longitude range —
+  // roughly [lon0-16°, lon0+43°] — needs to be. Picking from a short table
+  // of the real basins (genesis point + hemisphere) is the same fix already
+  // used for the erg placement (G6, ergAt) and the ocean currents (G18):
+  // tie a field to real coordinates instead of leaving it free.
+  const basin = TYPHOON_BASINS[Math.floor(rand() * TYPHOON_BASINS.length)];
+  const typhoons: TyphoonSystem[] = [basin].map((b) => ({
+    band: seeds.length,
+    lon0: lonFromRealDeg(b.lonDeg) + (rand() - 0.5) * 0.3,
+    hemi: b.hemi,
     period: 210 + rand() * 60,
-    phase: i * 0.5 + rand() * 0.15,
+    phase: rand() * 0.15,
     eye: 0.042,
     reach: 0.22,
     spin: 0.55,

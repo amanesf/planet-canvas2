@@ -678,8 +678,33 @@ export function buildEruptions(
     return v.center.clone().multiplyScalar(surface);
   });
 
+  // How many separate billows a column is built from, and how far each
+  // one's own particles scatter around its centre.
+  //
+  // Sampling `jitter` uniformly over the whole disc (the previous scheme)
+  // put a particle anywhere with equal likelihood, which is exactly what a
+  // single smoothly-filled disc looks like once a few hundred soft round
+  // sprites overlap — a column that balloons out as one uniform, edgeless
+  // "poof" rather than the lumpy, cauliflower-textured mass a real ash
+  // column is. Grouping particles into a handful of off-centre sub-clumps
+  // first, then scattering tightly *within* each clump, gives the
+  // cross-section internal structure — several billows jostling for room —
+  // instead of one gradient. The same idea as the ranked lumps clouds.ts
+  // builds real geometry for, done cheaply here with points because a
+  // point-sprite plume cannot afford per-lump meshes.
+  const CLUMPS_PER_VOLCANO = 6;
+  const clumpSpread = 0.36;
+
   let p = 0;
   VOLCANOES.forEach((v, vi) => {
+    const clumps = Array.from({ length: CLUMPS_PER_VOLCANO }, () => {
+      const a = rand() * Math.PI * 2;
+      // Kept off the very centre and short of the rim: a clump centred at
+      // the column's axis would just recreate the uniform disc at a smaller
+      // radius, and one right at the edge would clip against the mask below.
+      const r = 0.28 + rand() * 0.5;
+      return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+    });
     for (let i = 0; i < PARTICLES_PER_VOLCANO; i++, p++) {
       const s = summits[vi];
       positions[p * 3] = s.x;
@@ -694,10 +719,11 @@ export function buildEruptions(
       sizes[p] = 4.0 + rand() * 7.0;
       // where in the column this particle sits, so the plume has width and
       // billows to one side rather than rising as a needle
+      const clump = clumps[i % CLUMPS_PER_VOLCANO];
       const a = rand() * Math.PI * 2;
-      const r = Math.sqrt(rand());
-      jitter[p * 2] = Math.cos(a) * r;
-      jitter[p * 2 + 1] = Math.sin(a) * r;
+      const r = Math.sqrt(rand()) * clumpSpread;
+      jitter[p * 2] = THREE.MathUtils.clamp(clump.x + Math.cos(a) * r, -1, 1);
+      jitter[p * 2 + 1] = THREE.MathUtils.clamp(clump.y + Math.sin(a) * r, -1, 1);
     }
   });
 
@@ -811,8 +837,14 @@ export function buildEruptions(
 
         vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
         gl_Position = projectionMatrix * mvPosition;
-        // ash particles grow as the cloud dissipates
-        gl_PointSize = aSize * (0.5 + life * 1.6) * power * uPixelRatio * (60.0 / -mvPosition.z);
+        // ash particles grow as the cloud dissipates. Capped back from
+        // 0.5 + life*1.6: at the old rate every sprite ballooned enough that
+        // by mid-life its soft edge had swallowed the gaps between clumps,
+        // and a few hundred overlapping soft circles read as one smooth
+        // "poof" rather than a textured mass. Growing less erases that gap
+        // more slowly, so the clump structure from aJitter above survives
+        // further into the column's life.
+        gl_PointSize = aSize * (0.5 + life * 1.25) * power * uPixelRatio * (60.0 / -mvPosition.z);
         vAlpha = power * (1.0 - smoothstep(0.45, 1.0, life)) * smoothstep(0.0, 0.05, life);
       }
     `,
@@ -821,7 +853,11 @@ export function buildEruptions(
       varying float vAlpha;
       void main() {
         vec2 d = gl_PointCoord - vec2(0.5);
-        float mask = 1.0 - smoothstep(0.15, 0.5, length(d));
+        // A tighter core than before (was 0.15..0.5): the wide, gentle
+        // falloff was most of what made overlapping sprites melt into fog
+        // instead of reading as separate billows. A harder edge lets the
+        // clumps built into aJitter actually show as clumps.
+        float mask = 1.0 - smoothstep(0.26, 0.5, length(d));
         if (vAlpha <= 0.002 || mask <= 0.002) discard;
         // incandescent at the vent, cooling to grey ash within the first
         // fraction of the climb

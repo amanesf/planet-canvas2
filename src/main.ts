@@ -529,7 +529,17 @@ controls.target.set(0, TARGET_Y, 0);
 // afternoon, not a shaded side of anything. Halving all three (to 0.16 /
 // 0.28 / 0.30) drops that same point to 58/255, while the front, dominated
 // by the key at 3.4, is barely touched by the same cut: 230 -> 226.
-scene.add(new THREE.AmbientLight(0xffe9c2, 0.16));
+//
+// Still read as too bright to be night rather than an overcast afternoon —
+// 58/255 is a lit grey, not a dark one, and it is the floor every other
+// object in the scene (the clouds, the workshop) is lit by too, not just
+// the globe. Cut again, more gently this time (ambient and fill only —
+// rim's job is the far *silhouette* against the backdrop, not the sphere's
+// own dark side, and was already kept closer to its old value for that
+// reason the first time). The globe's own further drop below is the bigger
+// piece of the actual fix; this keeps the clouds and the rest of the desk
+// consistent with it instead of them alone staying at the old floor.
+scene.add(new THREE.AmbientLight(0xffe9c2, 0.1));
 
 const keyLight = new THREE.DirectionalLight(0xfff1dc, 3.4);
 // Raking, not frontal. This sat at (-3.2, 4.6, 4.2) with the camera at
@@ -564,7 +574,7 @@ scene.add(keyLight);
 // side readable, nowhere near enough to compete with the key. Cut from
 // 0.62 alongside the ambient above — see the note there for the
 // before/after numbers this pair was checked against.
-const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.28);
+const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.19);
 fillLight.position.set(3.5, -0.8, 2.5);
 scene.add(fillLight);
 
@@ -1227,6 +1237,19 @@ globeMaterial.onBeforeCompile = (shader) => {
         // the way the resin ocean and every painted edge here already do.
         float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 3.0);
         totalEmissiveRadiance += vec3(0.20, 0.30, 0.46) * rimFresnel * night * 0.12;
+
+        // The far side's own colour, not just what lights it. Cutting the
+        // ambient/fill/rim rig (see the note by their definitions) only goes
+        // so far: three's tonemap pipeline recovers visibility from
+        // whatever light survives however small, so a point that keeps its
+        // full daylight albedo and is merely lit very dimly still reads as
+        // an underexposed photo of daytime rather than as night. Darkening
+        // the albedo itself, after the emissive terms above have already
+        // read its true colour, is what actually sells "the sun isn't up
+        // here" — city lights, the dusk bands and the rim above are all in
+        // totalEmissiveRadiance, a separate accumulator, so none of them
+        // are dimmed by this.
+        diffuseColor.rgb *= mix(1.0, 0.32, night);
       }`,
     )
     .replace(

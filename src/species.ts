@@ -94,6 +94,13 @@ const MINERAL: ReadonlySet<Species> = new Set<Species>([
   'geyser',
 ]);
 
+/**
+ * Needleleaf species — foliage that stays on the plant through winter
+ * instead of dropping, so the automatic season cycle should never carry
+ * them through the broadleaf autumn palette (see applySeasonalFoliageTint).
+ */
+const EVERGREEN: ReadonlySet<Species> = new Set<Species>(['conifer', 'cypress', 'redwood']);
+
 interface Placement {
   dir: THREE.Vector3;
   height: number;
@@ -934,6 +941,34 @@ function duneBearing(dir: THREE.Vector3): number {
   return fbm3(dir.x * 1.6 + 71, dir.y * 1.6 + 71, dir.z * 1.6 + 71, 2) * Math.PI * 2;
 }
 
+/**
+ * How enclosed by land this point is, 0 (open water on every side) to 1
+ * (solid ground all round) — an 8-point ring sized to roughly the biggest
+ * canopy clump's own footprint (see CANOPY_FINE_SCALE's tail below). A
+ * rainforest emergent sized for the Amazon can be wider than a small
+ * island or a narrow spit, which is what was burying the shape of the
+ * Indonesian/Philippine and Caribbean/Central American archipelagos under
+ * a handful of oversized clumps. Only checked for the clumps big enough to
+ * matter (see the scale cap below) — continental interiors and ordinary
+ * coastline never pay for this.
+ */
+function landEnclosureAt(dir: THREE.Vector3): number {
+  const { east, north } = localFrameOf(dir);
+  const R = 0.055;
+  const probe = new THREE.Vector3();
+  let hits = 0;
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2;
+    probe
+      .copy(dir)
+      .addScaledVector(east, Math.cos(a) * R)
+      .addScaledVector(north, Math.sin(a) * R)
+      .normalize();
+    if (sampledHeight(probe).raw >= SEA_LEVEL) hits++;
+  }
+  return hits / 8;
+}
+
 /** Base colour for a species, before the per-instance jitter. */
 function speciesColor(species: Species, temperature: number, out: THREE.Color): THREE.Color {
   switch (species) {
@@ -1150,9 +1185,18 @@ function orient(position: THREE.Vector3, normal: THREE.Vector3, spin: number, ti
 // onBeforeCompile pattern already used for the ocean's live wave motion in
 // main.ts. seasonUniforms is one shared object so every material picks up
 // main.ts's single per-frame update automatically.
+// `evergreen`: needleleaf conifers (taiga spruce, pine, cypress, redwood)
+// keep their needles through the winter instead of shedding them, so real
+// boreal forest never goes through an orange autumn — it just dulls a shade
+// and takes a dusting of frost. Feeding the same fade through unconditionally
+// (the original behaviour) put every taiga stand through the broadleaf
+// autumn palette, which is what put maple-orange over the conifer belt at
+// high latitude. Baked into the shader source rather than a uniform because
+// it is a fixed trait of the material, not something that varies per frame.
 function applySeasonalFoliageTint(
   material: THREE.MeshStandardMaterial,
   seasonUniforms: { uSeasonTilt: { value: number } },
+  evergreen = false,
 ) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uSeasonTilt = seasonUniforms.uSeasonTilt;
@@ -1167,6 +1211,8 @@ function applySeasonalFoliageTint(
         // only ever drawn via InstancedMesh
         vSeasonLat = normalize((instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz).y;`,
       );
+    const autumnMix = evergreen ? '0.0' : '1.0';
+    const frostMix = evergreen ? '0.35' : '1.0';
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform float uSeasonTilt;\nvarying float vSeasonLat;')
       .replace(
@@ -1177,8 +1223,8 @@ function applySeasonalFoliageTint(
           float fade = clamp(-seasonalFactor, 0.0, 1.0);
           vec3 autumnTint = vec3(0.62, 0.42, 0.12);
           vec3 frostTint = vec3(0.75, 0.8, 0.82);
-          vec3 seasoned = mix(diffuseColor.rgb, autumnTint, smoothstep(0.0, 0.55, fade));
-          seasoned = mix(seasoned, frostTint, smoothstep(0.55, 1.0, fade));
+          vec3 seasoned = mix(diffuseColor.rgb, autumnTint, smoothstep(0.0, 0.55, fade) * ${autumnMix});
+          seasoned = mix(seasoned, frostTint, smoothstep(0.55, 1.0, fade) * ${frostMix});
           diffuseColor.rgb = mix(diffuseColor.rgb, seasoned, smoothstep(0.15, 0.7, abs(vSeasonLat)));
         }`,
       );
@@ -1648,6 +1694,15 @@ export function buildSpecies(
     envMapIntensity: 0.1,
   });
   applySeasonalFoliageTint(plantMaterial, seasonUniforms);
+  // Needleleaf species among the fourteen — conifer, cypress, redwood — get
+  // their own copy so they stop shedding into the broadleaf autumn palette
+  // (see applySeasonalFoliageTint's evergreen note).
+  const plantMaterialEvergreen = new THREE.MeshStandardMaterial({
+    color: '#ffffff',
+    roughness: 0.93,
+    envMapIntensity: 0.1,
+  });
+  applySeasonalFoliageTint(plantMaterialEvergreen, seasonUniforms, true);
   const mineralMaterial = new THREE.MeshStandardMaterial({
     color: '#ffffff',
     roughness: 0.85,
@@ -1665,7 +1720,11 @@ export function buildSpecies(
   const color = new THREE.Color();
   bySpecies.forEach((list, species) => {
     const geometry = buildModel(species, rand);
-    const material = MINERAL.has(species) ? mineralMaterial : plantMaterial;
+    const material = MINERAL.has(species)
+      ? mineralMaterial
+      : EVERGREEN.has(species)
+        ? plantMaterialEvergreen
+        : plantMaterial;
     const mesh = new THREE.InstancedMesh(geometry, material, list.length);
 
     list.forEach((p, i) => {
@@ -1760,15 +1819,23 @@ export function buildSpecies(
     envMapIntensity: 0.1,
   });
   applySeasonalFoliageTint(foliageMaterial, seasonUniforms);
+  // The conifer variant (index 1, below) is needleleaf and evergreen, same
+  // reasoning as plantMaterialEvergreen above.
+  const foliageMaterialEvergreen = new THREE.MeshStandardMaterial({
+    color: '#ffffff',
+    roughness: 0.9,
+    envMapIntensity: 0.1,
+  });
+  applySeasonalFoliageTint(foliageMaterialEvergreen, seasonUniforms, true);
 
   // real diorama foliage ("clump foliage" flock/lichen material) is a
   // distinctly bright, saturated yellow-green — noticeably more lime than
   // an ordinary tree green, and part of what makes a miniature's
   // vegetation read as a real physical material instead of rendered grass
-  const treeVariants: { geometry: THREE.BufferGeometry; hue: [number, number] }[] = [
-    { geometry: bushGeometry, hue: [0.235, 0.045] },
-    { geometry: coniferGeometry, hue: [0.28, 0.025] },
-    { geometry: clumpGeometry, hue: [0.225, 0.04] },
+  const treeVariants: { geometry: THREE.BufferGeometry; hue: [number, number]; material: THREE.MeshStandardMaterial }[] = [
+    { geometry: bushGeometry, hue: [0.235, 0.045], material: foliageMaterial },
+    { geometry: coniferGeometry, hue: [0.28, 0.025], material: foliageMaterialEvergreen },
+    { geometry: clumpGeometry, hue: [0.225, 0.04], material: foliageMaterial },
   ];
   const treeByVariant: GroundPoint[][] = treeVariants.map(() => []);
   trees.forEach((p) => {
@@ -1790,7 +1857,7 @@ export function buildSpecies(
   treeVariants.forEach((variant, vi) => {
     const pts = treeByVariant[vi];
     if (pts.length === 0) return;
-    const foliageMesh = new THREE.InstancedMesh(variant.geometry, foliageMaterial, pts.length);
+    const foliageMesh = new THREE.InstancedMesh(variant.geometry, variant.material, pts.length);
     pts.forEach((p, i) => {
       const surfaceRadius = radius + sampledHeight(p.dir).display * bumpHeight;
       const position = p.dir.clone().multiplyScalar(surfaceRadius);
@@ -1912,6 +1979,18 @@ export function buildSpecies(
     envMapIntensity: 0.1,
   });
   applySeasonalFoliageTint(canopyMaterial, seasonUniforms);
+  // The CONIFER_COARSE/CONIFER_FINE buckets below are the boreal spruce
+  // shape exclusively (see the reallocation note above) — needleleaf and
+  // evergreen, so they get the non-autumn tint rather than canopyMaterial's.
+  // Without this the taiga went through the same orange-then-frost cycle as
+  // the broadleaf canopy it shares a material with, which is what put
+  // maple-colored autumn over conifer stands at high latitude.
+  const canopyMaterialConifer = new THREE.MeshStandardMaterial({
+    color: '#ffffff',
+    roughness: 0.92,
+    envMapIntensity: 0.1,
+  });
+  applySeasonalFoliageTint(canopyMaterialConifer, seasonUniforms, true);
 
   interface CanopyInstance {
     point: GroundPoint;
@@ -1954,7 +2033,11 @@ export function buildSpecies(
     // read for a worse one. The tail is what was wanted, not the shrinkage:
     // keep the bulk where the census had it and let only the top few percent
     // run away.
-    const scale = 0.42 + r0 * r0 * r0 * 1.3;
+    const rawScale = 0.42 + r0 * r0 * r0 * 1.3;
+    // Above 1.0 a clump is into the tail this curve exists to give the
+    // Amazon its emergents — exactly the size that can bury a small island.
+    // Below that, ordinary-sized clumps are left alone (see landEnclosureAt).
+    const scale = rawScale > 1.0 ? rawScale * (0.4 + 0.6 * landEnclosureAt(point.dir)) : rawScale;
     const instance = { point, scale };
     // Bucketed by what the stand *is*, not round-robin: the variant is the
     // shape now, so a spruce dropped into a broadleaf bucket would be drawn
@@ -1969,10 +2052,10 @@ export function buildSpecies(
   });
 
   const canopyColor = new THREE.Color();
-  const placeCanopy = (variants: THREE.BufferGeometry[], buckets: CanopyInstance[][]) => {
+  const placeCanopy = (variants: THREE.BufferGeometry[], buckets: CanopyInstance[][], coniferIndex: number) => {
     buckets.forEach((list, vi) => {
       if (list.length === 0) return;
-      const mesh = new THREE.InstancedMesh(variants[vi], canopyMaterial, list.length);
+      const mesh = new THREE.InstancedMesh(variants[vi], vi === coniferIndex ? canopyMaterialConifer : canopyMaterial, list.length);
       list.forEach(({ point, scale }, i) => {
         const surfaceRadius = radius + sampledHeight(point.dir).display * bumpHeight;
         const position = point.dir.clone().multiplyScalar(surfaceRadius);
@@ -2066,8 +2149,8 @@ export function buildSpecies(
       group.add(mesh);
     });
   };
-  placeCanopy(coarseVariants, coarseBuckets);
-  placeCanopy(fineVariants, fineBuckets);
+  placeCanopy(coarseVariants, coarseBuckets, CONIFER_COARSE);
+  placeCanopy(fineVariants, fineBuckets, CONIFER_FINE);
 
   // ---- the sand seas, laid as ridges rather than scattered as lumps ----
   //
@@ -2183,9 +2266,14 @@ export function buildSpecies(
         // segment is 0.0275 rad, and a radian is about 204 px at the shipped
         // camera, so a segment is 5.6 px — at 90 steps a single ridge ran
         // right across the erg and read as one long worm lying on the sand.
-        // Three each way is about 34 px end to end: a stroke, one of many,
-        // which is what a dune field is made of.
-        for (let step = 0; step < 4; step++) {
+        // Even at four each way (~45px) a real erg still read as a handful
+        // of long ropes rather than a field of individual dunes, so this is
+        // cut again to three: ~34px end to end, a stroke, one of many, which
+        // is what a dune field is made of — and shortening every ridge
+        // leaves more of the fibonacci seed spiral unclaimed, so the same
+        // sand sea now holds visibly more, shorter ridges rather than fewer
+        // long ones.
+        for (let step = 0; step < 3; step++) {
           const bearing = duneBearing(walk);
           const { east, north } = localFrameOf(walk);
           walk
@@ -2216,13 +2304,13 @@ export function buildSpecies(
       path.push(coarse[coarse.length - 1].clone());
       // A ridge too short to read as a ridge is an almond again, however it
       // is profiled: the end fade below is what rounds a crest off, so on a
-      // stub the fade is the whole shape. Twelve stations is four walk
-      // steps, about 0.1 rad. Below that the erg simply has no dune here,
-      // which is also true of a real one — sand needs a run to build in.
-      // Four walk steps, subdivided three times, is twelve stations — about
-      // six times the crest's own width. Below that the end fade is most of
-      // the shape and a stub is an almond again.
-      if (path.length >= 12) ridges.push({ path, scale });
+      // stub the fade is the whole shape. Nine stations is three walk steps,
+      // about 0.08 rad, scaled down from the old twelve/four along with the
+      // step cap above so the minimum keeps the same ~6x-width-to-length
+      // ratio rather than quietly getting stricter. Below that the erg
+      // simply has no dune here, which is also true of a real one — sand
+      // needs a run to build in.
+      if (path.length >= 9) ridges.push({ path, scale });
     }
 
     // ONE STRIP PER RIDGE, swept along the path.

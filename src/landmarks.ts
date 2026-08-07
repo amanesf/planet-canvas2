@@ -1172,7 +1172,18 @@ function placeCityBlocks(
     // see the note above — so a cell is about a tree crown wide and a city
     // comes out 3 blocks across at size 0, 5 at size 1.
     const pitch = 0.0092 + size * 0.0016;
-    const half = Math.ceil(patch / pitch);
+
+    // Suburbs: a low-density ring of small houses beyond the downtown
+    // cluster, reaching out toward the same radius `urbanAt` (terrain.ts)
+    // paints grey and thins the forest for — `cityPatchRadius(size)` itself,
+    // not the *0.62 `full` the downtown grid stops at. Without this, that
+    // whole outer band was paint and thinned canopy with nothing standing on
+    // it: from above a city was a tight knot of blocks sitting in a much
+    // bigger halo of bare grey ground, which is what read as "buildings"
+    // rather than "a city" — real cities are mostly the low sprawl around a
+    // small dense core, not the core alone.
+    const suburbRadius = cityPatchRadius(size) * 0.95;
+    const half = Math.ceil(Math.max(patch, suburbRadius) / pitch);
 
     for (let gx = -half; gx <= half; gx++) {
       for (let gy = -half; gy <= half; gy++) {
@@ -1185,13 +1196,21 @@ function placeCityBlocks(
         const lx = gx * pitch + jx;
         const ly = gy * pitch + jy;
         const r = Math.hypot(lx, ly);
-        if (r > patch) continue;
+        if (r > suburbRadius) continue;
+        const downtown = r <= patch;
 
         // Density falls off outwards, so the plan is a solid downtown
         // fraying into outskirts rather than a disc with a hard rim — the
-        // same shape `urbanAt` paints, arrived at the same way.
+        // same shape `urbanAt` paints, arrived at the same way. Beyond the
+        // downtown radius it keeps fading, but much thinner and all the way
+        // out to the paint's own edge, which is the suburban ring itself.
         const central = 1 - r / patch;
-        if (rand() > 0.35 + central * 0.75) continue;
+        if (downtown) {
+          if (rand() > 0.35 + central * 0.75) continue;
+        } else {
+          const suburbFrac = 1 - (r - patch) / Math.max(1e-6, suburbRadius - patch);
+          if (rand() > 0.22 * suburbFrac) continue;
+        }
 
         // Rotate the plot offset into the city's street bearing, so the
         // lattice itself is turned and not just the boxes on it.
@@ -1211,13 +1230,18 @@ function placeCityBlocks(
         basis.makeBasis(frame.east, frame.up, frame.north);
         basis.setPosition(frame.up.x * surface, frame.up.y * surface, frame.up.z * surface);
 
-        const tower = rand() < 0.06 + central * (0.06 + size * 0.16) ? 1 : 0;
+        // Suburban houses never get a tower, and stay well under the
+        // downtown's own minimum block height — one storey next to five,
+        // which is most of what says "houses" rather than "small blocks".
+        const tower = downtown && rand() < 0.06 + central * (0.06 + size * 0.16) ? 1 : 0;
 
         // One tree crown wide, 5-7 px, filling most of its plot and leaving
         // the rest as street. The previous pass's 2.4-4.1 px was measured
         // against a trunk; this is measured against the crown that actually
-        // stands beside it.
-        const fill = 0.62 + rand() * 0.22;
+        // stands beside it. Suburban houses are smaller still — a private
+        // yard around each one is most of what reads as "suburb" rather
+        // than "smaller downtown".
+        const fill = (downtown ? 0.62 + rand() * 0.22 : 0.32 + rand() * 0.16);
         const w = pitch * fill * (0.85 + rand() * 0.3);
         const d = pitch * fill * (0.85 + rand() * 0.3);
 
@@ -1225,11 +1249,9 @@ function placeCityBlocks(
         // stands above the tree line — but it no longer has to do it alone
         // now that the footprint and the tone are both pulling as well.
         // Typical block 4-6 px, downtown tower in a large city up to 13.
-        const h =
-          0.034 +
-          rand() * 0.02 +
-          central * central * (0.01 + size * 0.016) +
-          tower * (0.014 + size * 0.03);
+        const h = downtown
+          ? 0.034 + rand() * 0.02 + central * central * (0.01 + size * 0.016) + tower * (0.014 + size * 0.03)
+          : 0.014 + rand() * 0.008;
 
         const box = new THREE.BoxGeometry(w, h, d);
         box.translate(0, h / 2, 0);
@@ -1262,11 +1284,18 @@ function placeCityBlocks(
         // sampled ground by construction, and the decks of neighbouring
         // plots still join up into a continuous dark carpet with the
         // buildings standing out of it.
-        const plot = new THREE.BoxGeometry(pitch * 0.96, 0.0025, pitch * 0.96);
-        plot.translate(0, 0.0012, 0);
-        plot.rotateY(grid);
-        plot.applyMatrix4(basis);
-        push('city', tint(plot, CITY_STREET));
+        //
+        // Skipped in the suburbs: a house sits on its own lawn, not a paved
+        // plot, and the point of the low density out there is gaps of green
+        // between houses — a deck under every one would paint right back
+        // over the gaps this ring exists to leave open.
+        if (downtown) {
+          const plot = new THREE.BoxGeometry(pitch * 0.96, 0.0025, pitch * 0.96);
+          plot.translate(0, 0.0012, 0);
+          plot.rotateY(grid);
+          plot.applyMatrix4(basis);
+          push('city', tint(plot, CITY_STREET));
+        }
 
         stats.blocks++;
         standing++;
