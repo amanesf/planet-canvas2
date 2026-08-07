@@ -509,6 +509,16 @@ LANDMARKS.push(
   },
 );
 
+/**
+ * G31: the coordinates only, for the UI's "jump to a landmark" control —
+ * deliberately not the whole `Landmark` (its `build` closures are geometry
+ * factories with no business leaving this file, and re-exporting them
+ * would let main.ts call them a second time by accident).
+ */
+export const LANDMARK_INDEX: { name: string; lat: number; lon: number }[] = LANDMARKS.map(
+  ({ name, lat, lon }) => ({ name, lat, lon }),
+);
+
 const MATERIALS: Record<MaterialKey, THREE.MeshStandardMaterial> = {
   // weathered limestone, the default for anything old and built of blocks
   stone: new THREE.MeshStandardMaterial({ color: '#d6cdb8', roughness: 0.85, metalness: 0.03 }),

@@ -12,6 +12,7 @@ import {
   buildTerrainTexture,
   buildWaveTexture,
   displaceSphere,
+  latLonToDir,
   loadClimateData,
   loadRealElevationData,
   rippleSphere,
@@ -23,7 +24,7 @@ import { buildAurora } from './aurora';
 import { buildFog } from './fog';
 import { buildSnowfall } from './snowfall';
 import { buildEruptions } from './eruptions';
-import { buildLandmarks } from './landmarks';
+import { buildLandmarks, LANDMARK_INDEX } from './landmarks';
 import { buildAircraft, buildSatellites, buildShips } from './traffic';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CameraPassShader } from './cameraPass';
@@ -38,7 +39,12 @@ import {
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
+  <div class="location-label" id="location-label"></div>
   <div class="ui">
+    <select id="landmark-jump" class="landmark-select" title="名所へジャンプ" aria-label="名所へジャンプ">
+      <option value="">名所へジャンプ…</option>
+      ${LANDMARK_INDEX.map((l, i) => `<option value="${i}">${l.name}</option>`).join('')}
+    </select>
     <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
   </div>
   <div class="loading" id="loading" role="status">組み立て中…</div>
@@ -915,6 +921,64 @@ toggleButton.addEventListener('click', () => {
   const label = spinning ? '回転を止める' : '回転を再開する';
   toggleButton.title = label;
   toggleButton.setAttribute('aria-label', label);
+});
+
+// ---------- landmark jump ----------
+//
+// "Front-facing" means the world-space direction from the globe's centre
+// to the camera. globeGroup composes as Rz(tilt)·Ry(spin) (see the ZYX
+// note above), so a landmark at (lat, lon) lands on that direction when
+// Rz(tilt)·Ry(spin)·localDir lines up with it — solved by trying the real
+// rotation at a grid of spin angles and keeping the best dot product,
+// rather than inverting the composed rotation by hand and risking a sign
+// or axis-order slip the way the tilt/spin order bug itself did.
+const locationLabel = document.querySelector<HTMLDivElement>('#location-label')!;
+const landmarkSelect = document.querySelector<HTMLSelectElement>('#landmark-jump')!;
+const jumpEuler = new THREE.Euler(0, 0, AXIAL_TILT, 'ZYX');
+const jumpQuat = new THREE.Quaternion();
+const jumpDir = new THREE.Vector3();
+const cameraDir = new THREE.Vector3();
+
+function jumpToLandmark(lat: number, lon: number) {
+  const localDir = latLonToDir(lat, lon);
+  cameraDir.copy(camera.position).sub(globeGroup.position).normalize();
+
+  const STEPS = 360;
+  let bestY = globeGroup.rotation.y;
+  let bestDot = -Infinity;
+  for (let i = 0; i < STEPS; i++) {
+    const y = (i / STEPS) * Math.PI * 2;
+    jumpEuler.set(0, y, AXIAL_TILT, 'ZYX');
+    jumpQuat.setFromEuler(jumpEuler);
+    jumpDir.copy(localDir).applyQuaternion(jumpQuat);
+    const dot = jumpDir.dot(cameraDir);
+    if (dot > bestDot) {
+      bestDot = dot;
+      bestY = y;
+    }
+  }
+  globeGroup.rotation.y = bestY;
+}
+
+landmarkSelect.addEventListener('change', () => {
+  const index = landmarkSelect.value;
+  if (index === '') {
+    locationLabel.textContent = '';
+    locationLabel.classList.remove('visible');
+    return;
+  }
+  const landmark = LANDMARK_INDEX[Number(index)];
+  if (!landmark) return;
+
+  jumpToLandmark(landmark.lat, landmark.lon);
+
+  spinning = false;
+  toggleButton.textContent = '▶';
+  toggleButton.title = '回転を再開する';
+  toggleButton.setAttribute('aria-label', '回転を再開する');
+
+  locationLabel.textContent = landmark.name;
+  locationLabel.classList.add('visible');
 });
 
 // ---------- animation loop ----------
