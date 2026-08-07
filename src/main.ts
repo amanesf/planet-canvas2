@@ -939,6 +939,7 @@ toggleButton.addEventListener('click', () => {
 const clock = new THREE.Clock();
 let rendering = false;
 let globeTick: ((t: number) => void) | null = null;
+let lastT = 0;
 
 function startRendering() {
   if (rendering) return;
@@ -950,8 +951,25 @@ function animate() {
   const t = clock.getElapsedTime();
 
   if (spinning) {
-    globeGroup.rotation.y += 0.0025 * 60 * (1 / 60);
+    // Was `0.0025 * 60 * (1 / 60)` — a fixed increment added once per
+    // animate() call, not scaled by how much wall-clock time that call
+    // actually covered. That is silently correct only at exactly 60fps.
+    // Every other system in this file (season, wind, eruptions, tides)
+    // is driven off `t` itself, i.e. real elapsed seconds, so "a day is
+    // ~42 seconds" holds for them regardless of frame rate — but the
+    // globe's own spin was the one exception, decoupled from wall-clock
+    // time and tied to however many animate() calls happened to run.
+    // On a slow device (this project explicitly targets phones — see
+    // gap-analysis §0's "携帯で動く") a frame-rate dip would have made a
+    // day visibly longer than 42s while the season and every light cue
+    // kept the real schedule; on a high-refresh-rate display it would run
+    // fast for the same reason. `delta` recovers actual elapsed time from
+    // the same clock the rest of the frame already reads, so the spin
+    // rate now means what its constant says regardless of frame rate.
+    const delta = Math.max(0, t - lastT);
+    globeGroup.rotation.y += 0.0025 * 60 * delta;
   }
+  lastT = t;
 
   // A display globe sits still on its pins; the bob that used to be here
   // was the levitation idea, and it survived the sphere being mounted only
