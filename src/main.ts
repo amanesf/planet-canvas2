@@ -55,8 +55,9 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="dial-cluster">
       <div class="dial-label">N - S</div>
       <div class="pitch-dial" id="pitch-dial" role="slider" aria-label="南北に回転" tabindex="0">
-        <div class="pitch-track"></div>
-        <div class="pitch-handle" id="pitch-handle"></div>
+        <div class="pitch-dial-ring"></div>
+        <div class="pitch-dial-tick" id="pitch-dial-tick"></div>
+        <div class="pitch-dial-core"></div>
       </div>
     </div>
     <button id="flag-button" class="cyber-button" title="中心に旗を立てる" aria-label="中心に旗を立てる">
@@ -927,105 +928,85 @@ spinToggle.addEventListener('click', () => {
 // spin off leaves the dial's own offset exactly where the user left it.
 let autoSpinY = 0;
 let userYaw = 0;
-// Clamped for the same reason the old OrbitControls had a min/maxPolarAngle:
-// past a certain tilt the globe is being looked at from over its own pole,
-// which reads as "object floating in space" rather than "diorama on a
-// bench" — the framing this whole project is built around.
-const PITCH_LIMIT = Math.PI * 0.42;
+// Both dials turn freely now, on request — no more pitch clamp keeping
+// the view above the pole. Spinning either one all the way around no
+// longer maps 1:1 onto the globe either: three full turns of the dial is
+// one full turn of the planet, so a small, precise flick of the knob
+// still reads as a small, precise nudge instead of the globe snapping
+// past whole continents per turn.
+const DIAL_GEAR_RATIO = 3;
 let userPitch = 0;
 
-// East-west dial: a round knob dragged in a circle. Only the *change* in
-// angle between pointer-move events is read, not the pointer's absolute
-// angle — so grabbing the dial anywhere on its rim and turning it feels
-// like turning a real knob instead of snapping the globe to point at
-// wherever the cursor first landed.
-const yawDial = document.querySelector<HTMLDivElement>('#yaw-dial')!;
-const yawDialTick = document.querySelector<HTMLDivElement>('#yaw-dial-tick')!;
-let yawDialAngle = 0; // cosmetic only — which way the tick currently points
-{
+// A single helper drives both dials: each is a round knob, dragged in a
+// circle, reading only the *change* in angle between pointer-move events
+// (not the pointer's absolute angle) so grabbing the rim anywhere and
+// turning it feels like a real knob rather than snapping to point at
+// wherever the cursor first landed. The knob's own on-screen tick spins
+// 1:1 with the finger; the value it drives (yaw or pitch) only advances
+// at 1/DIAL_GEAR_RATIO of that, per the gear ratio above.
+function wireRotaryDial(
+  dial: HTMLElement,
+  tick: HTMLElement,
+  onDelta: (deltaRad: number) => void,
+  keys: [string, string],
+): void {
+  let dialAngle = 0; // cosmetic — which way the tick currently points
   let dragging = false;
   let lastAngle = 0;
   const angleAt = (ev: PointerEvent) => {
-    const rect = yawDial.getBoundingClientRect();
+    const rect = dial.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
     return Math.atan2(ev.clientY - cy, ev.clientX - cx);
   };
-  yawDial.addEventListener('pointerdown', (ev) => {
+  const spinTick = (delta: number) => {
+    dialAngle += delta;
+    tick.style.transform = `rotate(${dialAngle}rad)`;
+  };
+  dial.addEventListener('pointerdown', (ev) => {
     dragging = true;
-    yawDial.setPointerCapture(ev.pointerId);
+    dial.setPointerCapture(ev.pointerId);
     lastAngle = angleAt(ev);
   });
-  yawDial.addEventListener('pointermove', (ev) => {
+  dial.addEventListener('pointermove', (ev) => {
     if (!dragging) return;
     const angle = angleAt(ev);
     let delta = angle - lastAngle;
     // wrap the shortest way round rather than snapping when crossing ±π
     if (delta > Math.PI) delta -= Math.PI * 2;
     if (delta < -Math.PI) delta += Math.PI * 2;
-    userYaw += delta;
-    yawDialAngle += delta;
-    yawDialTick.style.transform = `rotate(${yawDialAngle}rad)`;
+    spinTick(delta);
+    onDelta(delta / DIAL_GEAR_RATIO);
     lastAngle = angle;
   });
   const stop = (ev: PointerEvent) => {
     dragging = false;
-    if (yawDial.hasPointerCapture(ev.pointerId)) yawDial.releasePointerCapture(ev.pointerId);
+    if (dial.hasPointerCapture(ev.pointerId)) dial.releasePointerCapture(ev.pointerId);
   };
-  yawDial.addEventListener('pointerup', stop);
-  yawDial.addEventListener('pointercancel', stop);
-  // keyboard: left/right nudge, for anyone not on a touch/mouse pointer
-  yawDial.addEventListener('keydown', (ev) => {
-    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+  dial.addEventListener('pointerup', stop);
+  dial.addEventListener('pointercancel', stop);
+  // keyboard: an accessible nudge, for anyone not on a touch/mouse pointer
+  dial.addEventListener('keydown', (ev) => {
+    if (ev.key !== keys[0] && ev.key !== keys[1]) return;
     ev.preventDefault();
-    const step = (ev.key === 'ArrowLeft' ? -1 : 1) * 0.12;
-    userYaw += step;
-    yawDialAngle += step;
-    yawDialTick.style.transform = `rotate(${yawDialAngle}rad)`;
+    const step = (ev.key === keys[0] ? -1 : 1) * 0.12;
+    spinTick(step);
+    onDelta(step / DIAL_GEAR_RATIO);
   });
 }
 
-// North-south dial: a vertical track, the puck's position along it *is*
-// the pitch (absolute, not delta-accumulated like the yaw knob) — a
-// bounded tilt reads more naturally as a slider than as a knob you could
-// spin forever.
-const pitchDial = document.querySelector<HTMLDivElement>('#pitch-dial')!;
-const pitchHandle = document.querySelector<HTMLDivElement>('#pitch-handle')!;
-function setPitchHandle(): void {
-  const t = 0.5 - userPitch / (PITCH_LIMIT * 2); // top = looking from the north
-  pitchHandle.style.top = `${8 + t * 84}%`;
-}
-setPitchHandle();
-{
-  let dragging = false;
-  const applyAt = (ev: PointerEvent) => {
-    const rect = pitchDial.getBoundingClientRect();
-    const t = THREE.MathUtils.clamp((ev.clientY - rect.top) / rect.height, 0, 1);
-    userPitch = (0.5 - t) * (PITCH_LIMIT * 2);
-    setPitchHandle();
-  };
-  pitchDial.addEventListener('pointerdown', (ev) => {
-    dragging = true;
-    pitchDial.setPointerCapture(ev.pointerId);
-    applyAt(ev);
-  });
-  pitchDial.addEventListener('pointermove', (ev) => {
-    if (dragging) applyAt(ev);
-  });
-  const stop = (ev: PointerEvent) => {
-    dragging = false;
-    if (pitchDial.hasPointerCapture(ev.pointerId)) pitchDial.releasePointerCapture(ev.pointerId);
-  };
-  pitchDial.addEventListener('pointerup', stop);
-  pitchDial.addEventListener('pointercancel', stop);
-  pitchDial.addEventListener('keydown', (ev) => {
-    if (ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
-    ev.preventDefault();
-    const step = (ev.key === 'ArrowUp' ? 1 : -1) * 0.08;
-    userPitch = THREE.MathUtils.clamp(userPitch + step, -PITCH_LIMIT, PITCH_LIMIT);
-    setPitchHandle();
-  });
-}
+wireRotaryDial(
+  document.querySelector<HTMLDivElement>('#yaw-dial')!,
+  document.querySelector<HTMLDivElement>('#yaw-dial-tick')!,
+  (d) => { userYaw += d; },
+  ['ArrowLeft', 'ArrowRight'],
+);
+wireRotaryDial(
+  document.querySelector<HTMLDivElement>('#pitch-dial')!,
+  document.querySelector<HTMLDivElement>('#pitch-dial-tick')!,
+  (d) => { userPitch += d; },
+  ['ArrowUp', 'ArrowDown'],
+);
 
 // ---------- flag: plant a marker at the point currently facing the camera ----------
 //
@@ -1039,17 +1020,23 @@ setPitchHandle();
 const flagGroup = new THREE.Group();
 flagGroup.visible = false;
 {
+  // Sized up a lot from the first pass, which measured out as a couple of
+  // pixels on the actual sphere and was effectively invisible — "見えるよ
+  // うにして" (make it visible). A glowing beacon was tried here too, on
+  // the theory that a plain flag would still be too small to notice, but
+  // a lit marker wasn't the ask — this is just a bigger flag, an ordinary
+  // pole and cloth, not a light source.
   const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.006, 0.006, 0.16, 8),
-    new THREE.MeshStandardMaterial({ color: 0xd6dde3, metalness: 0.6, roughness: 0.35 }),
+    new THREE.CylinderGeometry(0.012, 0.014, 0.42, 10),
+    new THREE.MeshStandardMaterial({ color: 0xe8edf2, metalness: 0.6, roughness: 0.3 }),
   );
-  pole.position.y = 0.08;
+  pole.position.y = 0.21;
   flagGroup.add(pole);
   const cloth = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.09, 0.055),
-    new THREE.MeshBasicMaterial({ color: 0x5be4ff, side: THREE.DoubleSide }),
+    new THREE.PlaneGeometry(0.24, 0.15),
+    new THREE.MeshStandardMaterial({ color: 0x2fa8e8, roughness: 0.55, side: THREE.DoubleSide }),
   );
-  cloth.position.set(0.045, 0.135, 0);
+  cloth.position.set(0.12, 0.35, 0);
   flagGroup.add(cloth);
 }
 globeGroup.add(flagGroup);
@@ -1058,8 +1045,33 @@ const flagButton = document.querySelector<HTMLButtonElement>('#flag-button')!;
 const flagWorldDir = new THREE.Vector3();
 const flagLocalDir = new THREE.Vector3();
 const flagGlobeQuat = new THREE.Quaternion();
+const flagGlobeCentre = new THREE.Vector3();
+const flagRay = new THREE.Ray();
+const flagForward = new THREE.Vector3();
+const flagHit = new THREE.Vector3();
 flagButton.addEventListener('click', () => {
-  flagWorldDir.copy(camera.position).sub(globeGroup.getWorldPosition(new THREE.Vector3())).normalize();
+  // Was `camera.position - globeCentre`, which is the direction from the
+  // globe's *centre* to the camera — correct only if the camera looks
+  // straight at that centre, which it does not: the camera aims at
+  // (0, TARGET_Y, 0) = (0, 0.15, 0) for framing reasons (see the note by
+  // TARGET_Y — it leaves room for the stand at the bottom of the shot),
+  // while the globe itself is seated at (0, GLOBE_CENTRE_Y, 0) = (0, 0.86,
+  // 0). Those are different points, so the old formula planted the flag
+  // wherever a line from the globe's centre through the camera happened
+  // to land — not the point the viewer is actually looking at, which is
+  // what "正面視点" asked for. The correct point is where the camera's own
+  // forward ray actually meets the sphere.
+  camera.getWorldDirection(flagForward);
+  globeGroup.getWorldPosition(flagGlobeCentre);
+  flagRay.set(camera.position, flagForward);
+  const sphere = new THREE.Sphere(flagGlobeCentre, RADIUS);
+  if (!flagRay.intersectSphere(sphere, flagHit)) {
+    // Should not happen at this camera's framing (the globe fills most of
+    // the frame), but fall back to the old approximation rather than
+    // silently doing nothing if it somehow ever does.
+    flagHit.copy(camera.position).sub(flagGlobeCentre).setLength(RADIUS).add(flagGlobeCentre);
+  }
+  flagWorldDir.copy(flagHit).sub(flagGlobeCentre).normalize();
   globeGroup.getWorldQuaternion(flagGlobeQuat);
   flagLocalDir.copy(flagWorldDir).applyQuaternion(flagGlobeQuat.invert()).normalize();
   const surface = RADIUS + sampledHeight(flagLocalDir).display * BUMP_HEIGHT;

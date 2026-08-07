@@ -127,7 +127,15 @@ canvas {
   position: absolute;
   left: 50%;
   bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-  transform: translateX(-50%);
+  /* Doubled on request. Scaling the whole panel rather than doubling
+     every dial/button dimension by hand keeps every internal drag
+     measurement correct for free — getBoundingClientRect() (which the
+     dial drag handlers in main.ts read) already reports the post-
+     transform size, so nothing downstream needed to change. Anchored to
+     bottom centre so it grows upward/outward from the same spot instead
+     of the enlarged panel drifting off its old position. */
+  transform: translateX(-50%) scale(2);
+  transform-origin: 50% 100%;
   display: flex;
   align-items: flex-end;
   gap: 18px;
@@ -202,40 +210,54 @@ canvas {
   cursor: grabbing;
 }
 
-/* North-south: a vertical track with a puck, its position is the pitch */
+/* North-south: on request, the same round rotary dial as east-west
+   (dragged in a circle, spun from directly in front of the viewer)
+   rather than a lever with a fixed travel — it drives globeGroup's pitch
+   the same way the other dial drives yaw: an unbounded delta-angle
+   accumulator, not an absolute position. Visually distinguished from the
+   yaw dial only by its tick colour, since the "N-S"/"E-W" label already
+   says which is which. */
 .pitch-dial {
   position: relative;
-  width: 30px;
+  width: 52px;
   height: 52px;
+  border-radius: 999px;
   cursor: grab;
   touch-action: none;
 }
 
-.pitch-track {
+.pitch-dial-ring {
   position: absolute;
-  left: 50%;
-  top: 2px;
-  bottom: 2px;
-  width: 4px;
-  margin-left: -2px;
-  border-radius: 3px;
-  background: rgba(10, 14, 20, 0.95);
-  border: 1px solid rgba(91, 228, 255, 0.3);
-  box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.6);
+  inset: 0;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 30%, rgba(60, 75, 90, 0.9), rgba(10, 14, 20, 0.95) 70%);
+  border: 1px solid rgba(91, 228, 255, 0.35);
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.6), 0 0 10px rgba(57, 200, 255, 0.12);
 }
 
-.pitch-handle {
+.pitch-dial-core {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 22px;
-  height: 12px;
-  margin-left: -11px;
-  margin-top: -6px;
-  border-radius: 4px;
-  background: linear-gradient(180deg, #35414d, #10151b);
-  border: 1px solid rgba(91, 228, 255, 0.55);
-  box-shadow: 0 0 8px rgba(57, 200, 255, 0.35);
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #9dffb0;
+  box-shadow: 0 0 6px 2px rgba(157, 255, 176, 0.7);
+  transform: translate(-50%, -50%);
+}
+
+.pitch-dial-tick {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 20px;
+  margin-left: -1px;
+  margin-top: -24px;
+  border-radius: 2px;
+  background: linear-gradient(#c8ffd2, rgba(200, 255, 210, 0));
+  transform-origin: 50% 24px;
 }
 
 .pitch-dial:active {
@@ -280,11 +302,9 @@ canvas {
     gap: 12px;
     padding: 8px 12px;
   }
-  .yaw-dial {
-    width: 46px;
-    height: 46px;
-  }
+  .yaw-dial,
   .pitch-dial {
+    width: 46px;
     height: 46px;
   }
 }
