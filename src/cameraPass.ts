@@ -45,6 +45,12 @@ export const CameraPassShader = {
     uGrain: { value: 0.05 },
     /** radial colour fringing at the frame edge, in UV units */
     uAberration: { value: 0.0016 },
+    /** how much of the bright-area glow bleeds back into the frame */
+    uBloomStrength: { value: 0.12 },
+    /** glow sample radius, in UV units */
+    uBloomRadius: { value: 0.008 },
+    /** thin veiling haze mixed over the whole frame, like dust in the air */
+    uHaze: { value: 0.035 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -68,6 +74,9 @@ export const CameraPassShader = {
     uniform float uVignette;
     uniform float uGrain;
     uniform float uAberration;
+    uniform float uBloomStrength;
+    uniform float uBloomRadius;
+    uniform float uHaze;
     varying vec2 vUv;
 
     // RINGS is set per quality tier: two rings read as a round aperture at
@@ -153,6 +162,26 @@ export const CameraPassShader = {
       return sum / weight;
     }
 
+    // A cheap, single-ring approximation of bloom: only pixels bright
+    // enough to be a highlight (a sunlit cloud top, a city light, lava
+    // glow) feed it, so an ordinary mid-toned frame does not gain a soft
+    // double-exposed look — only its actual highlights bleed a little,
+    // which is what turns "glow" into a lens/eye response rather than a
+    // uniform blur laid over everything.
+    vec3 bloomGlow(vec2 uv, float edge) {
+      vec2 aspect = vec2(1.0, uResolution.x / uResolution.y);
+      const int TAPS = 6;
+      vec3 sum = vec3(0.0);
+      for (int i = 0; i < TAPS; i++) {
+        float angle = (float(i) + 0.5) / float(TAPS) * 6.28318530718;
+        vec2 offset = vec2(cos(angle), sin(angle)) * aspect * uBloomRadius;
+        vec3 s = texture2D(tDiffuse, uv + offset).rgb;
+        float l = dot(s, vec3(0.2126, 0.7152, 0.0722));
+        sum += s * smoothstep(0.55, 1.1, l);
+      }
+      return sum / float(TAPS);
+    }
+
     void main() {
       vec2 centred = (vUv - vec2(0.5)) * vec2(uResolution.x / uResolution.y, 1.0);
       float edge = clamp(dot(centred, centred) * 2.2, 0.0, 1.0);
@@ -160,10 +189,24 @@ export const CameraPassShader = {
       float radius = circleOfConfusion(vUv) * uMaxBlur;
       vec3 colour = radius < 0.0003 ? sampleScene(vUv, edge) : blurred(vUv, radius, edge);
 
+      // A thin glow off the frame's own highlights, on request — kept
+      // small (see the uniform defaults) so it reads as a lens/eye
+      // response to bright spots, not as a haze laid over the whole
+      // picture (that is the separate, even fainter term below).
+      colour += bloomGlow(vUv, edge) * uBloomStrength;
+
       // Lens falloff. Every lens is dimmer at the corners than in the
       // middle, and the eye reads an evenly lit rectangle as artificial long
       // before it can say why.
       colour *= 1.0 - uVignette * edge * edge;
+
+      // A very thin veiling haze, like dust suspended in the light — lifts
+      // the blacks a touch and pulls the frame toward the key lamp's own
+      // warmth, which is what a lens shows in a room with anything
+      // floating in the air, instead of the "photograph in vacuum"
+      // cleanliness a raw render has by default. Small on purpose: this is
+      // meant to be felt rather than seen.
+      colour = mix(colour, vec3(0.5, 0.44, 0.36), uHaze);
 
       // Sensor grain, animated so it does not sit on the image like a
       // texture. Kept below the level where it is consciously visible: the

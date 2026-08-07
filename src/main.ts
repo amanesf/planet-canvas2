@@ -12,7 +12,6 @@ import {
   buildTerrainTexture,
   buildWaveTexture,
   displaceSphere,
-  latLonToDir,
   loadClimateData,
   loadRealElevationData,
   rippleSphere,
@@ -24,7 +23,7 @@ import { buildAurora } from './aurora';
 import { buildFog } from './fog';
 import { buildSnowfall } from './snowfall';
 import { buildEruptions } from './eruptions';
-import { buildLandmarks, LANDMARK_INDEX } from './landmarks';
+import { buildLandmarks } from './landmarks';
 import { buildIcebergs } from './icebergs';
 import { buildAircraft, buildSatellites, buildShips } from './traffic';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -40,12 +39,7 @@ import {
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="title">箱庭プラネット — mockup</div>
-  <div class="location-label" id="location-label"></div>
   <div class="ui">
-    <select id="landmark-jump" class="landmark-select" title="名所へジャンプ" aria-label="名所へジャンプ">
-      <option value="">名所へジャンプ…</option>
-      ${LANDMARK_INDEX.map((l, i) => `<option value="${i}">${l.name}</option>`).join('')}
-    </select>
     <button id="mode-toggle" class="mode-button" title="回転を止める" aria-label="回転を止める">⏸</button>
   </div>
   <div class="loading" id="loading" role="status">組み立て中…</div>
@@ -574,8 +568,14 @@ scene.add(keyLight);
 // side readable, nowhere near enough to compete with the key. Cut from
 // 0.62 alongside the ambient above — see the note there for the
 // before/after numbers this pair was checked against.
+//
+// X mirrored alongside the key's move to the front-right: a bounce card
+// fills in the key's *own* shadow side, so it has to stay on the opposite
+// side of the key rather than at a fixed world position — otherwise, once
+// the key moved, this would have started adding light to the day side
+// while leaving the actual night side exactly as unfilled as before.
 const fillLight = new THREE.DirectionalLight(0xcfe0f2, 0.19);
-fillLight.position.set(3.5, -0.8, 2.5);
+fillLight.position.set(-3.5, -0.8, 2.5);
 scene.add(fillLight);
 
 // cool separation edge along the far side, so the globe doesn't merge
@@ -934,64 +934,6 @@ toggleButton.addEventListener('click', () => {
   toggleButton.setAttribute('aria-label', label);
 });
 
-// ---------- landmark jump ----------
-//
-// "Front-facing" means the world-space direction from the globe's centre
-// to the camera. globeGroup composes as Rz(tilt)·Ry(spin) (see the ZYX
-// note above), so a landmark at (lat, lon) lands on that direction when
-// Rz(tilt)·Ry(spin)·localDir lines up with it — solved by trying the real
-// rotation at a grid of spin angles and keeping the best dot product,
-// rather than inverting the composed rotation by hand and risking a sign
-// or axis-order slip the way the tilt/spin order bug itself did.
-const locationLabel = document.querySelector<HTMLDivElement>('#location-label')!;
-const landmarkSelect = document.querySelector<HTMLSelectElement>('#landmark-jump')!;
-const jumpEuler = new THREE.Euler(0, 0, AXIAL_TILT, 'ZYX');
-const jumpQuat = new THREE.Quaternion();
-const jumpDir = new THREE.Vector3();
-const cameraDir = new THREE.Vector3();
-
-function jumpToLandmark(lat: number, lon: number) {
-  const localDir = latLonToDir(lat, lon);
-  cameraDir.copy(camera.position).sub(globeGroup.position).normalize();
-
-  const STEPS = 360;
-  let bestY = globeGroup.rotation.y;
-  let bestDot = -Infinity;
-  for (let i = 0; i < STEPS; i++) {
-    const y = (i / STEPS) * Math.PI * 2;
-    jumpEuler.set(0, y, AXIAL_TILT, 'ZYX');
-    jumpQuat.setFromEuler(jumpEuler);
-    jumpDir.copy(localDir).applyQuaternion(jumpQuat);
-    const dot = jumpDir.dot(cameraDir);
-    if (dot > bestDot) {
-      bestDot = dot;
-      bestY = y;
-    }
-  }
-  globeGroup.rotation.y = bestY;
-}
-
-landmarkSelect.addEventListener('change', () => {
-  const index = landmarkSelect.value;
-  if (index === '') {
-    locationLabel.textContent = '';
-    locationLabel.classList.remove('visible');
-    return;
-  }
-  const landmark = LANDMARK_INDEX[Number(index)];
-  if (!landmark) return;
-
-  jumpToLandmark(landmark.lat, landmark.lon);
-
-  spinning = false;
-  toggleButton.textContent = '▶';
-  toggleButton.title = '回転を再開する';
-  toggleButton.setAttribute('aria-label', '回転を再開する');
-
-  locationLabel.textContent = landmark.name;
-  locationLabel.classList.add('visible');
-});
-
 // ---------- animation loop ----------
 
 const clock = new THREE.Clock();
@@ -1238,6 +1180,17 @@ globeMaterial.onBeforeCompile = (shader) => {
         float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 3.0);
         totalEmissiveRadiance += vec3(0.20, 0.30, 0.46) * rimFresnel * night * 0.12;
 
+        // A thin atmosphere, on request. Still not a revived shell mesh —
+        // same constraint as the night rim just above, same technique (add
+        // to this object's own emissive at its silhouette, no new geometry,
+        // no new draw call) — just also gated to the *daylit* fraction
+        // (1.0 - night) instead of only the night one, and given the
+        // brighter, whiter sky-blue a sunlit limb actually has rather than
+        // the night rim's cooler, dimmer tone. Kept well under the dusk
+        // bands' strength, same as the night rim, so it stays a thin
+        // haze at the edge rather than a halo around the whole ball.
+        totalEmissiveRadiance += vec3(0.55, 0.72, 1.0) * rimFresnel * (1.0 - night) * 0.1;
+
         // The far side's own colour, not just what lights it. Cutting the
         // ambient/fill/rim rig (see the note by their definitions) only goes
         // so far: three's tonemap pipeline recovers visibility from
@@ -1479,10 +1432,14 @@ const oceanMaterial = new THREE.MeshPhysicalMaterial({
   bumpMap: waveTexture,
   bumpScale: 0.012,
   transparent: true,
-  // full strength — the per-texel alpha ramp baked into the ocean texture
-  // is what varies the transparency now, so a flat material opacity here
-  // would only fight it
-  opacity: 1,
+  // Was full strength — the per-texel alpha ramp baked into the ocean
+  // texture is what varies transparency across the surface, so this is a
+  // flat multiplier on top of that ramp rather than a competing one.
+  // Nudged down only slightly, on request: a much lower value is what
+  // previously read as "soft gummy-candy jelly" rather than solid poured
+  // resin (see the note above this material), so this stays close to fully
+  // opaque and only barely lets the seabed show through.
+  opacity: 0.92,
   roughness: 0.3,
   metalness: 0,
   // poured-epoxy-resin read: a strong, very smooth clearcoat gives the

@@ -39,7 +39,12 @@ import { mulberry32 } from './spatialHash';
  * the wind twice and disagreed. A cast shadow that does not point away from
  * the lamp is worse than no cast shadow, because it reads as a stain.
  */
-export const KEY_LIGHT_POSITION = new THREE.Vector3(-5.0, 4.4, 3.2);
+// Mirrored from (-5.0, 4.4, 3.2): the key now rakes in from the front-right
+// instead of the front-left, so the day side sits front-right and the night
+// side sits back-left, per request. Only the X sign changed — the height and
+// depth that made this a raking, not frontal, light (see the note by
+// keyLight in main.ts) are untouched.
+export const KEY_LIGHT_POSITION = new THREE.Vector3(5.0, 4.4, 3.2);
 
 /** Top of the desk, in world units. */
 const DESK_Y = -2.08;
@@ -76,11 +81,14 @@ export const GLOBE_CENTRE_Y = 0.86;
  * spin), and this project has twice been bitten by two places computing
  * the same physical fact and disagreeing.
  *
- * The sign is the one 0.04 already had: a rotation about +Z leans the
- * north pole toward -X, which is the viewer's left, and so toward the key
- * light. The northern hemisphere is the one tipped into the lamp.
+ * Negated from the sign 0.04 originally had, alongside the key light's move
+ * to the front-right: a rotation about +Z used to lean the north pole
+ * toward -X (the viewer's left) to keep it tipped toward the lamp; now that
+ * the lamp is at +X, the sign flips too so that relationship still holds —
+ * a rotation about +Z now leans the north pole toward +X. The northern
+ * hemisphere stays the one tipped into the lamp, just on the other side.
  */
-export const AXIAL_TILT = (23.4 * Math.PI) / 180;
+export const AXIAL_TILT = -(23.4 * Math.PI) / 180;
 
 // ---------------------------------------------------------------------
 // The shadow the globe throws on the desk
@@ -112,13 +120,14 @@ export const AXIAL_TILT = (23.4 * Math.PI) / 180;
 // dark fill whose *alpha* falls off. At these opacities the grain still
 // reads through it, which was the only thing multiply was buying.
 //
-// The geometry is the real projection, not a guess. The lamp is up and to
-// the left and behind the subject, so the shadow is thrown to the right and
-// toward the viewer, and it is long — the globe's centre stands 2.68 above
-// the desk and the light is only about 40 degrees up, so the far end of it
-// lands three and a half units out. That length is most of the effect: a
-// neat circular pool under an object reads as an overhead studio light,
-// which is not the light this room has.
+// The geometry is the real projection, not a guess (and needs no separate
+// update when the lamp moves — `toSubject` below reads KEY_LIGHT_POSITION
+// live). The lamp is up and to the right and behind the subject, so the
+// shadow is thrown to the left and toward the viewer, and it is long — the
+// globe's centre stands 2.68 above the desk and the light is only about 40
+// degrees up, so the far end of it lands three and a half units out. That
+// length is most of the effect: a neat circular pool under an object reads
+// as an overhead studio light, which is not the light this room has.
 function buildContactShadow(): THREE.Mesh {
   const size = 256;
   const canvas = document.createElement('canvas');
