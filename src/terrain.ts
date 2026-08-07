@@ -1290,6 +1290,42 @@ function sampleField(grid: Float32Array, dir: THREE.Vector3): number {
 }
 
 /**
+ * G6: real sand seas, not a probability the noise happens to roll.
+ *
+ * A first version of this field was pure low-frequency noise — which
+ * gave every hot desert on the planet an equal, uncorrelated chance of
+ * being dune sea, so erg patches turned up scattered across the Kalahari
+ * and the Gobi as readily as the Sahara. An erg is not a texture a desert
+ * happens to have; it is a specific, named dune field standing in a
+ * specific place — the Rub' al Khali is not "some sand sea", it is *the*
+ * sand sea that fills the southern Arabian peninsula. Six real ones,
+ * radius sized by eye against how much of the globe's desert they
+ * actually cover.
+ */
+const ERG_REGIONS: { lat: number; lon: number; radiusDeg: number }[] = [
+  { lat: 20, lon: 51, radiusDeg: 8 }, // Rub' al Khali, Arabia
+  { lat: 30, lon: 2, radiusDeg: 6 }, // Grand Erg Oriental/Occidental, Algeria
+  { lat: 25, lon: -2, radiusDeg: 5 }, // Erg Chech, Mali/Algeria
+  { lat: -24, lon: 15, radiusDeg: 4 }, // Namib Sand Sea
+  { lat: 39, lon: 82, radiusDeg: 6 }, // Taklamakan, China
+  { lat: -25, lon: 137, radiusDeg: 5 }, // Simpson Desert, Australia
+];
+const ergCentres = ERG_REGIONS.map((r) => ({
+  dir: latLonToDir(r.lat, r.lon),
+  radius: (r.radiusDeg * Math.PI) / 180,
+}));
+
+function ergRegionAt(dir: THREE.Vector3): number {
+  let best = 0;
+  for (const c of ergCentres) {
+    const angle = dir.angleTo(c.dir);
+    const t = 1 - smoothstep(angle, c.radius * 0.7, c.radius);
+    if (t > best) best = t;
+  }
+  return best;
+}
+
+/**
  * Where a desert is a sand sea rather than gravel plain, 0..1.
  *
  * A desert is not a sand sea, and this globe's was: `BW` scattered dunes
@@ -1300,15 +1336,24 @@ function sampleField(grid: Float32Array, dir: THREE.Vector3): number {
  * reg and hamada, gravel and rock plain, with dark massifs standing out of
  * it. That internal contrast is what says "desert"; the dunes alone do not.
  *
- * Deliberately the lowest-frequency field in this file. An erg is hundreds
- * of kilometres across (the Grand Erg Oriental, the Rub' al Khali), so it
- * has to change slowly enough to survive as one shape at globe scale
- * rather than dissolving into patchiness. Read by both the paint and the
- * dune scatter, so the pale sand and the ridges standing on it are one
- * feature described once rather than two that can drift apart.
+ * The noise is still here, multiplied against `ergRegionAt` rather than
+ * replaced by it — a real erg is not a flat disc of uniform sand either,
+ * it has its own internal texture of denser and sparser dune fields.
+ * `ergRegionAt` says which named sand sea this point could belong to;
+ * the noise says whether this particular patch of it is dune or a gap.
+ * Skipping the noise call outside every region's reach (most of the
+ * sphere) is the same zero-coefficient saving as `heightAt` — G32.
+ *
+ * Deliberately the lowest-frequency field in this file for that internal
+ * noise term. Read by both the paint and the dune scatter, so the pale
+ * sand and the ridges standing on it are one feature described once
+ * rather than two that can drift apart.
  */
 function rawErgAt(dir: THREE.Vector3): number {
-  return (fbm3(dir.x * 2.1 + 913, dir.y * 2.1 + 913, dir.z * 2.1 + 913, 2) + 1) * 0.5;
+  const region = ergRegionAt(dir);
+  if (region <= 0) return 0;
+  const noise = (fbm3(dir.x * 2.1 + 913, dir.y * 2.1 + 913, dir.z * 2.1 + 913, 2) + 1) * 0.5;
+  return region * (0.35 + 0.65 * noise);
 }
 
 let ergGrid: Float32Array | null = null;
