@@ -543,6 +543,7 @@ interface Lake {
   width: number;
   /** bounding cone, for the early-out every one of two million calls takes */
   centre: THREE.Vector3;
+  reach: number;
   cosReach: number;
 }
 
@@ -575,8 +576,43 @@ const LAKES: Lake[] = LAKE_SPECS.map((spec) => {
   let reach = 0;
   for (const p of points) reach = Math.max(reach, centre.angleTo(p));
   // the mask's jitter and its outer ramp both push past the nominal width
-  return { segments, points, width: spec.width, centre, cosReach: Math.cos(reach + spec.width * 2) };
+  return {
+    segments,
+    points,
+    width: spec.width,
+    centre,
+    reach: reach + spec.width * 2,
+    cosReach: Math.cos(reach + spec.width * 2),
+  };
 });
+
+// Same 5-degree grid the cities and the roads are bucketed onto. Without
+// it every one of two million texels walks all nineteen lakes, three times
+// over (the height field, the paint and the ocean shell each ask), and the
+// profile put that at 4% of the whole terrain bake for a field that is
+// zero over 99% of the sphere. Built lazily because `bucketIndex` and its
+// constants are declared further down the file.
+let lakeBuckets: Int32Array[] | null = null;
+function lakeBucketFor(dir: THREE.Vector3): Int32Array {
+  if (!lakeBuckets) {
+    const lists: number[][] = Array.from({ length: URBAN_BUCKET_LAT * URBAN_BUCKET_LON }, () => []);
+    const probe = new THREE.Vector3();
+    const cellSlack = 0.087 * Math.SQRT2 * 0.5 + 1e-3;
+    for (let iy = 0; iy < URBAN_BUCKET_LAT; iy++) {
+      const lat = 90 - (iy + 0.5) * (180 / URBAN_BUCKET_LAT);
+      for (let ix = 0; ix < URBAN_BUCKET_LON; ix++) {
+        const lon = -180 + (ix + 0.5) * (360 / URBAN_BUCKET_LON);
+        probe.copy(dirForLatLon(lat, lon));
+        const bucket = lists[iy * URBAN_BUCKET_LON + ix];
+        for (let i = 0; i < LAKES.length; i++) {
+          if (probe.angleTo(LAKES[i].centre) < LAKES[i].reach + cellSlack) bucket.push(i);
+        }
+      }
+    }
+    lakeBuckets = lists.map((l) => Int32Array.from(l));
+  }
+  return lakeBuckets[bucketIndex(dir)];
+}
 
 /** Angular distance from `dir` to a lake's spine. */
 function lakeDistance(dir: THREE.Vector3, lake: Lake): number {
@@ -617,8 +653,11 @@ function lakeDistance(dir: THREE.Vector3, lake: Lake): number {
  * water, the shore the canopy is held off, and the coastal step.
  */
 function lakeProximity(dir: THREE.Vector3): number {
+  const bucket = lakeBucketFor(dir);
+  if (bucket.length === 0) return Infinity;
   let best = Infinity;
-  for (const lake of LAKES) {
+  for (let i = 0; i < bucket.length; i++) {
+    const lake = LAKES[bucket[i]];
     if (dir.dot(lake.centre) < lake.cosReach) continue;
     const jitter = (fbm3(dir.x * 90 + 511, dir.y * 90 + 511, dir.z * 90 + 511, 3) - 0.5) * 0.75;
     const d = lakeDistance(dir, lake) / lake.width - jitter;
