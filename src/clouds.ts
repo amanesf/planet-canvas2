@@ -946,6 +946,49 @@ export interface CloudSystem {
 }
 
 /**
+ * GLSL shared by every surface that reads the baked cloud-shadow map:
+ * the globe, the ocean, and (G55) the cloud deck's own self-shading —
+ * moved here rather than left beside the globe material in main.ts so
+ * the deck that owns the texture also owns the one function that decodes
+ * it, and nothing downstream re-derives the encoding by hand.
+ */
+export const CLOUD_SHADOW_GLSL = `
+  float cloudShade(vec3 objNormal, float strength) {
+    float lat = asin(clamp(objNormal.y, -1.0, 1.0));
+    float v = lat / 3.14159265 + 0.5;
+    // green is row-constant: this latitude's drift rate, encoded
+    float omega = (texture2D(uCloudShadow, vec2(0.5, v)).g - 0.5) * uOmegaScale;
+    float lon = atan(objNormal.z, -objNormal.x);
+    // a nodule now at this longitude started at lon - omega*t
+    float u = (lon - omega * uCloudTime) / 6.28318530718 + 0.5;
+    float cover = texture2D(uCloudShadow, vec2(fract(u), v)).r;
+    return 1.0 - cover * strength;
+  }
+
+  // How wet the ground here is, 0..1.
+  //
+  // The blue channel of the same map marks the cells that have rain
+  // falling out of them, so this is one more fetch of a texture already
+  // being sampled and no new state anywhere. Read a little *ahead* of
+  // where the cell is now — the lookup is offset against the drift — so
+  // the dark patch trails out from under the storm rather than sitting
+  // exactly beneath it: ground that has just been rained on, which is
+  // what is actually visible from outside. Under the cell itself the
+  // shade is doing the work anyway.
+  float rainWet(vec3 objNormal) {
+    float lat = asin(clamp(objNormal.y, -1.0, 1.0));
+    float v = lat / 3.14159265 + 0.5;
+    float omega = (texture2D(uCloudShadow, vec2(0.5, v)).g - 0.5) * uOmegaScale;
+    float lon = atan(objNormal.z, -objNormal.x);
+    float u = (lon - omega * uCloudTime) / 6.28318530718 + 0.5;
+    // one and a half cell-widths downwind, in the direction the deck came
+    // from — sign carried by omega so it works in both wind belts
+    float trail = sign(omega) * 0.022;
+    return texture2D(uCloudShadow, vec2(fract(u + trail), v)).b;
+  }
+`;
+
+/**
  * Bake the cloud deck into a map the globe can read as shade.
  *
  * Shadow mapping is off in this project and staying off — it was the
@@ -1593,7 +1636,16 @@ export function buildClouds(
   const cloudsQuat = new THREE.Quaternion();
   const rainWorldPos = new THREE.Vector3();
 
+  // G55: layers. coreMaterial's own self-shadow reads uCloudTime the same
+  // way the globe and ocean already do, but it is this uniform's own
+  // object rather than main.ts's cloudShadowUniforms — the deck knows its
+  // own clock before main.ts has anywhere to plug it in (buildClouds has
+  // not returned yet), and there is no reason for two different systems
+  // to share one mutable value when each already owns the time it ticks on.
+  const selfShadowTime = { value: 0 };
+
   const tick = (t: number) => {
+    selfShadowTime.value = t;
     advect(t);
 
     // Rain, hung under whichever storm cells are currently over ground the
@@ -1745,6 +1797,44 @@ export function buildClouds(
     512,
     256,
   );
+
+  // G55: layers. Altitude was already there (hoverBase differs by type —
+  // cirrus rides well above cumulus/stratus) but nothing made that
+  // altitude *read*: a deck with no visible interaction between its bands
+  // is flat regardless of how many metres apart they actually sit. Rather
+  // than invent a second field, feed the coverage/drift map this material
+  // just baked for the *ground's* shadow back into coreMaterial itself —
+  // the one material shared by every regular-type instance (cumulus,
+  // stratus, and cirrus's core alike, see buildLayer above) — so a lump
+  // sitting under the combined weight of the deck above and around it
+  // reads a little darker than one standing alone. Self-shadowing a lone
+  // cirrus wisp from its own faint coverage is the one place this over-
+  // reaches physically; at cirrus's low opacity it does not read.
+  coreMaterial.onBeforeCompile = (shader) => {
+    shader.uniforms.uCloudShadow = { value: shadowTexture };
+    shader.uniforms.uCloudTime = selfShadowTime;
+    shader.uniforms.uOmegaScale = { value: omegaScale };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vNoduleDir;')
+      .replace(
+        '#include <begin_vertex>',
+        // transformed already carries the instance transform at this point
+        // (see three's begin_vertex chunk under USE_INSTANCING), so this is
+        // the nodule's own placed position in the globe's object space —
+        // the same frame buildCloudShadowTexture baked lon/lat against.
+        '#include <begin_vertex>\nvNoduleDir = normalize(transformed);',
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nvarying vec3 vNoduleDir;' +
+          CLOUD_SHADOW_GLSL,
+      )
+      .replace(
+        '#include <color_fragment>',
+        '#include <color_fragment>\n      diffuseColor.rgb *= cloudShade(vNoduleDir, 0.3);',
+      );
+  };
 
   return { group, tick, shadowTexture, omegaScale };
 }

@@ -19,7 +19,7 @@ import {
   seaLevelRadius,
 } from './terrain';
 import { buildSpecies } from './species';
-import { buildClouds, zonalWind } from './clouds';
+import { buildClouds, CLOUD_SHADOW_GLSL, zonalWind } from './clouds';
 import { buildAurora } from './aurora';
 import { buildFog } from './fog';
 import { buildSnowfall } from './snowfall';
@@ -1100,43 +1100,6 @@ const cloudShadowUniforms = {
   uCloudTime: { value: 0 },
   uOmegaScale: { value: 1 },
 };
-
-/** GLSL shared by the globe and the ocean, so the shade cannot disagree. */
-const CLOUD_SHADOW_GLSL = `
-  float cloudShade(vec3 objNormal, float strength) {
-    float lat = asin(clamp(objNormal.y, -1.0, 1.0));
-    float v = lat / 3.14159265 + 0.5;
-    // green is row-constant: this latitude's drift rate, encoded
-    float omega = (texture2D(uCloudShadow, vec2(0.5, v)).g - 0.5) * uOmegaScale;
-    float lon = atan(objNormal.z, -objNormal.x);
-    // a nodule now at this longitude started at lon - omega*t
-    float u = (lon - omega * uCloudTime) / 6.28318530718 + 0.5;
-    float cover = texture2D(uCloudShadow, vec2(fract(u), v)).r;
-    return 1.0 - cover * strength;
-  }
-
-  // How wet the ground here is, 0..1.
-  //
-  // The blue channel of the same map marks the cells that have rain
-  // falling out of them, so this is one more fetch of a texture already
-  // being sampled and no new state anywhere. Read a little *ahead* of
-  // where the cell is now — the lookup is offset against the drift — so
-  // the dark patch trails out from under the storm rather than sitting
-  // exactly beneath it: ground that has just been rained on, which is
-  // what is actually visible from outside. Under the cell itself the
-  // shade is doing the work anyway.
-  float rainWet(vec3 objNormal) {
-    float lat = asin(clamp(objNormal.y, -1.0, 1.0));
-    float v = lat / 3.14159265 + 0.5;
-    float omega = (texture2D(uCloudShadow, vec2(0.5, v)).g - 0.5) * uOmegaScale;
-    float lon = atan(objNormal.z, -objNormal.x);
-    float u = (lon - omega * uCloudTime) / 6.28318530718 + 0.5;
-    // one and a half cell-widths downwind, in the direction the deck came
-    // from — sign carried by omega so it works in both wind belts
-    float trail = sign(omega) * 0.022;
-    return texture2D(uCloudShadow, vec2(fract(u + trail), v)).b;
-  }
-`;
 
 await yieldToBrowser('街の灯り');
 const cityLightsTexture = buildCityLightsTexture(TEX_W, TEX_H);
