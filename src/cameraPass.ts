@@ -78,6 +78,22 @@ export const CameraPassShader = {
      */
     uSaturation: { value: 1.3 },
     uContrast: { value: 0.15 },
+    /**
+     * A "新海誠的な" (Makoto Shinkai-style) pass, on request: an anchored
+     * lens flare standing in for the room's own key/bench lamp, and a
+     * teal-shadow/orange-highlight split tone. Both are stylised rather
+     * than physically derived from the actual 3D light — there is no
+     * visible sun disc in this scene to flare off of, only an off-camera
+     * directional key light, so the flare's screen position is a fixed
+     * point chosen to sit where the CSS page background already paints its
+     * own "warm lamp glow" blob (style.css, the radial-gradient at 68% 8%)
+     * so the two read as one coherent light source instead of two
+     * unrelated glows layered on top of each other.
+     */
+    uFlareUV: { value: new THREE.Vector2(0.68, 0.9) },
+    uFlareStrength: { value: 0.5 },
+    /** 0 = no split tone, 1 = full teal-shadow/orange-highlight grade */
+    uSplitTone: { value: 0.4 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -108,6 +124,9 @@ export const CameraPassShader = {
     uniform float uSparkleScale;
     uniform float uSaturation;
     uniform float uContrast;
+    uniform vec2 uFlareUV;
+    uniform float uFlareStrength;
+    uniform float uSplitTone;
     varying vec2 vUv;
 
     // RINGS is set per quality tier: two rings read as a round aperture at
@@ -260,6 +279,46 @@ export const CameraPassShader = {
       return vec3(0.85, 0.92, 1.0) * core * pulse;
     }
 
+    // A stylised anamorphic lens flare anchored at uFlareUV: a bright
+    // core halo, a horizontally-stretched anamorphic streak (the signature
+    // "blue line across the frame" of a real anamorphic lens catching a
+    // strong off-axis source), and a short string of faint ghost rings
+    // along the line from the source through the frame centre — the same
+    // three parts any live-action or anime key-light flare is built from.
+    vec3 lensFlare(vec2 uv, vec2 aspect) {
+      vec2 toSrc = (uv - uFlareUV) * aspect;
+      float d = length(toSrc);
+
+      // core: small, hot, warm-white
+      float core = smoothstep(0.05, 0.0, d) ;
+      // soft halo around the core
+      float halo = smoothstep(0.5, 0.0, d) * 0.18;
+
+      // anamorphic streak: compress the vertical axis hugely so only a
+      // near-horizontal band survives, the classic squeezed-lens artifact
+      float streakDist = length(toSrc * vec2(1.0, 14.0));
+      float streak = smoothstep(0.4, 0.0, streakDist) * 0.5;
+
+      vec3 col = vec3(1.0, 0.85, 0.65) * (core * 1.4 + halo);
+      col += vec3(0.65, 0.8, 1.0) * streak;
+
+      // ghost rings: a handful of faint echoes reflected through frame
+      // centre (0.5, 0.5), the way internal lens-element reflections chain
+      // out along that same axis in a real flare
+      vec2 centre = vec2(0.5);
+      vec2 axis = centre - uFlareUV;
+      for (int i = 1; i <= 3; i++) {
+        float t = float(i) * 0.45;
+        vec2 ghostPos = uFlareUV + axis * t;
+        float gd = length((uv - ghostPos) * aspect);
+        float ghostSize = 0.05 + float(i) * 0.03;
+        float ghost = smoothstep(ghostSize, 0.0, gd) * (0.05 / float(i));
+        col += vec3(0.7, 0.85, 1.0) * ghost;
+      }
+
+      return col;
+    }
+
     void main() {
       vec2 centred = (vUv - vec2(0.5)) * vec2(uResolution.x / uResolution.y, 1.0);
       float edge = clamp(dot(centred, centred) * 2.2, 0.0, 1.0);
@@ -272,6 +331,12 @@ export const CameraPassShader = {
       // response to bright spots, not as a haze laid over the whole
       // picture (that is the separate, even fainter term below).
       colour += bloomGlow(vUv, edge) * uBloomStrength;
+
+      // The lamp flare, added right alongside the bloom it's standing in
+      // for — both are screen-space light artefacts, so they belong in the
+      // same additive stage, before the vignette/haze/grade that treat the
+      // frame as a finished photograph.
+      colour += lensFlare(vUv, vec2(uResolution.x / uResolution.y, 1.0)) * uFlareStrength;
 
       // Lens falloff. Every lens is dimmer at the corners than in the
       // middle, and the eye reads an evenly lit rectangle as artificial long
@@ -301,6 +366,20 @@ export const CameraPassShader = {
       float luma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
       colour = mix(vec3(luma), colour, uSaturation);
       colour = mix(colour, smoothstep(0.0, 1.0, colour), uContrast);
+
+      // Teal-shadow / orange-highlight split tone, on request ("新海誠的
+      // な" -- a Shinkai-style grade). A single uSaturation/uContrast lift
+      // pushes every colour that is already in the frame harder, but it
+      // cannot introduce the specific hue split that look depends on:
+      // shadows pulled toward blue-violet, highlights pulled toward warm
+      // amber, with the mid-tones barely touched. Re-measures luma on the
+      // graded colour (not the pre-grade one above) so the split follows
+      // what the frame actually looks like at this point in the pipeline.
+      float gradedLuma = dot(colour, vec3(0.2126, 0.7152, 0.0722));
+      vec3 shadowTint = vec3(0.55, 0.62, 0.85);
+      vec3 highlightTint = vec3(1.08, 0.88, 0.62);
+      vec3 splitTint = mix(shadowTint, highlightTint, smoothstep(0.15, 0.85, gradedLuma));
+      colour = mix(colour, colour * splitTint, uSplitTone);
 
       // Cel shading was tried here (quantizing the finished frame's
       // luminance into bands) and dropped on request — even faded out
