@@ -62,17 +62,20 @@ canvas {
    --------------------------------------------------------------------- */
 
 .title-bar {
-  /* Now nested inside .cyber-panel (which is itself scale(2)'d), anchored
-     to the panel's top-right corner. scale(0.5) cancels the parent's 2x
-     scale back out so the title/button render at their original size
-     instead of being blown up along with the dials. transform-origin is
-     the corner we're anchoring from, so the counter-scale doesn't also
-     shift the element's position. */
+  /* Nested inside .cyber-panel (which is itself scale(2)'d), anchored
+     inside the panel's own top-right corner -- not floating above the
+     panel's border like before. scale(0.5) cancels the parent's 2x scale
+     back out so the title/button render at their original size instead of
+     being blown up along with the dials; transform-origin is the corner
+     we're anchoring from, so the counter-scale doesn't also shift the
+     element's position. The dial-cluster column is taller than the (now
+     small) flag/spin buttons, so there's clear space above those two
+     buttons for the title bar to sit in without overlapping anything. */
   position: absolute;
-  top: -34px;
-  right: 0;
+  top: 6px;
+  right: 14px;
   transform: scale(0.5);
-  transform-origin: 100% 100%;
+  transform-origin: 100% 0%;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -80,11 +83,13 @@ canvas {
 }
 
 .title {
-  color: #cbab7e;
+  color: #8fefff;
+  font-family: "DM Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 13px;
-  letter-spacing: 0.08em;
-  opacity: 0.8;
+  letter-spacing: 0.12em;
+  opacity: 0.85;
   pointer-events: none;
+  text-shadow: 0 0 8px rgba(57, 200, 255, 0.35);
 }
 
 .story-button {
