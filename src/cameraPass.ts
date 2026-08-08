@@ -46,12 +46,19 @@ export const CameraPassShader = {
     /** radial colour fringing at the frame edge, in UV units */
     uAberration: { value: 0.0016 },
     /** how much of the bright-area glow bleeds back into the frame */
-    // Raised from 0.12 on request, as the "beautiful anime filter" this
-    // scene actually wanted instead of cel-shading's flat bands — a
-    // richer bloom off the sunlit cloud tops, the lamp, the cyber ring
-    // and the sparkle is what an anime key visual's glow is actually made
-    // of.
-    uBloomStrength: { value: 0.32 },
+    // Raised from 0.12 to 0.32 earlier this session, then reported as a
+    // large flat white blob over the ocean's own sun-glint highlight
+    // ("まだ真っ白"). That glint is a near-mirror specular response
+    // (clearcoatRoughness 0.16) which can be extremely bright even after
+    // ACES; 0.32 of bloom bleeding that already-near-white peak back over
+    // a wide radius is what turned a small sharp glint into a large soft
+    // white smear no downstream tonemap knee can fully recover, since the
+    // curve's own approach toward its 1.0 asymptote reads as flat white
+    // to the eye long before it mathematically arrives. Pulled back to a
+    // more moderate 0.18 -- still a real boost over the original 0.12,
+    // just not enough to spread a single bright point across a third of
+    // the visible globe.
+    uBloomStrength: { value: 0.18 },
     /** glow sample radius, in UV units */
     uBloomRadius: { value: 0.011 },
     /** thin veiling haze mixed over the whole frame, like dust in the air */
@@ -493,12 +500,27 @@ export const CameraPassShader = {
       // fully dark ones, where excess is exactly 0 -- up to knee itself
       // (0.85 + 0/(1+0) = 0.85). That washed the entire frame, background
       // included, out to a flat pale grey, which a screenshot caught
-      // immediately. min(colour, knee) is the missing piece: it passes
-      // anything already below the knee straight through unchanged, and
-      // only the part actually over the line gets the soft compression.
+      // immediately.
+      //
+      // SECOND BUG, caught after the first fix still reported flat white:
+      // min(colour, knee) + excess / (1.0 + excess) fixed the dark-pixel
+      // floor, but its own asymptote as excess -> infinity is
+      // knee + 1.0 = 1.85, not 1.0. A "soft" knee whose own ceiling still
+      // sits above 1.0 is not actually soft where it matters: the GPU
+      // hard-clamps whatever this shader outputs to [0,1] when it writes
+      // the frame buffer, so any pixel with enough stacked bloom/flare/
+      // god-ray/sparkle to push excess past roughly 0.18 was *still*
+      // hitting that hard ceiling and clipping to flat white, no matter
+      // how gently this curve approached 1.85 on paper. The missing piece
+      // is scaling the excess term by the remaining headroom itself
+      // (1.0 - knee), so the curve's own asymptote lands exactly at 1.0:
+      // as excess grows without bound, excess / (1.0 + excess) approaches
+      // 1, so the whole expression approaches knee + (1.0 - knee) * 1.0 =
+      // 1.0 -- never reaching or exceeding it for any finite input, which
+      // is what "soft knee" is supposed to mean in the first place.
       float knee = 0.85;
       vec3 excess = max(colour - knee, 0.0);
-      colour = min(colour, knee) + excess / (1.0 + excess);
+      colour = min(colour, knee) + (1.0 - knee) * excess / (1.0 + excess);
 
       gl_FragColor = vec4(colour, 1.0);
     }
