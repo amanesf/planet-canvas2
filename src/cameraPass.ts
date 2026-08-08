@@ -463,6 +463,22 @@ export const CameraPassShader = {
       float n = fract(sin(dot(vUv * uResolution + uTime * 137.0, vec2(12.9898, 78.233))) * 43758.5453);
       colour += (n - 0.5) * uGrain;
 
+      // Highlight knee. The scene render already passed through three's own
+      // ACES tonemap before it ever reached this pass (renderer.toneMapping
+      // in main.ts), so it arrives here already compressed into 0..1 — but
+      // everything this pass adds afterward (bloom, the lens flare, god
+      // rays, the sparkle field, light leaks) is simple addition on top of
+      // that already-tonemapped image, with nothing left to compress a
+      // second time. Stack enough of those over something already bright
+      // (a sunlit ice cap, say) and the sum blows straight past 1.0 and
+      // hard-clips to flat white — reported as "上部が明るすぎて白飛び".
+      // A soft knee only above 1.0 leaves everything already inside 0..1
+      // (the vast majority of the frame) completely untouched, and rolls
+      // off *only* the pixels that would otherwise have clipped, so a
+      // bright cloud top still looks bright, just not a flat white hole
+      // with every added glow term indistinguishable from every other one.
+      colour = colour / (1.0 + max(colour - 1.0, 0.0));
+
       gl_FragColor = vec4(colour, 1.0);
     }
   `,
