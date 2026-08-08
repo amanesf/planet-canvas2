@@ -470,14 +470,35 @@ export const CameraPassShader = {
       // rays, the sparkle field, light leaks) is simple addition on top of
       // that already-tonemapped image, with nothing left to compress a
       // second time. Stack enough of those over something already bright
-      // (a sunlit ice cap, say) and the sum blows straight past 1.0 and
-      // hard-clips to flat white — reported as "上部が明るすぎて白飛び".
-      // A soft knee only above 1.0 leaves everything already inside 0..1
-      // (the vast majority of the frame) completely untouched, and rolls
-      // off *only* the pixels that would otherwise have clipped, so a
-      // bright cloud top still looks bright, just not a flat white hole
-      // with every added glow term indistinguishable from every other one.
-      colour = colour / (1.0 + max(colour - 1.0, 0.0));
+      // and the sum blows straight past 1.0 and hard-clips to flat white.
+      //
+      // A knee starting exactly at 1.0 (the first version of this fix)
+      // turned out to do nothing visible: a pixel that was *already*
+      // sitting at (1,1,1) before this pass even ran — the emissive rim-
+      // glow terms on the globe/ocean/cloud materials had no headroom gate
+      // of their own at the time, so bright ice/snow/cloud tops were
+      // already clipped by ACES upstream of this shader entirely — has no
+      // "excess above 1.0" for this formula to find; it was already fully
+      // saturated before arriving here. That upstream saturation is now
+      // fixed at the source (see the headroom-gated rim terms in
+      // main.ts/clouds.ts), but this knee is still worth starting below
+      // 1.0 rather than at it: it gives the *stack of this pass's own*
+      // additive terms (bloom+flare+godray+sparkle can still sum to
+      // several times full brightness on a merely bright, not-yet-clipped
+      // pixel) real headroom to rolloff through instead of racing each
+      // other to the same hard ceiling.
+      // BUG FIXED here on first verification: this originally read
+      // colour = knee + excess / (1.0 + excess), with no base term below
+      // the knee, which unconditionally floors every pixel -- including
+      // fully dark ones, where excess is exactly 0 -- up to knee itself
+      // (0.85 + 0/(1+0) = 0.85). That washed the entire frame, background
+      // included, out to a flat pale grey, which a screenshot caught
+      // immediately. min(colour, knee) is the missing piece: it passes
+      // anything already below the knee straight through unchanged, and
+      // only the part actually over the line gets the soft compression.
+      float knee = 0.85;
+      vec3 excess = max(colour - knee, 0.0);
+      colour = min(colour, knee) + excess / (1.0 + excess);
 
       gl_FragColor = vec4(colour, 1.0);
     }

@@ -1557,10 +1557,25 @@ globeMaterial.onBeforeCompile = (shader) => {
         // trick, just turned up until it actually looks like the reference
         // "glowing blue limb" instead of a whisper ACES quietly ate.
         float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 1.5);
+        // Headroom gate, on request after a reported white-blowout over
+        // bright ice/snow: these two terms are a flat emissive *addition*,
+        // with no notion of how much room the pixel underneath already has
+        // before it hits white. Pushed to 0.85 without this, the day-rim
+        // term in particular kept adding a bright sky-blue on top of
+        // already near-white terrain (polar ice, snow-capped peaks) with
+        // nothing to stop the sum sailing past what ACES can hold detail
+        // for — a post-process knee downstream (cameraPass.ts) cannot
+        // recover that once three's own tonemap has already clipped it to
+        // flat (1,1,1) at *this* render, before cameraPass ever runs.
+        // Scaling both rim terms by how much headroom the surface's own
+        // albedo has left (1 - its luminance) means a dark ocean or forest
+        // still gets the full glow, while already-bright snow gets little
+        // to none, since it has nowhere left to go.
+        float headroom = 1.0 - clamp(dot(diffuseColor.rgb, vec3(0.333)), 0.0, 1.0);
         // Pushed further again (0.55 -> 0.85, and the day term below the
         // same amount) alongside rimLight's own boost, on request for a
         // stronger silhouette edge overall.
-        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * rimFresnel * night * 0.85;
+        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * rimFresnel * night * 0.85 * headroom;
 
         // A thin atmosphere, on request. Still not a revived shell mesh —
         // same constraint as the night rim just above, same technique (add
@@ -1569,7 +1584,7 @@ globeMaterial.onBeforeCompile = (shader) => {
         // (1.0 - night) instead of only the night one, and given the
         // brighter, whiter sky-blue a sunlit limb actually has rather than
         // the night rim's cooler, dimmer tone.
-        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * rimFresnel * (1.0 - night) * 0.85;
+        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * rimFresnel * (1.0 - night) * 0.85 * headroom;
 
         // The far side's own colour, not just what lights it. Cutting the
         // ambient/fill/rim rig (see the note by their definitions) only goes
@@ -2235,9 +2250,12 @@ oceanMaterial.onBeforeCompile = (shader) => {
         float oceanRim = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 1.5);
         // Matching the globe material's own rim boost, so the silhouette
         // doesn't get brighter over land and stay dim wherever the limb
-        // happens to be open water.
-        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * oceanRim * night * 0.85;
-        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * oceanRim * (1.0 - night) * 0.85;
+        // happens to be open water. Same headroom gate as the globe
+        // material's matching terms too -- sea ice can read as bright as
+        // snow, so this isn't purely a land-only concern.
+        float oceanHeadroom = 1.0 - clamp(dot(diffuseColor.rgb, vec3(0.333)), 0.0, 1.0);
+        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * oceanRim * night * 0.85 * oceanHeadroom;
+        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * oceanRim * (1.0 - night) * 0.85 * oceanHeadroom;
 
         // Same atmospheric-perspective desaturation the globe material
         // carries toward its own limb (see its note, including the

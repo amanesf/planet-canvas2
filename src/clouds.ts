@@ -2193,12 +2193,21 @@ export function buildClouds(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
         {
+          // Headroom-gated, on request after a reported white-blowout —
+          // cotton cloud tops are already close to (1,1,1) before this
+          // term runs (coreMaterial's own base colour is #f2f0ee), so an
+          // unconditional addition here had nowhere to go but straight
+          // through ACES's whitepoint. Scaling by how much headroom the
+          // fragment's own albedo still has left (the same technique
+          // main.ts's globe/ocean rim terms now use) keeps the rim visible
+          // on a shaded/underside fragment while leaving an already-bright
+          // sunlit crown alone.
+          float underside = 1.0 - clamp(dot(diffuseColor.rgb, vec3(0.333)), 0.0, 1.0);
           float cloudRim = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 2.0);
-          totalEmissiveRadiance += vec3(1.0, 0.97, 0.9) * cloudRim * 0.22;
+          totalEmissiveRadiance += vec3(1.0, 0.97, 0.9) * cloudRim * 0.22 * underside;
 
           float cloudSun = dot(vCloudWorldDir, uSunDir);
           float duskBand = smoothstep(0.35, 0.0, abs(cloudSun));
-          float underside = 1.0 - clamp(dot(diffuseColor.rgb, vec3(0.333)), 0.0, 1.0);
           totalEmissiveRadiance += vec3(1.0, 0.55, 0.22) * duskBand * underside * 0.35;
         }`,
       );
