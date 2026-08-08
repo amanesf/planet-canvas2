@@ -1607,9 +1607,12 @@ globeMaterial.onBeforeCompile = (shader) => {
         // the *albedo* here (not just adding an emissive glow, which the
         // rim terms above already do) is what actually reads as haze
         // sitting in front of the terrain rather than a light shining on
-        // it. Kept gentle (0.22 max) so coastlines and biome colour are
-        // still legible right up to the edge.
-        float aerial = rimFresnel * 0.22;
+        // it. Strengthened again (0.22 -> 0.4) on request ("陸地の空気遠
+        // 近法強くできない？海と同じように") -- land's higher-frequency
+        // biome colour was eating the same 0.22 mix the more uniform blue
+        // ocean read clearly, so land needed a stronger push to land in
+        // the same visual place, not a smaller one.
+        float aerial = rimFresnel * 0.4;
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.82), aerial);
       }`,
     )

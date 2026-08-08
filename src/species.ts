@@ -1193,6 +1193,35 @@ function orient(position: THREE.Vector3, normal: THREE.Vector3, spin: number, ti
 // autumn palette, which is what put maple-orange over the conifer belt at
 // high latitude. Baked into the shader source rather than a uniform because
 // it is a fixed trait of the material, not something that varies per frame.
+// Same atmospheric-perspective haze the globe/ocean materials carry
+// toward their own silhouette (main.ts's onBeforeCompile blocks), on
+// request ("陸地の空気遠近法強くできない...木とかも全部" -- the ground-
+// cover objects standing on that same limb were still reading at full
+// saturation while the terrain shell under their feet faded into haze,
+// which broke the illusion right at the horizon). Injected at
+// `#include <emissivemap_fragment>` rather than `#include
+// <color_fragment>` because `normal` is not yet defined at that earlier
+// point in three's fragment template -- the globe/ocean rim-glow terms
+// already established this is the right chunk for a normal/vViewPosition
+// -dependent effect. A separate helper, chained onto whatever
+// onBeforeCompile the material already carries (most of these also run
+// applySeasonalFoliageTint, which injects at the unrelated
+// color_fragment chunk, so the two never fight over the same text).
+function applyAerialPerspective(material: THREE.Material) {
+  const prev = material.onBeforeCompile.bind(material);
+  material.onBeforeCompile = (shader, renderer) => {
+    prev(shader, renderer);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      {
+        float aerialRim = pow(1.0 - clamp(dot(normalize(vViewPosition), normalize(normal)), 0.0, 1.0), 1.5);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.82), aerialRim * 0.4);
+      }`,
+    );
+  };
+}
+
 function applySeasonalFoliageTint(
   material: THREE.MeshStandardMaterial,
   seasonUniforms: { uSeasonTilt: { value: number } },
@@ -1706,6 +1735,7 @@ export function buildSpecies(
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(plantMaterial, seasonUniforms);
+  applyAerialPerspective(plantMaterial);
   // Needleleaf species among the fourteen — conifer, cypress, redwood — get
   // their own copy so they stop shedding into the broadleaf autumn palette
   // (see applySeasonalFoliageTint's evergreen note).
@@ -1717,6 +1747,7 @@ export function buildSpecies(
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(plantMaterialEvergreen, seasonUniforms, true);
+  applyAerialPerspective(plantMaterialEvergreen);
   const mineralMaterial = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.85,
@@ -1725,6 +1756,7 @@ export function buildSpecies(
     clearcoatRoughness: 0.35,
     envMapIntensity: 0.2,
   });
+  applyAerialPerspective(mineralMaterial);
 
   const bySpecies = new Map<Species, Placement[]>();
   placements.forEach((p) => {
@@ -1828,6 +1860,7 @@ export function buildSpecies(
     clearcoatRoughness: 0.3,
     envMapIntensity: 0.2,
   });
+  applyAerialPerspective(trunkMaterial);
   // left white on purpose — instanceColor below multiplies against this,
   // so a tinted base color here would compound with (and mute/darken) the
   // per-instance hue instead of showing it cleanly
@@ -1839,6 +1872,7 @@ export function buildSpecies(
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(foliageMaterial, seasonUniforms);
+  applyAerialPerspective(foliageMaterial);
   // The conifer variant (index 1, below) is needleleaf and evergreen, same
   // reasoning as plantMaterialEvergreen above.
   const foliageMaterialEvergreen = new THREE.MeshPhysicalMaterial({
@@ -1849,6 +1883,7 @@ export function buildSpecies(
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(foliageMaterialEvergreen, seasonUniforms, true);
+  applyAerialPerspective(foliageMaterialEvergreen);
 
   // real diorama foliage ("clump foliage" flock/lichen material) is a
   // distinctly bright, saturated yellow-green — noticeably more lime than
@@ -1917,6 +1952,7 @@ export function buildSpecies(
     clearcoatRoughness: 0.4,
     envMapIntensity: 0.18,
   });
+  applyAerialPerspective(rockMaterial);
 
   const rockVariants = [boulderGeometry, slabGeometry];
   const rockByVariant: GroundPoint[][] = rockVariants.map(() => []);
@@ -1957,6 +1993,7 @@ export function buildSpecies(
     clearcoatRoughness: 0.45,
     envMapIntensity: 0.16,
   });
+  applyAerialPerspective(screeMaterial);
   const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
   const screeColor = new THREE.Color();
   screePoints.forEach((p, i) => {
@@ -2007,6 +2044,7 @@ export function buildSpecies(
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(canopyMaterial, seasonUniforms);
+  applyAerialPerspective(canopyMaterial);
   // The CONIFER_COARSE/CONIFER_FINE buckets below are the boreal spruce
   // shape exclusively (see the reallocation note above) — needleleaf and
   // evergreen, so they get the non-autumn tint rather than canopyMaterial's.
@@ -2021,6 +2059,7 @@ export function buildSpecies(
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(canopyMaterialConifer, seasonUniforms, true);
+  applyAerialPerspective(canopyMaterialConifer);
 
   interface CanopyInstance {
     point: GroundPoint;
@@ -2492,6 +2531,7 @@ export function buildSpecies(
     envMapIntensity: 0.18,
   });
   applySeasonalFoliageTint(grassMaterial, seasonUniforms);
+  applyAerialPerspective(grassMaterial);
   const grassMesh = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassPoints.length);
   const grassColor = new THREE.Color();
   grassPoints.forEach((p, i) => {
