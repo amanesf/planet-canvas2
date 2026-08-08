@@ -80,19 +80,22 @@ canvas {
   position: absolute;
   left: 50%;
   bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-  /* Doubled on request. Scaling the whole panel rather than doubling
-     every dial/button dimension by hand keeps every internal drag
-     measurement correct for free — getBoundingClientRect() (which the
-     dial drag handlers in main.ts read) already reports the post-
-     transform size, so nothing downstream needed to change. Anchored to
-     bottom centre so it grows upward/outward from the same spot instead
-     of the enlarged panel drifting off its old position. */
-  transform: translateX(-50%) scale(2);
+  /* Doubled on request, then brought back down to 80% of that (1.6x) on a
+     follow-up request. Scaling the whole panel rather than doubling every
+     dial/button dimension by hand keeps every internal drag measurement
+     correct for free — getBoundingClientRect() (which the dial drag
+     handlers in main.ts read) already reports the post-transform size, so
+     nothing downstream needed to change. Anchored to bottom centre so it
+     grows upward/outward from the same spot instead of the enlarged panel
+     drifting off its old position. */
+  transform: translateX(-50%) scale(1.6);
   transform-origin: 50% 100%;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 16px 12px;
+  /* Tightened (8px -> 4px) on request for less vertical air between the
+     header and the dial row. */
+  gap: 4px;
+  padding: 8px 16px 10px;
   border-radius: 20px;
   /* A faint top-to-bottom gradient and an inner highlight line along the
      top edge, on request ("コントローラー全体にもっと美しく") — a flat
@@ -149,7 +152,9 @@ canvas {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-bottom: 8px;
+  /* Tightened (8px -> 4px) alongside .cyber-panel's own row gap, on
+     request for less vertical air in the panel. */
+  padding-bottom: 4px;
   border-bottom: 1px solid rgba(91, 228, 255, 0.18);
 }
 
@@ -159,7 +164,8 @@ canvas {
   gap: 6px;
   color: #b9f4ff;
   font-family: "DM Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  /* One step down (11px -> 10px) on request. */
+  font-size: 10px;
   letter-spacing: 0.16em;
   opacity: 0.9;
   pointer-events: none;
@@ -189,7 +195,8 @@ canvas {
   background: rgba(10, 16, 22, 0.5);
   backdrop-filter: blur(4px);
   color: #8fefff;
-  font-size: 10px;
+  /* One step down (10px -> 9px) on request. */
+  font-size: 9px;
   letter-spacing: 0.14em;
   padding: 4px 11px;
   cursor: pointer;
@@ -403,9 +410,11 @@ canvas {
    in the panel goes out of visual proportion with the rest of it. */
 @media (max-width: 420px) {
   .cyber-panel {
-    transform: translateX(-50%) scale(1.5);
-    gap: 10px;
-    padding: 8px 10px;
+    /* 80% of the 1.5x this tier used to carry, matching the base panel's
+       own 2x -> 1.6x reduction above. */
+    transform: translateX(-50%) scale(1.2);
+    gap: 8px;
+    padding: 6px 10px;
   }
 }
 
