@@ -1348,7 +1348,7 @@ const cloudShadowUniforms = {
 await yieldToBrowser('街の灯り');
 const cityLightsTexture = buildCityLightsTexture(TEX_W, TEX_H);
 
-const globeMaterial = new THREE.MeshStandardMaterial({
+const globeMaterial = new THREE.MeshPhysicalMaterial({
   map: terrainTexture,
   // fine surface relief via lighting only (no extra geometry) — the
   // single biggest lever for "sculpted miniature" vs. "smooth painted
@@ -1356,11 +1356,26 @@ const globeMaterial = new THREE.MeshStandardMaterial({
   bumpMap: terrainBumpTexture,
   bumpScale: 0.005,
   // pushed to fully matte — the whole point of the glossy ocean resin is
-  // that it's the *only* shiny thing in the scene; any gloss on the rock
-  // undercuts that contrast and makes both materials read as "plastic"
+  // that it's the *only really shiny* thing in the scene; any strong gloss
+  // on the rock undercuts that contrast and makes both materials read as
+  // "plastic". Kept matte at the base layer; see the clearcoat note below
+  // for how the land now catches a *little* reflected light without
+  // touching that contrast.
   roughness: 0.97,
   metalness: 0,
-  envMapIntensity: 0.06,
+  // On request ("陸地もハイクオリティにしたい" — land looked flat and dull
+  // next to the now-glossy ocean). A thin, rough clearcoat is not the
+  // ocean's shiny resin lobe — clearcoatRoughness 0.75 keeps it a soft
+  // satin sheen, like a painted diorama surface under a matte lacquer,
+  // rather than the sea's wet-look gloss (clearcoat 0.85 @ roughness
+  // 0.16). It gives the terrain a subtle highlight roll-off across ridges
+  // and coastlines that flat matte roughness alone can't, without
+  // touching the terrain painting itself. envMapIntensity raised
+  // alongside it (0.06 -> 0.18) so that sheen actually has the richer
+  // studio environment map (see buildStudioEnvironment) to reflect.
+  clearcoat: 0.16,
+  clearcoatRoughness: 0.75,
+  envMapIntensity: 0.18,
 });
 
 // Automatic seasonal snow line: local winter (uSeasonTilt and this

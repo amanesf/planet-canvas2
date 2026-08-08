@@ -1688,26 +1688,39 @@ export function buildSpecies(
 
   // ---- fourteen species: two shared materials, one InstancedMesh each ----
 
-  const plantMaterial = new THREE.MeshStandardMaterial({
+  // Foliage/mineral materials all pick up a thin clearcoat below, on
+  // request ("陸地もハイクオリティにしたい" — the trees in particular read
+  // as flat and dull next to the glossy ocean resin). It's a soft satin
+  // sheen (clearcoatRoughness 0.5), not the ocean's wet-look gloss — more
+  // like glazed ceramic diorama foliage catching a highlight than
+  // reflective plastic — paired with a higher envMapIntensity so there's
+  // actually more of the studio environment map for it to catch.
+  const plantMaterial = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.93,
-    envMapIntensity: 0.1,
+    clearcoat: 0.18,
+    clearcoatRoughness: 0.5,
+    envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(plantMaterial, seasonUniforms);
   // Needleleaf species among the fourteen — conifer, cypress, redwood — get
   // their own copy so they stop shedding into the broadleaf autumn palette
   // (see applySeasonalFoliageTint's evergreen note).
-  const plantMaterialEvergreen = new THREE.MeshStandardMaterial({
+  const plantMaterialEvergreen = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.93,
-    envMapIntensity: 0.1,
+    clearcoat: 0.18,
+    clearcoatRoughness: 0.5,
+    envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(plantMaterialEvergreen, seasonUniforms, true);
-  const mineralMaterial = new THREE.MeshStandardMaterial({
+  const mineralMaterial = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.85,
     flatShading: true,
-    envMapIntensity: 0.14,
+    clearcoat: 0.1,
+    clearcoatRoughness: 0.6,
+    envMapIntensity: 0.2,
   });
 
   const bySpecies = new Map<Species, Placement[]>();
@@ -1805,26 +1818,32 @@ export function buildSpecies(
   const trunkGeometry = new THREE.CylinderGeometry(0.004, 0.006, TRUNK_H, 5);
   trunkGeometry.translate(0, TRUNK_H / 2, 0);
 
-  const trunkMaterial = new THREE.MeshStandardMaterial({
+  const trunkMaterial = new THREE.MeshPhysicalMaterial({
     color: '#8a5a3a',
     roughness: 0.95,
-    envMapIntensity: 0.1,
+    clearcoat: 0.14,
+    clearcoatRoughness: 0.55,
+    envMapIntensity: 0.2,
   });
   // left white on purpose — instanceColor below multiplies against this,
   // so a tinted base color here would compound with (and mute/darken) the
   // per-instance hue instead of showing it cleanly
-  const foliageMaterial = new THREE.MeshStandardMaterial({
+  const foliageMaterial = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.9,
-    envMapIntensity: 0.1,
+    clearcoat: 0.18,
+    clearcoatRoughness: 0.5,
+    envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(foliageMaterial, seasonUniforms);
   // The conifer variant (index 1, below) is needleleaf and evergreen, same
   // reasoning as plantMaterialEvergreen above.
-  const foliageMaterialEvergreen = new THREE.MeshStandardMaterial({
+  const foliageMaterialEvergreen = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.9,
-    envMapIntensity: 0.1,
+    clearcoat: 0.18,
+    clearcoatRoughness: 0.5,
+    envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(foliageMaterialEvergreen, seasonUniforms, true);
 
@@ -1885,13 +1904,15 @@ export function buildSpecies(
   const slabGeometry = new THREE.IcosahedronGeometry(0.028, 0);
   slabGeometry.scale(1.15, 0.6, 1.0);
 
-  const rockMaterial = new THREE.MeshStandardMaterial({
+  const rockMaterial = new THREE.MeshPhysicalMaterial({
     // white on purpose: instanceColor multiplies against this, so a tinted
     // base here compounds with the per-instance color and darkens it.
     color: '#ffffff',
     roughness: 0.95,
     flatShading: true,
-    envMapIntensity: 0.1,
+    clearcoat: 0.08,
+    clearcoatRoughness: 0.65,
+    envMapIntensity: 0.18,
   });
 
   const rockVariants = [boulderGeometry, slabGeometry];
@@ -1925,11 +1946,13 @@ export function buildSpecies(
   // ---- scree: dense loose rubble covering rocky/mountain slopes ----
 
   const screeGeometry = new THREE.IcosahedronGeometry(0.008, 0);
-  const screeMaterial = new THREE.MeshStandardMaterial({
+  const screeMaterial = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.97,
     flatShading: true,
-    envMapIntensity: 0.08,
+    clearcoat: 0.06,
+    clearcoatRoughness: 0.7,
+    envMapIntensity: 0.16,
   });
   const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
   const screeColor = new THREE.Color();
@@ -1973,10 +1996,12 @@ export function buildSpecies(
   const fineVariants = Array.from({ length: 2 }, (_, i) =>
     i === CONIFER_FINE ? buildConiferBlob(rand, 2) : buildCanopyBlob(rand, 2),
   );
-  const canopyMaterial = new THREE.MeshStandardMaterial({
+  const canopyMaterial = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.92,
-    envMapIntensity: 0.1,
+    clearcoat: 0.18,
+    clearcoatRoughness: 0.5,
+    envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(canopyMaterial, seasonUniforms);
   // The CONIFER_COARSE/CONIFER_FINE buckets below are the boreal spruce
@@ -1985,10 +2010,12 @@ export function buildSpecies(
   // Without this the taiga went through the same orange-then-frost cycle as
   // the broadleaf canopy it shares a material with, which is what put
   // maple-colored autumn over conifer stands at high latitude.
-  const canopyMaterialConifer = new THREE.MeshStandardMaterial({
+  const canopyMaterialConifer = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.92,
-    envMapIntensity: 0.1,
+    clearcoat: 0.18,
+    clearcoatRoughness: 0.5,
+    envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(canopyMaterialConifer, seasonUniforms, true);
 
@@ -2454,10 +2481,12 @@ export function buildSpecies(
   // with a nap to it, still far too small to be mistaken for scrub.
   const grassGeometry = new THREE.ConeGeometry(0.012, 0.026, 5);
   grassGeometry.translate(0, 0.013, 0);
-  const grassMaterial = new THREE.MeshStandardMaterial({
+  const grassMaterial = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.9,
-    envMapIntensity: 0.08,
+    clearcoat: 0.12,
+    clearcoatRoughness: 0.55,
+    envMapIntensity: 0.18,
   });
   applySeasonalFoliageTint(grassMaterial, seasonUniforms);
   const grassMesh = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassPoints.length);
