@@ -1215,8 +1215,11 @@ function applyAerialPerspective(material: THREE.Material) {
       '#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
       {
+        // pow'd down to 0.5 to widen how far in from the edge this reaches
+        // (see main.ts's matching note), rather than just raising the mix
+        // strength, on the follow-up "空気遠近法弱くない？" request.
         float aerialRim = pow(1.0 - clamp(dot(normalize(vViewPosition), normalize(normal)), 0.0, 1.0), 1.5);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.82), aerialRim * 0.4);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.82), pow(aerialRim, 0.5) * 0.55);
       }`,
     );
   };

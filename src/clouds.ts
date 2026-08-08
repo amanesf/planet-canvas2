@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { fbm3 } from './noise';
 import { displaceWithNoise, mulberry32 } from './spatialHash';
-import { precipitationAtSeason, zonalPrecipitationAt } from './terrain';
+import { precipitationAtSeason, sampledHeight, zonalPrecipitationAt } from './terrain';
 
 // Low-frequency "weather system" noise — clouds cluster into patches
 // instead of scattering uniformly, like real cloud cover does.
@@ -1319,11 +1319,18 @@ function buildCloudShadowTexture(
  *   each frame for G41's rainbow (a sunlit shaft gets one, a shaft rained
  *   on under an overcast sky does not) — same optional-parameter shape as
  *   traffic.ts's running lights, which need the identical day/night test.
+ * @param bumpHeight the same terrain displacement scale species.ts and
+ *   eruptions.ts use (main.ts's BUMP_HEIGHT) — every nodule's hover is a
+ *   clearance *above the actual ground* under it, not above the idealised
+ *   sea-level sphere `radius` alone describes, or a low-hovering type over
+ *   a mountain range or the tall forest standing on it sat inside/below
+ *   the terrain and the canopy instead of above both.
  */
 export function buildClouds(
   radius: number,
   season: { uSeasonTilt: { value: number } },
   sunDirection?: THREE.Vector3,
+  bumpHeight = 0,
 ): CloudSystem {
   const group = new THREE.Group();
   const rand = mulberry32(4242);
@@ -1365,12 +1372,20 @@ export function buildClouds(
   // real proportions. More, smaller systems is the actual fix for "clouds
   // form in one line" reading as one shape everywhere — a scattered field
   // needs enough members to look like a field.
+  // Roughly tripled on request ("雲の数3倍くらいにできないか"), but not
+  // uniformly: a flat 3x on every zone would have tripled the polar cap
+  // too, and a follow-up request ("雲は高緯度で多くなりすぎるならバラン
+  // ス考えて") asked for exactly the opposite there. The multiplier tapers
+  // from 3x at the equator down to 2x at the poles, so the increase is
+  // felt most where cloud cover is naturally densest on a real planet
+  // (the ITCZ, the mid-latitude storm track) and least where a thin,
+  // sparse deck is the realistic look to keep (the polar cap).
   const LATITUDE_ZONES: { loDeg: number; hiDeg: number; slots: number }[] = [
-    { loDeg: 0, hiDeg: 12, slots: 3 }, // ITCZ core
-    { loDeg: 12, hiDeg: 30, slots: 3 }, // tropics / subtropical fringe
-    { loDeg: 30, hiDeg: 55, slots: 3 }, // mid-latitude storm track
-    { loDeg: 55, hiDeg: 78, slots: 2 }, // sub-polar
-    { loDeg: 78, hiDeg: 90, slots: 1 }, // polar cap
+    { loDeg: 0, hiDeg: 12, slots: 9 }, // ITCZ core (3 -> 9, 3x)
+    { loDeg: 12, hiDeg: 30, slots: 9 }, // tropics / subtropical fringe (3 -> 9, 3x)
+    { loDeg: 30, hiDeg: 55, slots: 8 }, // mid-latitude storm track (3 -> 8, ~2.7x)
+    { loDeg: 55, hiDeg: 78, slots: 4 }, // sub-polar (2 -> 4, 2x)
+    { loDeg: 78, hiDeg: 90, slots: 2 }, // polar cap (1 -> 2, 2x)
   ];
   // Tightened from 0.68 (~47°): that spacing was sized to keep the old
   // huge bands (up to 72° of arc) from overlapping, but it also capped how
@@ -1474,6 +1489,25 @@ export function buildClouds(
     buildTyphoon(sys, rand, sys.nodules);
     nodules.push(...sys.nodules);
   });
+
+  // Ground clearance, on request ("雲が低すぎて木にかぶる"). Every hover
+  // value above was set as a clearance over the idealised sea-level sphere
+  // (`radius` alone) — fine over open ocean, where the ground really is at
+  // that radius, but stratus's hoverBase (0.09) and even cumulus's (0.16)
+  // sit well *below* a real mountain range or a tall forest canopy, both of
+  // which push the actual ground surface up by as much as bumpHeight
+  // (0.36 in main.ts's own units). A cloud's hover has to clear the ground
+  // *under* it, not the sphere the ground is displaced from, so every
+  // nodule's hover is raised here by that same local displacement —
+  // exactly the number species.ts and eruptions.ts already add to `radius`
+  // for the same reason when seating a tree or a volcano vent.
+  if (bumpHeight > 0) {
+    const groundDir = new THREE.Vector3();
+    for (const n of nodules) {
+      dirFromLatLon(n.lat, n.lon, groundDir);
+      n.hover += sampledHeight(groundDir).display * bumpHeight;
+    }
+  }
 
   // each band breathes (grows/shrinks) on its own slow cycle, standing in
   // for forming and dissipating without ever changing instance counts

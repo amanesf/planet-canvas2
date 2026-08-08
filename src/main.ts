@@ -1612,7 +1612,16 @@ globeMaterial.onBeforeCompile = (shader) => {
         // biome colour was eating the same 0.22 mix the more uniform blue
         // ocean read clearly, so land needed a stronger push to land in
         // the same visual place, not a smaller one.
-        float aerial = rimFresnel * 0.4;
+        // Widened again on request ("空気遠近法弱くない？") -- pow'd down
+        // to 0.5 rather than just raising the mix strength further:
+        // rimFresnel's own 1.5 exponent (shared with the glow terms above,
+        // which should stay narrow) only lights up right at the actual
+        // silhouette, so a strength-only increase made the very edge hazier
+        // without the haze reaching perceptibly further inward. A
+        // sub-1 power on the 0..1 fresnel value pulls its whole curve up,
+        // extending the visible haze band in from the edge instead of just
+        // darkening/greying that thin edge line harder.
+        float aerial = pow(rimFresnel, 0.5) * 0.55;
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.82), aerial);
       }`,
     )
@@ -2231,10 +2240,11 @@ oceanMaterial.onBeforeCompile = (shader) => {
         totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * oceanRim * (1.0 - night) * 0.85;
 
         // Same atmospheric-perspective desaturation the globe material
-        // carries toward its own limb (see its note) -- applied here too
-        // so the sea doesn't stay saturated blue right up to the edge
-        // while the coastline beside it fades to haze.
-        float oceanAerial = oceanRim * 0.22;
+        // carries toward its own limb (see its note, including the
+        // pow(...,0.5) widening) -- applied here too so the sea doesn't
+        // stay saturated blue right up to the edge while the coastline
+        // beside it fades to haze.
+        float oceanAerial = pow(oceanRim, 0.5) * 0.55;
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.82), oceanAerial);
       }`,
     );
@@ -2281,7 +2291,7 @@ globeGroup.add(species);
 // real puffy 3D clouds with cast shadows — matches the design memo's
 // "evaporation + rain shadow" sky layer with an actual visible presence
 await yieldToBrowser('雲');
-const clouds = buildClouds(RADIUS, seasonUniforms, dayNightUniforms.uSunDir.value);
+const clouds = buildClouds(RADIUS, seasonUniforms, dayNightUniforms.uSunDir.value, BUMP_HEIGHT);
 // The globe's and the sea's shaders were compiled before the sky existed,
 // so they hold the uniform objects and get the contents now.
 cloudShadowUniforms.uCloudShadow.value = clouds.shadowTexture;
