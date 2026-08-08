@@ -466,3 +466,49 @@ canvas {
   opacity: 0.85;
   min-height: 1.2em;
 }
+
+/* ---------------------------------------------------------------------
+   The flag: a digital speech bubble, not a cloth flag, on request. Always
+   faces the viewer because it is HTML positioned every frame from the
+   marker's projected screen coordinates (see main.ts's animate()), not a
+   3D object the camera can see edge-on.
+   --------------------------------------------------------------------- */
+
+.flag-bubble {
+  position: fixed;
+  left: 0;
+  top: 0;
+  /* the anchor point (the tail's tip) sits exactly at the projected
+     marker position set via left/top in JS; this transform is what pins
+     that point rather than the bubble's own top-left corner */
+  transform: translate(-50%, calc(-100% - 10px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  z-index: 15;
+}
+
+.flag-bubble-coord {
+  background: rgba(6, 14, 20, 0.72);
+  border: 1px solid rgba(91, 228, 255, 0.55);
+  border-radius: 8px;
+  padding: 6px 12px;
+  color: #8fefff;
+  font-family: "DM Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  box-shadow: 0 0 14px rgba(57, 200, 255, 0.3), inset 0 0 8px rgba(57, 200, 255, 0.08);
+  backdrop-filter: blur(3px);
+}
+
+.flag-bubble-tail {
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  background: rgba(6, 14, 20, 0.72);
+  border-right: 1px solid rgba(91, 228, 255, 0.55);
+  border-bottom: 1px solid rgba(91, 228, 255, 0.55);
+  transform: rotate(45deg);
+}

@@ -74,6 +74,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="loading" id="loading" role="status">組み立て中…</div>
   </div>
 
+  <div class="flag-bubble" id="flag-bubble" hidden>
+    <div class="flag-bubble-coord" id="flag-bubble-coord">N 00.0° E 000.0°</div>
+    <div class="flag-bubble-tail"></div>
+  </div>
+
   <div class="story-overlay" id="story-overlay" hidden>
     <div class="story-panel">
       <button id="story-close" class="story-close" aria-label="閉じる">✕</button>
@@ -493,6 +498,25 @@ function buildStudioEnvironment(): THREE.Texture {
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, width, height);
 
+  // A cyan band low on the horizon, on request — "make things richer via
+  // lighting/reflection, not by touching individual materials." The
+  // saucer's own glow ring is right at the bench line this environment
+  // already darkens toward, so every clearcoat/metal surface in the scene
+  // (the ocean above all — see its own note on why a discrete shape here
+  // was rejected once already) now picks up a faint cyan kiss at its
+  // lower reflections without a single material needing to change. Kept
+  // to a soft band, not a hard shape, for the same reason the original
+  // gradient is one broad wash rather than distinct light panels: a sharp
+  // reflected shape reads as "there is a visible object out there,"
+  // which is exactly what this environment has always been built to
+  // avoid.
+  const cyan = ctx.createLinearGradient(0, height * 0.58, 0, height * 0.86);
+  cyan.addColorStop(0, 'rgba(57, 200, 255, 0)');
+  cyan.addColorStop(0.5, 'rgba(57, 200, 255, 0.22)');
+  cyan.addColorStop(1, 'rgba(57, 200, 255, 0)');
+  ctx.fillStyle = cyan;
+  ctx.fillRect(0, 0, width, height);
+
   const texture = new THREE.CanvasTexture(canvas);
   texture.mapping = THREE.EquirectangularReflectionMapping;
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -505,7 +529,12 @@ const studioEnvironment = buildStudioEnvironment();
 scene.environment = pmremGenerator.fromEquirectangular(studioEnvironment).texture;
 studioEnvironment.dispose();
 pmremGenerator.dispose();
-scene.environmentIntensity = 1.1;
+// Raised (1.1 -> 1.4) on request, as the "richer via lighting/reflection,
+// not by touching individual materials" lever — this is a single global
+// multiplier every clearcoat/metal surface in the scene already reads
+// (ocean, saucer base, plaque, ring), so turning it up lifts all of their
+// reflections together without any per-material change.
+scene.environmentIntensity = 1.4;
 
 // A lost context now comes back at a cheaper tier rather than rebuilding
 // the scene that lost it — see quality.ts.
@@ -1028,36 +1057,36 @@ wireRotaryDial(
 // viewer is looking square at — because the camera always looks at the
 // globe's centre (see TARGET_Y/camera.lookAt above), that direction and
 // the view direction coincide at the surface.
+// On request, the physical pole-and-cloth flag is gone — the marker is now
+// a small flat pin on the ground (just enough geometry to say "here",
+// visible from any angle including nearly straight down, which a cloth
+// billboard is not) plus an HTML "digital speech bubble" that always faces
+// the viewer and carries the coordinates, tracked onto screen every frame
+// below.
 const flagGroup = new THREE.Group();
 flagGroup.visible = false;
 {
-  // Sized up a lot from the first pass, which measured out as a couple of
-  // pixels on the actual sphere and was effectively invisible — "見えるよ
-  // うにして" (make it visible). A glowing beacon was tried here too, on
-  // the theory that a plain flag would still be too small to notice, but
-  // a lit marker wasn't the ask — this is just a bigger flag, an ordinary
-  // pole and cloth, not a light source.
-  const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.012, 0.014, 0.42, 10),
-    new THREE.MeshStandardMaterial({ color: 0xe8edf2, metalness: 0.6, roughness: 0.3 }),
+  const pin = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.006, 20),
+    new THREE.MeshStandardMaterial({ color: 0x2fa8e8, emissive: 0x0e3f5c, roughness: 0.4 }),
   );
-  pole.position.y = 0.21;
-  flagGroup.add(pole);
-  const cloth = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.24, 0.15),
-    new THREE.MeshStandardMaterial({ color: 0x2fa8e8, roughness: 0.55, side: THREE.DoubleSide }),
-  );
-  cloth.position.set(0.12, 0.35, 0);
-  flagGroup.add(cloth);
+  pin.position.y = 0.003;
+  flagGroup.add(pin);
 }
 globeGroup.add(flagGroup);
 
 const flagButton = document.querySelector<HTMLButtonElement>('#flag-button')!;
+const flagBubble = document.querySelector<HTMLDivElement>('#flag-bubble')!;
+const flagBubbleCoord = document.querySelector<HTMLDivElement>('#flag-bubble-coord')!;
 const flagWorldDir = new THREE.Vector3();
 const flagLocalDir = new THREE.Vector3();
 const flagGlobeQuat = new THREE.Quaternion();
 const flagGlobeCentre = new THREE.Vector3();
 const flagRaycaster = new THREE.Raycaster();
+const flagBubbleWorldPos = new THREE.Vector3();
+const flagBubbleGlobeCentre = new THREE.Vector3();
+const flagBubbleNormal = new THREE.Vector3();
+const flagBubbleToCamera = new THREE.Vector3();
 // Slightly above dead centre in normalised device coordinates (+Y is up in
 // NDC), on request — a flag planted at the exact optical centre of the
 // frame is fine geometrically but sits low relative to how the globe's own
@@ -1094,10 +1123,24 @@ flagButton.addEventListener('click', () => {
   flagLocalDir.copy(flagWorldDir).applyQuaternion(flagGlobeQuat.invert()).normalize();
   const surface = RADIUS + sampledHeight(flagLocalDir).display * BUMP_HEIGHT;
   flagGroup.position.copy(flagLocalDir).multiplyScalar(surface);
-  // the pole geometry stands along local +Y, so aligning +Y with the
-  // surface normal is what makes it stand upright out of the ground
+  // the pin geometry lies flat along local +Y, so aligning +Y with the
+  // surface normal is what makes it sit flush with the ground
   flagGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), flagLocalDir);
   flagGroup.visible = true;
+
+  // Latitude/longitude, in this project's own convention (see lonOf in
+  // clouds.ts and the identical atan2 used throughout terrain.ts):
+  // longitude increases eastward from atan2(z, -x), latitude from asin(y).
+  // Read off flagLocalDir directly — it is the point's own object-space
+  // direction, which does not change as the globe keeps spinning under it.
+  const latDeg = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(flagLocalDir.y, -1, 1)));
+  let lonDeg = THREE.MathUtils.radToDeg(Math.atan2(flagLocalDir.z, -flagLocalDir.x));
+  if (lonDeg > 180) lonDeg -= 360;
+  const ns = latDeg >= 0 ? 'N' : 'S';
+  const ew = lonDeg >= 0 ? 'E' : 'W';
+  flagBubbleCoord.textContent =
+    `${ns} ${Math.abs(latDeg).toFixed(1).padStart(4, '0')}°  ${ew} ${Math.abs(lonDeg).toFixed(1).padStart(5, '0')}°`;
+  flagBubble.hidden = false;
 });
 
 // ---------- story screen ----------
@@ -1178,6 +1221,36 @@ function animate() {
   );
 
   composer.render();
+
+  // The speech bubble is HTML, not a 3D billboard — crisp text at any
+  // zoom, and no second draw call for a sprite. Positioned by projecting
+  // the marker's *current* world position (matrixWorld is now up to date:
+  // render() just traversed the whole scene graph) through the same
+  // camera the globe was just drawn with, so it tracks the marker exactly
+  // regardless of how the two dials or the day spin have turned the globe
+  // since it was planted.
+  if (flagGroup.visible) {
+    flagGroup.getWorldPosition(flagBubbleWorldPos);
+    globeGroup.getWorldPosition(flagBubbleGlobeCentre);
+    // Hidden once the marker has rotated onto the far side of the globe —
+    // a speech bubble anchored to a point behind the sphere, still drawn
+    // in front of it, would read as a bug rather than as "not visible from
+    // here right now."
+    flagBubbleNormal.copy(flagBubbleWorldPos).sub(flagBubbleGlobeCentre).normalize();
+    flagBubbleToCamera.copy(camera.position).sub(flagBubbleWorldPos).normalize();
+    const front = flagBubbleNormal.dot(flagBubbleToCamera) > 0.08;
+    if (front) {
+      const ndc = flagBubbleWorldPos.clone().project(camera);
+      const x = (ndc.x * 0.5 + 0.5) * window.innerWidth;
+      const y = (1 - (ndc.y * 0.5 + 0.5)) * window.innerHeight;
+      flagBubble.style.display = '';
+      flagBubble.style.left = `${x}px`;
+      flagBubble.style.top = `${y}px`;
+    } else {
+      flagBubble.style.display = 'none';
+    }
+  }
+
   requestAnimationFrame(animate);
 }
 
@@ -1368,8 +1441,16 @@ globeMaterial.onBeforeCompile = (shader) => {
         float coolBand = smoothstep(0.06, -0.12, sun) * smoothstep(-0.46, -0.22, sun);
         totalEmissiveRadiance +=
           mix(vec3(0.34), diffuseColor.rgb, 0.62) * vec3(1.0, 0.44, 0.14) * warmBand * 1.45;
+        // Cut hard (0.95 -> 0.4) on request — "a strange vivid dark-blue
+        // band". This "blue hour" cool band was already here and tuned
+        // against the old, gentler colour grade; the saturation/contrast
+        // lift added since (cameraPass.ts's uSaturation/uContrast, raised
+        // when cel-shading was dropped for bloom+saturation instead) push
+        // a saturated blue like this one much harder than the flatter grade
+        // it was originally judged against, and it read as an odd painted
+        // streak rather than a dusk tint once amplified that way.
         totalEmissiveRadiance +=
-          mix(vec3(0.28), diffuseColor.rgb, 0.5) * vec3(0.26, 0.44, 0.95) * coolBand * 0.95;
+          mix(vec3(0.28), diffuseColor.rgb, 0.5) * vec3(0.26, 0.44, 0.95) * coolBand * 0.4;
 
         // G54: past the dusk bands, the rest of the night limb was simply
         // pure black — nothing at the silhouette edge at all. A grazing-
@@ -2017,8 +2098,13 @@ oceanMaterial.onBeforeCompile = (shader) => {
         float warmBand = smoothstep(0.42, 0.06, sun) * smoothstep(-0.16, 0.04, sun);
         float coolBand = smoothstep(0.06, -0.12, sun) * smoothstep(-0.46, -0.22, sun);
         totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.5, 0.2) * warmBand * 0.5;
+        // Cut alongside the matching term in the globe material — see its
+        // note. The ocean is where this read worst: a saturated blue band
+        // on already-dark water, further amplified by the later colour
+        // grade, looked like a stripe painted across the sea rather than a
+        // dusk tint on it.
         totalEmissiveRadiance +=
-          mix(vec3(0.26), diffuseColor.rgb, 0.5) * vec3(0.26, 0.46, 0.98) * coolBand * 0.85;
+          mix(vec3(0.26), diffuseColor.rgb, 0.5) * vec3(0.26, 0.46, 0.98) * coolBand * 0.35;
 
         // Same silhouette rim the globe material carries (main.ts's other
         // onBeforeCompile), added here too rather than left to the land
