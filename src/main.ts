@@ -39,33 +39,37 @@ import {
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="cyber-panel" id="cyber-panel">
-    <div class="title-bar">
-      <div class="title">天青の晶玉</div>
+    <div class="panel-corner panel-corner--tl"></div>
+    <div class="panel-corner panel-corner--tr"></div>
+    <div class="panel-header">
+      <div class="title"><span class="title-glyph"></span>天青の晶玉</div>
       <button id="story-button" class="story-button" title="ストーリーを見る" aria-label="ストーリーを見る">STORY</button>
     </div>
 
-    <div class="dial-cluster">
-      <div class="dial-label">E - W</div>
-      <div class="yaw-dial" id="yaw-dial" role="slider" aria-label="東西に回転" tabindex="0">
-        <div class="yaw-dial-ring"></div>
-        <div class="yaw-dial-tick" id="yaw-dial-tick"></div>
-        <div class="yaw-dial-core"></div>
+    <div class="panel-controls">
+      <div class="dial-cluster">
+        <div class="dial-label">E - W</div>
+        <div class="yaw-dial" id="yaw-dial" role="slider" aria-label="東西に回転" tabindex="0">
+          <div class="yaw-dial-ring"></div>
+          <div class="yaw-dial-tick" id="yaw-dial-tick"></div>
+          <div class="yaw-dial-core"></div>
+        </div>
       </div>
-    </div>
-    <div class="dial-cluster">
-      <div class="dial-label">N - S</div>
-      <div class="pitch-dial" id="pitch-dial" role="slider" aria-label="南北に回転" tabindex="0">
-        <div class="pitch-dial-ring"></div>
-        <div class="pitch-dial-tick" id="pitch-dial-tick"></div>
-        <div class="pitch-dial-core"></div>
+      <div class="dial-cluster">
+        <div class="dial-label">N - S</div>
+        <div class="pitch-dial" id="pitch-dial" role="slider" aria-label="南北に回転" tabindex="0">
+          <div class="pitch-dial-ring"></div>
+          <div class="pitch-dial-tick" id="pitch-dial-tick"></div>
+          <div class="pitch-dial-core"></div>
+        </div>
       </div>
+      <button id="flag-button" class="cyber-button cyber-button--small" title="中心に旗を立てる" aria-label="中心に旗を立てる">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 3v18M5 4h13l-3 4 3 4H5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      </button>
+      <button id="spin-toggle" class="cyber-button cyber-button--small" title="自転を止める" aria-label="自転を止める">
+        <svg viewBox="0 0 24 24" width="16" height="16" id="spin-toggle-icon"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>
+      </button>
     </div>
-    <button id="flag-button" class="cyber-button cyber-button--small" title="中心に旗を立てる" aria-label="中心に旗を立てる">
-      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 3v18M5 4h13l-3 4 3 4H5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
-    </button>
-    <button id="spin-toggle" class="cyber-button cyber-button--small" title="自転を止める" aria-label="自転を止める">
-      <svg viewBox="0 0 24 24" width="16" height="16" id="spin-toggle-icon"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>
-    </button>
   </div>
 
   <div class="loading-screen" id="loading-screen">
@@ -338,17 +342,28 @@ const CAMERA_POLAR_ANGLE = Math.PI * 0.405; // ~73° from vertical = ~17° above
 // costs about a degree and a half of headroom for nothing: the space is
 // needed at the bottom, not the top.
 const TARGET_Y = 0.15;
+// On a phone-aspect screen the cyber-panel (bottom, scale(2)'d, and taller
+// again now that it carries its own header row) eats a real fraction of
+// the viewport height. Camera position and look-at target move together
+// in cameraStartPosition/lookAt below, which keeps the viewing *angle*
+// fixed but translates the whole rig vertically — moving both down by the
+// same amount pushes the globe (whose own world position does not move)
+// up in the frame, exactly the headroom the taller panel needs. Left at 0
+// for landscape/desktop, where the panel is a much smaller fraction of
+// the screen and this globe already had headroom to spare.
+const PORTRAIT_TARGET_Y_LIFT = 0.4;
+function targetYForViewport() {
+  const aspect = window.innerWidth / window.innerHeight;
+  return aspect >= 1 ? TARGET_Y : TARGET_Y - PORTRAIT_TARGET_Y_LIFT;
+}
 function cameraStartPosition() {
   const dist = cameraDistanceForViewport();
-  return new THREE.Vector3(
-    0,
-    TARGET_Y + dist * Math.cos(CAMERA_POLAR_ANGLE),
-    dist * Math.sin(CAMERA_POLAR_ANGLE),
-  );
+  const targetY = targetYForViewport();
+  return new THREE.Vector3(0, targetY + dist * Math.cos(CAMERA_POLAR_ANGLE), dist * Math.sin(CAMERA_POLAR_ANGLE));
 }
 const startPos = cameraStartPosition();
 camera.position.set(startPos.x, startPos.y, startPos.z);
-camera.lookAt(0, TARGET_Y, 0);
+camera.lookAt(0, targetYForViewport(), 0);
 
 // Getting a context is not a given. A browser will only hand out a limited
 // number of live WebGL contexts across all tabs — a dozen or so — and once
@@ -1170,13 +1185,22 @@ flagButton.addEventListener('click', () => {
   flagGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), flagLocalDir);
   flagGroup.visible = true;
 
-  // Latitude/longitude, in this project's own convention (see lonOf in
-  // clouds.ts and the identical atan2 used throughout terrain.ts):
-  // longitude increases eastward from atan2(z, -x), latitude from asin(y).
-  // Read off flagLocalDir directly — it is the point's own object-space
-  // direction, which does not change as the globe keeps spinning under it.
+  // Latitude/longitude. Read off flagLocalDir directly — it is the
+  // point's own object-space direction, which does not change as the
+  // globe keeps spinning under it.
+  //
+  // atan2(z, -x) is this project's internal texture-sampling angle (see
+  // lonOf in clouds.ts, realElevationAt in terrain.ts) — it is *not* real
+  // -world longitude on its own. terrain.ts's own latLonToDir shows the
+  // actual relationship: real lon 0 (Greenwich) maps to phi = π, i.e.
+  // atan2(z, -x) = 180°, not 0°. The two are offset by exactly 180°
+  // because the source equirectangular texture's left edge (px=0, where
+  // this project's internal atan2 angle is 0) is real longitude -180, not
+  // Greenwich. Without the +180 correction below, a flag planted on real
+  // Tokyo (35N 140E) reported "W 40.0°" instead of "E 140.0°" — every
+  // reading was off by exactly half the globe.
   const latDeg = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(flagLocalDir.y, -1, 1)));
-  let lonDeg = THREE.MathUtils.radToDeg(Math.atan2(flagLocalDir.z, -flagLocalDir.x));
+  let lonDeg = THREE.MathUtils.radToDeg(Math.atan2(flagLocalDir.z, -flagLocalDir.x)) + 180;
   if (lonDeg > 180) lonDeg -= 360;
   const ns = latDeg >= 0 ? 'N' : 'S';
   const ew = lonDeg >= 0 ? 'E' : 'W';
@@ -2353,7 +2377,7 @@ window.addEventListener('resize', () => {
   // viewport-responsive framing cameraStartPosition() used at load.
   const pos = cameraStartPosition();
   camera.position.set(pos.x, pos.y, pos.z);
-  camera.lookAt(0, TARGET_Y, 0);
+  camera.lookAt(0, targetYForViewport(), 0);
 });
 
 globeTick = (t) => {
