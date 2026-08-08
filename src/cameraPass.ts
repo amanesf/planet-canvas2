@@ -94,6 +94,20 @@ export const CameraPassShader = {
     uFlareStrength: { value: 0.5 },
     /** 0 = no split tone, 1 = full teal-shadow/orange-highlight grade */
     uSplitTone: { value: 0.4 },
+    /**
+     * Crepuscular rays radiating from the same uFlareUV anchor as the lens
+     * flare above, on request for more "新海誠的な" atmosphere. Reusing
+     * the flare's anchor rather than inventing a second light position
+     * keeps them reading as rays *from* the same lamp glow, not a second,
+     * unrelated light source.
+     */
+    uGodRayStrength: { value: 0.22 },
+    /** how much of the frame each ray-marching step advances, in UV units */
+    uGodRayDensity: { value: 0.055 },
+    /** per-step falloff — closer to 1 reaches further before fading out */
+    uGodRayDecay: { value: 0.92 },
+    /** two soft diagonal colour streaks drifting across the frame */
+    uLightLeak: { value: 0.1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -127,6 +141,10 @@ export const CameraPassShader = {
     uniform vec2 uFlareUV;
     uniform float uFlareStrength;
     uniform float uSplitTone;
+    uniform float uGodRayStrength;
+    uniform float uGodRayDensity;
+    uniform float uGodRayDecay;
+    uniform float uLightLeak;
     varying vec2 vUv;
 
     // RINGS is set per quality tier: two rings read as a round aperture at
@@ -319,6 +337,47 @@ export const CameraPassShader = {
       return col;
     }
 
+    // Crepuscular rays: march from this pixel toward the flare anchor,
+    // sampling the already-rendered frame and letting only its bright
+    // spots (cloud tops, the sparkle field, the flare itself) survive,
+    // decaying with each step. This is the standard cheap screen-space
+    // god-ray trick — it has no notion of what is actually casting a
+    // shadow, it just streaks whatever is already bright toward the
+    // anchor, which is enough to read as light shafts without a second
+    // scene render or any occlusion geometry.
+    #define GOD_RAY_SAMPLES 10
+    vec3 godRays(vec2 uv) {
+      vec2 delta = (uv - uFlareUV) * uGodRayDensity;
+      vec2 sampleUv = uv;
+      float decay = 1.0;
+      vec3 result = vec3(0.0);
+      for (int i = 0; i < GOD_RAY_SAMPLES; i++) {
+        sampleUv -= delta;
+        vec3 s = texture2D(tDiffuse, sampleUv).rgb;
+        float l = dot(s, vec3(0.2126, 0.7152, 0.0722));
+        result += s * smoothstep(0.5, 1.0, l) * decay;
+        decay *= uGodRayDecay;
+      }
+      return result * (1.0 / float(GOD_RAY_SAMPLES));
+    }
+
+    // Two soft diagonal colour bands drifting slowly across the frame —
+    // the "light leak" a real lens gets from a stray bright source hitting
+    // the barrel at an angle. One warm, one cool, so together they nudge
+    // toward the same teal/orange split the colour grade below carries,
+    // rather than adding a third unrelated hue.
+    vec3 lightLeak(vec2 uv) {
+      vec2 warmDir = normalize(vec2(1.0, 0.4));
+      float warmCoord = dot(uv, warmDir) * 2.4 - uTime * 0.015;
+      float warmBand = pow(max(sin(warmCoord) , 0.0), 6.0);
+
+      vec2 coolDir = normalize(vec2(1.0, -0.55));
+      float coolCoord = dot(uv, coolDir) * 2.1 + uTime * 0.011;
+      float coolBand = pow(max(sin(coolCoord), 0.0), 8.0);
+
+      return vec3(1.0, 0.55, 0.25) * warmBand * 0.5 + vec3(0.35, 0.65, 1.0) * coolBand * 0.4;
+    }
+
     void main() {
       vec2 centred = (vUv - vec2(0.5)) * vec2(uResolution.x / uResolution.y, 1.0);
       float edge = clamp(dot(centred, centred) * 2.2, 0.0, 1.0);
@@ -337,6 +396,11 @@ export const CameraPassShader = {
       // same additive stage, before the vignette/haze/grade that treat the
       // frame as a finished photograph.
       colour += lensFlare(vUv, vec2(uResolution.x / uResolution.y, 1.0)) * uFlareStrength;
+
+      // God rays sample the frame that already has the flare/bloom baked
+      // into it, so the shafts read as radiating *from* the flare rather
+      // than from a second, separate source.
+      colour += godRays(vUv) * uGodRayStrength;
 
       // Lens falloff. Every lens is dimmer at the corners than in the
       // middle, and the eye reads an evenly lit rectangle as artificial long
@@ -357,6 +421,11 @@ export const CameraPassShader = {
       // the vignette itself: real glitter in the air keeps catching the
       // light out to the edge of frame, it does not dim with the lens.
       colour += sparkleField(vUv) * uSparkleStrength;
+
+      // Light leak streaks, additive alongside the sparkle/haze — both are
+      // "things floating between the lens and the scene" rather than
+      // properties of the scene itself, so they belong in the same stage.
+      colour += lightLeak(vUv) * uLightLeak;
 
       // Colour grade: saturation lift, then a gentle S-curve. Both applied
       // after every other term above (haze, sparkle, bloom) so the grade

@@ -21,14 +21,28 @@ body {
      plant, glass paint bottles catching a rim light, a hobby knife, a
      cutting mat — all dim and warm against a near-black desk, without any
      3D rendering cost (this is the page background showing through the
-     transparent canvas, not a rendered scene). */
+     transparent canvas, not a rendered scene).
+
+     Re-tuned on request ("新海誠的な" -- the WebGL canvas now carries a
+     teal-shadow/orange-highlight split tone (cameraPass.ts's uSplitTone)
+     and an anchored lamp flare, and this CSS layer sits *behind* that
+     canvas rather than through it, so it was left out of both: a plain
+     warm-brown backdrop next to a teal-graded globe read as two different
+     rooms. The lamp glow below is pushed more saturated/orange to match
+     the flare's own core colour and sit at the same screen point
+     (cameraPass.ts's uFlareUV, 68%/8% here in CSS percent), and the base
+     dark tone is pulled a little toward blue-violet to match the split
+     tone's own shadow colour instead of a neutral near-black. */
   background:
-    /* a plant, low-left, dim */
-    radial-gradient(circle at 8% 18%, rgba(70, 110, 60, 0.35) 0%, rgba(70, 110, 60, 0.14) 16%, rgba(70, 110, 60, 0) 32%),
-    radial-gradient(ellipse 55px 130px at 7% 28%, rgba(50, 80, 45, 0.4) 0%, rgba(50, 80, 45, 0) 90%),
+    /* a plant, low-left, dim -- pulled cooler/tealer to sit in the split
+       tone's shadow range rather than a neutral green */
+    radial-gradient(circle at 8% 18%, rgba(60, 110, 100, 0.35) 0%, rgba(60, 110, 100, 0.14) 16%, rgba(60, 110, 100, 0) 32%),
+    radial-gradient(ellipse 55px 130px at 7% 28%, rgba(45, 85, 78, 0.4) 0%, rgba(45, 85, 78, 0) 90%),
     /* a warm lamp glow, upper area — the single light source, not a flat
-       bright fill */
-    radial-gradient(circle at 68% 8%, rgba(255, 200, 120, 0.32) 0%, rgba(255, 190, 110, 0.14) 24%, rgba(255, 190, 110, 0) 50%),
+       bright fill. Anchored at the same screen point as the WebGL canvas's
+       own lens flare (cameraPass.ts's uFlareUV) and pushed more saturated
+       so the two read as one light instead of two independent glows. */
+    radial-gradient(circle at 68% 8%, rgba(255, 175, 90, 0.4) 0%, rgba(255, 160, 80, 0.16) 24%, rgba(255, 160, 80, 0) 50%),
     /* glass paint bottles, lower right — catching a dim rim light against
        the dark desk rather than glowing brightly themselves */
     radial-gradient(ellipse 46px 150px at 91% 85%, rgba(210, 180, 140, 0.22) 0%, rgba(150, 120, 80, 0.1) 55%, rgba(150, 120, 80, 0) 90%),
@@ -36,8 +50,8 @@ body {
     /* a hobby knife: a thin dim diagonal glint */
     linear-gradient(115deg, transparent 46%, rgba(210, 210, 205, 0.1) 48%, rgba(210, 210, 205, 0.14) 49.5%, transparent 52%),
     /* cutting-mat hint, lower-left */
-    radial-gradient(circle at 6% 80%, rgba(40, 60, 55, 0.3) 0%, rgba(40, 60, 55, 0) 40%),
-    radial-gradient(circle at 55% 34%, #14100c 0%, #0d0a08 55%, #070505 100%);
+    radial-gradient(circle at 6% 80%, rgba(35, 55, 58, 0.3) 0%, rgba(35, 55, 58, 0) 40%),
+    radial-gradient(circle at 55% 34%, #171310 0%, #0d0d10 55%, #05060a 100%);
 }
 
 #app {

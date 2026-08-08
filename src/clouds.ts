@@ -2108,25 +2108,65 @@ export function buildClouds(
     shader.uniforms.uCloudShadow = { value: shadowTexture };
     shader.uniforms.uCloudTime = selfShadowTime;
     shader.uniforms.uOmegaScale = { value: omegaScale };
+    // Same live-mutated Vector3 the rain sunlit test already reads (see
+    // this function's own JSDoc) — a plain reference, not a copy, so the
+    // shading below tracks the key light without this material needing
+    // its own per-frame update call.
+    shader.uniforms.uSunDir = { value: sunDirection ?? new THREE.Vector3(0, 1, 0) };
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vNoduleDir;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vNoduleDir;\nvarying vec3 vCloudWorldDir;')
       .replace(
         '#include <begin_vertex>',
         // transformed already carries the instance transform at this point
         // (see three's begin_vertex chunk under USE_INSTANCING), so this is
         // the nodule's own placed position in the globe's object space —
         // the same frame buildCloudShadowTexture baked lon/lat against.
-        '#include <begin_vertex>\nvNoduleDir = normalize(transformed);',
+        `#include <begin_vertex>
+        vNoduleDir = normalize(transformed);
+        // World-space version of the same direction, the way the globe
+        // material's vGlobeNormal is derived from its own local position —
+        // this group sits under the same rotating parent as the terrain,
+        // so this is directly comparable to uSunDir for a per-nodule
+        // "local sun elevation", the same day/night test the ground uses.
+        vCloudWorldDir = normalize(mat3(modelMatrix) * transformed);`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
-        '#include <common>\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nvarying vec3 vNoduleDir;' +
+        '#include <common>\nuniform sampler2D uCloudShadow;\nuniform float uCloudTime;\nuniform float uOmegaScale;\nuniform vec3 uSunDir;\nvarying vec3 vNoduleDir;\nvarying vec3 vCloudWorldDir;' +
           CLOUD_SHADOW_GLSL,
       )
       .replace(
         '#include <color_fragment>',
         '#include <color_fragment>\n      diffuseColor.rgb *= cloudShade(vNoduleDir, 0.3);',
+      )
+      // G60: on request ("新海誠的な" -- his cumulus always reads as a lit
+      // object with weight and drama, not a flat cotton lump). Two terms,
+      // both reusing state this material already computes rather than
+      // adding new per-nodule data:
+      //  - a grazing-angle rim (the same Fresnel trick the globe/ocean rim
+      //    glow uses) brightens the thin, backlit edge of every nodule,
+      //    which is exactly the "sun coming through the fringe" look real
+      //    cotton-ball cumulus has and this material's flat matte roughness
+      //    alone cannot produce.
+      //  - a warm bounce on the underside specifically during this
+      //    nodule's own local dusk/dawn (vCloudWorldDir vs uSunDir, same
+      //    band shape the globe's terminator uses), weighted by how dark
+      //    the baked underside gradient already made this fragment -- so
+      //    it only lights up the shadowed underside, not the sunlit crown,
+      //    which is where a sunset's underlight actually shows on a cloud.
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        {
+          float cloudRim = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 2.0);
+          totalEmissiveRadiance += vec3(1.0, 0.97, 0.9) * cloudRim * 0.22;
+
+          float cloudSun = dot(vCloudWorldDir, uSunDir);
+          float duskBand = smoothstep(0.35, 0.0, abs(cloudSun));
+          float underside = 1.0 - clamp(dot(diffuseColor.rgb, vec3(0.333)), 0.0, 1.0);
+          totalEmissiveRadiance += vec3(1.0, 0.55, 0.22) * duskBand * underside * 0.35;
+        }`,
       );
   };
 

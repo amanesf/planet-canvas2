@@ -701,6 +701,44 @@ globeGroup.position.set(0, GLOBE_SEAT_Y, 0);
 globeGroup.rotation.order = 'XYZ';
 scene.add(globeGroup);
 
+// A soft halo behind the globe, on request ("新海誠的な" -- the globe
+// reads as a lit object sitting *in front of* a dark room rather than as
+// something that itself glows the way a planet actually would against
+// open space). A plain radial-gradient canvas sprite rather than any kind
+// of light or geometry: sprites always face the camera for free, need no
+// extra draw setup, and — crucially — sit *behind* the globe in the
+// depth buffer without a single line of depth-sorting logic, because it
+// is placed a little further from the camera than the globe itself and
+// additive blending means anything the opaque globe occludes simply never
+// contributes. A child of the scene, not globeGroup, since a glow behind
+// a spinning object should not itself spin.
+function buildGlowDisc(): THREE.Sprite {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, 'rgba(120, 190, 255, 0.55)');
+  gradient.addColorStop(0.4, 'rgba(80, 150, 220, 0.28)');
+  gradient.addColorStop(1, 'rgba(40, 90, 160, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.setScalar(RADIUS * 5.5);
+  sprite.position.set(0, GLOBE_SEAT_Y, -RADIUS * 1.4);
+  return sprite;
+}
+scene.add(buildGlowDisc());
+
 // terrain color is painted once onto a texture (crisp, cheap to sample)
 // instead of interpolated per-vertex (which read as blurry) — geometry
 // only needs to be smooth enough to carry the displacement + lighting
