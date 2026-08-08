@@ -1364,17 +1364,19 @@ const globeMaterial = new THREE.MeshPhysicalMaterial({
   roughness: 0.97,
   metalness: 0,
   // On request ("陸地もハイクオリティにしたい" — land looked flat and dull
-  // next to the now-glossy ocean). A thin, rough clearcoat is not the
-  // ocean's shiny resin lobe — clearcoatRoughness 0.75 keeps it a soft
-  // satin sheen, like a painted diorama surface under a matte lacquer,
-  // rather than the sea's wet-look gloss (clearcoat 0.85 @ roughness
-  // 0.16). It gives the terrain a subtle highlight roll-off across ridges
-  // and coastlines that flat matte roughness alone can't, without
-  // touching the terrain painting itself. envMapIntensity raised
-  // alongside it (0.06 -> 0.18) so that sheen actually has the richer
-  // studio environment map (see buildStudioEnvironment) to reflect.
+  // next to the now-glossy ocean). A thin clearcoat is not the ocean's
+  // shiny resin lobe (clearcoat 0.85 @ roughness 0.16) — it stays well
+  // short of that gloss so the land/ocean material contrast stays intact.
+  // clearcoatRoughness tightened from 0.75 to 0.35 on the follow-up "新海
+  // 誠的な" request: a wide soft satin sheen reads as a matte-lacquered
+  // diorama, but that director's own sunlit terrain catches the light as
+  // small, sharp highlights along ridgelines rather than a broad soft
+  // glow — a *lower* clearcoatRoughness (tighter specular lobe), not a
+  // higher one. envMapIntensity raised alongside it (0.06 -> 0.18) so
+  // there's actually more of the studio environment map (see
+  // buildStudioEnvironment) for those sharper highlights to catch.
   clearcoat: 0.16,
-  clearcoatRoughness: 0.75,
+  clearcoatRoughness: 0.35,
   envMapIntensity: 0.18,
 });
 
@@ -1531,6 +1533,22 @@ globeMaterial.onBeforeCompile = (shader) => {
         // Deepened again (0.14 -> 0.10) alongside the tighter terminator
         // above, for more day/night contrast.
         diffuseColor.rgb *= mix(1.0, 0.10, night);
+
+        // Atmospheric perspective, on request ("新海誠的な" -- his wide
+        // shots always cool and desaturate toward the horizon, standing in
+        // for miles of haze between the viewer and the far ground). This
+        // globe has no real distance for haze to travel across, so the
+        // grazing-angle rimFresnel above is reused as the stand-in: it is
+        // already exactly "how close to the silhouette is this point",
+        // which is the one variable that would drive real atmospheric
+        // perspective on an actual planet limb. Desaturating and cooling
+        // the *albedo* here (not just adding an emissive glow, which the
+        // rim terms above already do) is what actually reads as haze
+        // sitting in front of the terrain rather than a light shining on
+        // it. Kept gentle (0.22 max) so coastlines and biome colour are
+        // still legible right up to the edge.
+        float aerial = rimFresnel * 0.22;
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.82), aerial);
       }`,
     )
     .replace(
@@ -2146,6 +2164,13 @@ oceanMaterial.onBeforeCompile = (shader) => {
         // happens to be open water.
         totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * oceanRim * night * 0.85;
         totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * oceanRim * (1.0 - night) * 0.85;
+
+        // Same atmospheric-perspective desaturation the globe material
+        // carries toward its own limb (see its note) -- applied here too
+        // so the sea doesn't stay saturated blue right up to the edge
+        // while the coastline beside it fades to haze.
+        float oceanAerial = oceanRim * 0.22;
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.7, 0.82), oceanAerial);
       }`,
     );
   oceanWaveUniforms = shader.uniforms as unknown as { uTime: { value: number } };

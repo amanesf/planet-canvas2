@@ -1690,16 +1690,19 @@ export function buildSpecies(
 
   // Foliage/mineral materials all pick up a thin clearcoat below, on
   // request ("陸地もハイクオリティにしたい" — the trees in particular read
-  // as flat and dull next to the glossy ocean resin). It's a soft satin
-  // sheen (clearcoatRoughness 0.5), not the ocean's wet-look gloss — more
-  // like glazed ceramic diorama foliage catching a highlight than
-  // reflective plastic — paired with a higher envMapIntensity so there's
-  // actually more of the studio environment map for it to catch.
+  // as flat and dull next to the glossy ocean resin). Tightened again
+  // (clearcoatRoughness 0.5 -> 0.22 for foliage) on the follow-up "新海誠
+  // 的な" request: a broad soft satin sheen reads as a matte-lacquered
+  // diorama, but Shinkai's own glossy leaves/water catch the light as
+  // small, sharp points rather than a wide soft glow, which needs a
+  // *lower* clearcoatRoughness (a tighter specular lobe), not a higher
+  // one — paired with a higher envMapIntensity so there's actually more
+  // of the studio environment map for those sharper highlights to catch.
   const plantMaterial = new THREE.MeshPhysicalMaterial({
     color: '#ffffff',
     roughness: 0.93,
     clearcoat: 0.18,
-    clearcoatRoughness: 0.5,
+    clearcoatRoughness: 0.22,
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(plantMaterial, seasonUniforms);
@@ -1710,7 +1713,7 @@ export function buildSpecies(
     color: '#ffffff',
     roughness: 0.93,
     clearcoat: 0.18,
-    clearcoatRoughness: 0.5,
+    clearcoatRoughness: 0.22,
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(plantMaterialEvergreen, seasonUniforms, true);
@@ -1719,7 +1722,7 @@ export function buildSpecies(
     roughness: 0.85,
     flatShading: true,
     clearcoat: 0.1,
-    clearcoatRoughness: 0.6,
+    clearcoatRoughness: 0.35,
     envMapIntensity: 0.2,
   });
 
@@ -1822,7 +1825,7 @@ export function buildSpecies(
     color: '#8a5a3a',
     roughness: 0.95,
     clearcoat: 0.14,
-    clearcoatRoughness: 0.55,
+    clearcoatRoughness: 0.3,
     envMapIntensity: 0.2,
   });
   // left white on purpose — instanceColor below multiplies against this,
@@ -1832,7 +1835,7 @@ export function buildSpecies(
     color: '#ffffff',
     roughness: 0.9,
     clearcoat: 0.18,
-    clearcoatRoughness: 0.5,
+    clearcoatRoughness: 0.22,
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(foliageMaterial, seasonUniforms);
@@ -1842,7 +1845,7 @@ export function buildSpecies(
     color: '#ffffff',
     roughness: 0.9,
     clearcoat: 0.18,
-    clearcoatRoughness: 0.5,
+    clearcoatRoughness: 0.22,
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(foliageMaterialEvergreen, seasonUniforms, true);
@@ -1911,7 +1914,7 @@ export function buildSpecies(
     roughness: 0.95,
     flatShading: true,
     clearcoat: 0.08,
-    clearcoatRoughness: 0.65,
+    clearcoatRoughness: 0.4,
     envMapIntensity: 0.18,
   });
 
@@ -1951,7 +1954,7 @@ export function buildSpecies(
     roughness: 0.97,
     flatShading: true,
     clearcoat: 0.06,
-    clearcoatRoughness: 0.7,
+    clearcoatRoughness: 0.45,
     envMapIntensity: 0.16,
   });
   const screeMesh = new THREE.InstancedMesh(screeGeometry, screeMaterial, screePoints.length);
@@ -2000,7 +2003,7 @@ export function buildSpecies(
     color: '#ffffff',
     roughness: 0.92,
     clearcoat: 0.18,
-    clearcoatRoughness: 0.5,
+    clearcoatRoughness: 0.22,
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(canopyMaterial, seasonUniforms);
@@ -2014,7 +2017,7 @@ export function buildSpecies(
     color: '#ffffff',
     roughness: 0.92,
     clearcoat: 0.18,
-    clearcoatRoughness: 0.5,
+    clearcoatRoughness: 0.22,
     envMapIntensity: 0.22,
   });
   applySeasonalFoliageTint(canopyMaterialConifer, seasonUniforms, true);
@@ -2485,7 +2488,7 @@ export function buildSpecies(
     color: '#ffffff',
     roughness: 0.9,
     clearcoat: 0.12,
-    clearcoatRoughness: 0.55,
+    clearcoatRoughness: 0.3,
     envMapIntensity: 0.18,
   });
   applySeasonalFoliageTint(grassMaterial, seasonUniforms);
