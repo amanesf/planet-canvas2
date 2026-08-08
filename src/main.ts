@@ -647,7 +647,11 @@ scene.add(fillLight);
 // against the background, not filling in the sphere's own dark side, and
 // cutting it as hard as the other two let the globe's far limb melt into
 // the room behind it.
-const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.30);
+// Bumped from 0.30 per an explicit ask for a stronger silhouette edge —
+// this is the scene light half of that (a real light, catching the
+// physical set-dressing too), paired with the shader-side rimFresnel
+// terms on the globe/ocean materials being pushed up the same way.
+const rimLight = new THREE.DirectionalLight(0x9fc8e8, 0.48);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
 
@@ -1408,7 +1412,10 @@ globeMaterial.onBeforeCompile = (shader) => {
         float sun = dot(normalize(vGlobeNormal), uSunDir);
         // a soft terminator — a hard one reads as a stencil laid over the
         // globe rather than as the edge of the daylight
-        float night = smoothstep(0.16, -0.12, sun);
+        // Narrowed from (0.16, -0.12) on request for more day/night
+        // contrast — still soft enough not to read as a stencil, just a
+        // tighter band so the transition itself is crisper.
+        float night = smoothstep(0.12, -0.08, sun);
         // Raised from 2.4: with the night side darkened further below, the
         // lights need more headroom above that darker floor to still read
         // as distinct bright points instead of getting lost in a merely
@@ -1471,7 +1478,10 @@ globeMaterial.onBeforeCompile = (shader) => {
         // trick, just turned up until it actually looks like the reference
         // "glowing blue limb" instead of a whisper ACES quietly ate.
         float rimFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 1.5);
-        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * rimFresnel * night * 0.55;
+        // Pushed further again (0.55 -> 0.85, and the day term below the
+        // same amount) alongside rimLight's own boost, on request for a
+        // stronger silhouette edge overall.
+        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * rimFresnel * night * 0.85;
 
         // A thin atmosphere, on request. Still not a revived shell mesh —
         // same constraint as the night rim just above, same technique (add
@@ -1480,7 +1490,7 @@ globeMaterial.onBeforeCompile = (shader) => {
         // (1.0 - night) instead of only the night one, and given the
         // brighter, whiter sky-blue a sunlit limb actually has rather than
         // the night rim's cooler, dimmer tone.
-        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * rimFresnel * (1.0 - night) * 0.6;
+        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * rimFresnel * (1.0 - night) * 0.85;
 
         // The far side's own colour, not just what lights it. Cutting the
         // ambient/fill/rim rig (see the note by their definitions) only goes
@@ -1503,7 +1513,9 @@ globeMaterial.onBeforeCompile = (shader) => {
         // above struggled to read as bright points against it: they were
         // competing with a sky-and-ground base that was too bright to look
         // dark next to, not just under-lit lights.
-        diffuseColor.rgb *= mix(1.0, 0.14, night);
+        // Deepened again (0.14 -> 0.10) alongside the tighter terminator
+        // above, for more day/night contrast.
+        diffuseColor.rgb *= mix(1.0, 0.10, night);
       }`,
     )
     .replace(
@@ -2067,7 +2079,8 @@ oceanMaterial.onBeforeCompile = (shader) => {
       {
         vec3 oceanN = normalize(vOceanNormal);
         float sun = dot(oceanN, uSunDir);
-        float night = smoothstep(0.10, -0.16, sun);
+        // Narrowed to match the globe material's tighter terminator.
+        float night = smoothstep(0.06, -0.12, sun);
         // broad, then a tighter core: a wide sheen over the whole night sea
         // with a brighter patch where the moon would stand overhead
         float moon = max(-sun, 0.0);
@@ -2113,8 +2126,11 @@ oceanMaterial.onBeforeCompile = (shader) => {
         // so a glow that only ever appeared over land read as a broken
         // ring — bright over continents, gapped over the Pacific.
         float oceanRim = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 1.5);
-        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * oceanRim * night * 0.55;
-        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * oceanRim * (1.0 - night) * 0.6;
+        // Matching the globe material's own rim boost, so the silhouette
+        // doesn't get brighter over land and stay dim wherever the limb
+        // happens to be open water.
+        totalEmissiveRadiance += vec3(0.22, 0.42, 0.68) * oceanRim * night * 0.85;
+        totalEmissiveRadiance += vec3(0.55, 0.75, 1.0) * oceanRim * (1.0 - night) * 0.85;
       }`,
     );
   oceanWaveUniforms = shader.uniforms as unknown as { uTime: { value: number } };
