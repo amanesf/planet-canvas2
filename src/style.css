@@ -62,12 +62,21 @@ canvas {
    --------------------------------------------------------------------- */
 
 .title-bar {
+  /* Now nested inside .cyber-panel (which is itself scale(2)'d), anchored
+     to the panel's top-right corner. scale(0.5) cancels the parent's 2x
+     scale back out so the title/button render at their original size
+     instead of being blown up along with the dials. transform-origin is
+     the corner we're anchoring from, so the counter-scale doesn't also
+     shift the element's position. */
   position: absolute;
-  top: calc(20px + env(safe-area-inset-top, 0px));
-  left: 20px;
+  top: -34px;
+  right: 0;
+  transform: scale(0.5);
+  transform-origin: 100% 100%;
   display: flex;
   align-items: center;
   gap: 12px;
+  white-space: nowrap;
 }
 
 .title {
@@ -295,6 +304,11 @@ canvas {
   color: #6b7680;
   border-color: rgba(140, 150, 160, 0.3);
   box-shadow: none;
+}
+
+.cyber-button--small {
+  width: 32px;
+  height: 32px;
 }
 
 @media (max-width: 480px) {

@@ -38,12 +38,12 @@ import {
 
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-  <div class="title-bar">
-    <div class="title">天青の晶玉</div>
-    <button id="story-button" class="story-button" title="ストーリーを見る" aria-label="ストーリーを見る">STORY</button>
-  </div>
-
   <div class="cyber-panel" id="cyber-panel">
+    <div class="title-bar">
+      <div class="title">天青の晶玉</div>
+      <button id="story-button" class="story-button" title="ストーリーを見る" aria-label="ストーリーを見る">STORY</button>
+    </div>
+
     <div class="dial-cluster">
       <div class="dial-label">E - W</div>
       <div class="yaw-dial" id="yaw-dial" role="slider" aria-label="東西に回転" tabindex="0">
@@ -60,11 +60,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <div class="pitch-dial-core"></div>
       </div>
     </div>
-    <button id="flag-button" class="cyber-button" title="中心に旗を立てる" aria-label="中心に旗を立てる">
-      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M5 3v18M5 4h13l-3 4 3 4H5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <button id="flag-button" class="cyber-button cyber-button--small" title="中心に旗を立てる" aria-label="中心に旗を立てる">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 3v18M5 4h13l-3 4 3 4H5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
     </button>
-    <button id="spin-toggle" class="cyber-button" title="自転を止める" aria-label="自転を止める">
-      <svg viewBox="0 0 24 24" width="18" height="18" id="spin-toggle-icon"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>
+    <button id="spin-toggle" class="cyber-button cyber-button--small" title="自転を止める" aria-label="自転を止める">
+      <svg viewBox="0 0 24 24" width="16" height="16" id="spin-toggle-icon"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>
     </button>
   </div>
 
@@ -83,19 +83,19 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="story-panel">
       <button id="story-close" class="story-close" aria-label="閉じる">✕</button>
       <div class="story-cover"></div>
-      <h1 class="story-title">天青の晶玉</h1>
-      <p class="story-lead">この「天青の晶玉」は、単なるアンティークのジオラマではなく、別次元に封印された惑星へと繋がるポータルデバイスです。</p>
+      <h1 class="story-title">天青の晶玉（てんせいのしょうぎょく）</h1>
+      <p class="story-lead">ハルカが手にした「天青の晶玉」。それは単なるアンティークのジオラマなどではなく、別次元に封印された未知の惑星へと繋がるポータルデバイスだった。</p>
       <section class="story-section">
-        <h2>360度の視界</h2>
-        <p>デバイスの球体を360度ぐるりと回転させることで、緑豊かな大陸や局地的な嵐など、星の全容を立体的に把握し、ダイブするための転送座標を特定することができます。</p>
+        <h2>掌（てのひら）の上の星回り</h2>
+        <p>ハルカがデバイスの球体を静かに回転させると、緑豊かな大陸や吹き荒れる局地的な嵐など、星の全容が立体的なホログラムとして浮かび上がる。彼女は掌の上で回る星を観察し、未知の領域へ降り立つための転送座標を慎重に割り出していく。</p>
       </section>
       <section class="story-section">
         <h2>未知へのダイブ</h2>
-        <p>ハルカがこのデバイスを起動し、ホログラムとして浮かび上がる「晶玉」の内部空間へと直接転送されることで、本格的な探索が幕を開けます。</p>
+        <p>座標が定まり、ハルカがデバイスを起動する。まばゆい光とともに彼女自身がホログラムとして浮かび上がる「晶玉」の内部空間へと直接転送され、彼女の孤独で危険な探索の幕が上がる。</p>
       </section>
       <section class="story-section">
-        <h2>箱庭と現実のリンク</h2>
-        <p>デバイス上で緑が濃く光るエリアや、厚い雲に覆われた謎の地域など、ジオラマ上で確認できた地形が、そのまま広大な冒険のステージとして立ちはだかります。</p>
+        <h2>現実となる箱庭</h2>
+        <p>転送の果てにハルカを待っていたのは、デバイス上で緑が濃く光っていた原生林や、厚い雲に覆われていた未踏の荒野だった。先ほどまで掌の上で見ていた小さなジオラマの光景が、今は圧倒的なスケールを持つ現実の世界として、彼女の目の前に立ちはだかるのだった。</p>
       </section>
     </div>
   </div>
