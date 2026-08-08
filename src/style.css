@@ -404,18 +404,65 @@ canvas {
   color: #b9cbd6;
 }
 
-/* Shown while the model is being built. The build yields between steps (see
-   main.ts), so this actually paints instead of sitting behind a frozen tab. */
-.loading {
-  /* along the bottom, not over the middle: the scene is visible and filling
-     in behind this now, so the caption must not sit on top of the subject */
+/* ---------------------------------------------------------------------
+   Loading screen: covers the scene while the model is being built (see
+   the yieldToBrowser/setStatus machinery in main.ts, which is what keeps
+   this caption actually updating instead of a frozen "組み立て中…").
+   Cyan, to match the cyber base/panel rather than the old warm workshop
+   caption colour. Removed with an animated hand-off (see .is-done below)
+   instead of just vanishing, once the build finishes.
+   --------------------------------------------------------------------- */
+
+.loading-screen {
   position: fixed;
-  left: 50%;
-  bottom: 4.5rem;
-  transform: translateX(-50%);
-  color: #cbab7e;
-  font-size: 0.85rem;
-  letter-spacing: 0.16em;
-  opacity: 0.75;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  background: radial-gradient(circle at 50% 42%, #0c141c 0%, #05080c 70%, #030405 100%);
+  transition: opacity 0.6s ease, filter 0.6s ease, transform 0.6s ease;
+}
+
+/* The build finished: fade, soften and push back slightly, like a lens
+   racking focus off this screen and onto the globe behind it, rather than
+   a hard cut or a flat fade. */
+.loading-screen.is-done {
+  opacity: 0;
+  filter: blur(6px);
+  transform: scale(1.04);
   pointer-events: none;
+}
+
+.loading-ring {
+  width: 64px;
+  height: 64px;
+  border-radius: 999px;
+  border: 2px solid rgba(91, 228, 255, 0.18);
+  border-top-color: #5be4ff;
+  box-shadow: 0 0 18px rgba(57, 200, 255, 0.25);
+  animation: loading-spin 1.1s linear infinite;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-title {
+  color: #cfe9f5;
+  font-size: 1.4rem;
+  letter-spacing: 0.22em;
+  text-shadow: 0 0 20px rgba(57, 200, 255, 0.5);
+}
+
+.loading {
+  color: #8fefff;
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  opacity: 0.85;
+  min-height: 1.2em;
 }

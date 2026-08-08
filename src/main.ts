@@ -68,7 +68,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     </button>
   </div>
 
-  <div class="loading" id="loading" role="status">組み立て中…</div>
+  <div class="loading-screen" id="loading-screen">
+    <div class="loading-ring"></div>
+    <div class="loading-title">天青の晶玉</div>
+    <div class="loading" id="loading" role="status">組み立て中…</div>
+  </div>
 
   <div class="story-overlay" id="story-overlay" hidden>
     <div class="story-panel">
@@ -2203,4 +2207,18 @@ globeTick = (t) => {
   seasonUniforms.uSeasonTilt.value = Math.sin(t * SEASON_SPEED);
 };
 
-document.querySelector<HTMLDivElement>('#loading')?.remove();
+// On request: an animated hand-off instead of the caption just vanishing.
+// Adding the class triggers the CSS transition (see .loading-screen.is-done
+// in style.css); the element is only actually removed once that transition
+// reports it has finished, so a slow device that clips the animation still
+// ends with the overlay gone rather than stuck fading forever.
+const loadingScreen = document.querySelector<HTMLDivElement>('#loading-screen');
+if (loadingScreen) {
+  loadingScreen.classList.add('is-done');
+  loadingScreen.addEventListener('transitionend', () => loadingScreen.remove(), { once: true });
+  // Belt and braces: transitionend can fail to fire (a hidden tab, a
+  // reduced-motion override that drops the transition entirely) and this
+  // overlay sits on top of the whole scene, so it cannot be allowed to
+  // linger if the event never comes.
+  window.setTimeout(() => loadingScreen.remove(), 1200);
+}
